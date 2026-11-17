@@ -12,7 +12,6 @@ import { createToken } from '../auth/tokens.ts'
 import { createProject } from '../planning/service.ts'
 import { testDb } from '../test-support/db.ts'
 import { moreCommandFor, runCli } from './commands.ts'
-import { shellArg } from './output.ts'
 
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url))
 
@@ -113,27 +112,32 @@ test('events cut by the budget: next continues after the last event shown, more 
   assert.equal(lastShown, events[shown - 1].id)
 })
 
-test('every command pages with --cursor: plan import with a long onlyInDb list', async (t) => {
-  const onlyInDb = Array.from({ length: 3000 }, (_, i) => `P9-T${String(i).padStart(4, '0')}`)
-  const fake = await fakeServer((_req, res) => json(res, { created: [], updated: [], unchanged: 0, onlyInDb }))
+test('plan import never offers more: long lists are capped samples, and --cursor is rejected', async (t) => {
+  // Longest allowed keys in all three lists: the worst case for the body size.
+  const keys = (prefix: string) => Array.from({ length: 3000 }, (_, i) => `${prefix}${i}`.padEnd(200, 'x'))
+  const result = { created: keys('c'), updated: keys('u'), unchanged: 0, onlyInDb: keys('o') }
+  let posts = 0
+  const fake = await fakeServer((_req, res) => {
+    posts++
+    json(res, result)
+  })
   t.after(fake.close)
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-import-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  const file = join(dir, 'plan file.yaml')
+  const file = join(dir, 'plan.yaml')
   await writeFile(file, 'project: {key: alpha, name: Alpha}\n')
 
-  const first = await runCli(['plan', 'import', file], { env: fake.env, configPath: NO_CONFIG })
-  const more = /\ntruncated; more: (.+)\n/.exec(first.stdout)?.[1]
-  const cursor = Number(more?.split(' ').at(-1))
-  assert.equal(more, `devrounds plan import ${shellArg(file)} --cursor ${cursor}`)
+  const res = await runCli(['plan', 'import', file], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.ok(!res.stdout.includes('truncated; more:'), 'a mutation must not offer a re-run')
+  assert.ok(Buffer.byteLength(res.stdout) < 16384)
+  assert.ok(res.stdout.includes(`only in DevRounds (missing from the file) (3000):\n  ${result.onlyInDb[0]}\n`))
+  assert.ok(res.stdout.includes('  … and 2980 more (devrounds plan show)\n'))
 
-  const second = await runCli(['plan', 'import', file, '--cursor', String(cursor)], {
-    env: fake.env,
-    configPath: NO_CONFIG,
-  })
-  assert.equal(second.exitCode, 0, second.stderr)
-  // Body line `cursor` is onlyInDb[cursor - 2]: the first two lines are `unchanged: 0` and the list header.
-  assert.equal(second.stdout.split('\n')[0], `  ${onlyInDb[cursor - 2]}`)
+  const paged = await runCli(['plan', 'import', file, '--cursor', '5'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(paged.exitCode, 2)
+  assert.match(paged.stderr, /^DR101 /)
+  assert.equal(posts, 1, 'the rejected --cursor run must not import again')
 })
 
 test('more and next quote arguments that are not plain words', () => {

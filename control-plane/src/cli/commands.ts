@@ -157,6 +157,8 @@ type Spec = {
   path: string[]
   usage: string
   args: number // most positionals accepted; missing ones are checked when the command runs
+  // Reads only: --cursor re-runs the command to show the next page, which must not mutate anything again.
+  pages?: true
   options: ParseArgsOptionsConfig
   // Login runs without a saved config; everything else gets an API client.
   run: (inv: Invocation, connect: () => Promise<Api>, deps: Deps) => Promise<Result>
@@ -259,6 +261,8 @@ function dependency(scope: 'phase' | 'task', verb: 'add' | 'rm'): Spec {
   }
 }
 
+const IMPORT_SAMPLE = 20
+
 export const COMMANDS: Spec[] = [
   {
     path: ['login'],
@@ -271,12 +275,14 @@ export const COMMANDS: Spec[] = [
       // Check the three values together before saving them: a typo shows up now, not in the next session.
       const plan = await apiFor(config, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS).get<PlanView>('/plan')
       await mkdir(dirname(deps.configPath), { recursive: true, mode: 0o700 })
-      // The token never sits in a file others can read: a fresh temp file is restricted before it is renamed over
-      // the config (rename keeps the temp file's ACL and mode), and removed if restricting fails.
+      // The token never sits in a file others can read. The temp file is created empty and restricted first (on
+      // Windows the 0600 mode is ignored and the file starts with the inherited ACL), only then gets the token, and
+      // is renamed over the config (rename keeps its ACL and mode). Any failure removes it.
       const temp = `${deps.configPath}.${randomUUID()}.tmp`
-      await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
       try {
+        await writeFile(temp, '', { mode: 0o600, flag: 'wx' })
         await restrictToOwner(temp)
+        await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`)
         await rename(temp, deps.configPath)
       } catch (err) {
         await rm(temp, { force: true })
@@ -294,8 +300,9 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['plan', 'show'],
-    usage: 'plan show [--phase <key>]',
+    usage: 'plan show [--phase <key>] [--cursor <n>]',
     args: 0,
+    pages: true,
     options: { phase: str },
     run: async (inv, connect) => {
       const api = await connect()
@@ -333,9 +340,14 @@ export const COMMANDS: Spec[] = [
         fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
       )
       const r = await api.send<ImportResult>('POST', '/import', yaml, 'text/yaml')
-      // One key per line, so a long list is cut and paged like any body.
-      const keys = (label: string, items: string[]) =>
-        items.length > 0 ? [`${label} (${items.length}):`, ...items.map((key) => `  ${key}`)] : []
+      // A mutation cannot page (running it again with --cursor would import again and report different lists), so
+      // each list prints a bounded sample: 3 lists x 21 lines of at most ~200-byte keys stay under the body budget.
+      const keys = (label: string, items: string[]) => {
+        if (items.length === 0) return []
+        const rest = items.length - IMPORT_SAMPLE
+        const tail = rest > 0 ? [`  … and ${rest} more (devrounds plan show)`] : []
+        return [`${label} (${items.length}):`, ...items.slice(0, IMPORT_SAMPLE).map((key) => `  ${key}`), ...tail]
+      }
       return {
         failures: [],
         body: [
@@ -557,8 +569,9 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['events'],
-    usage: 'events [--after <id>]',
+    usage: 'events [--after <id>] [--cursor <n>]',
     args: 0,
+    pages: true,
     options: { after: str },
     run: async (inv, connect) => {
       const api = await connect()
@@ -585,8 +598,9 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['balance'],
-    usage: 'balance [--week]   per day (default) or per week, in the tenant time zone',
+    usage: 'balance [--week] [--cursor <n>]   per day (default) or per week, in the tenant time zone',
     args: 0,
+    pages: true,
     options: { week: { type: 'boolean' } },
     run: async (inv, connect) => {
       const api = await connect()
@@ -617,7 +631,7 @@ export function usage(): string {
     '',
     ...lines,
     '',
-    'Every command takes --cursor <n> to continue an output cut at 16384 bytes (`truncated; more:` gives the command).',
+    'Reads (plan show, events, balance) take --cursor <n> to continue an output cut at 16384 bytes.',
     'Config: ~/.devrounds/config.json from `devrounds login`, or DEVROUNDS_URL, DEVROUNDS_TOKEN, DEVROUNDS_PROJECT.',
     'Exit codes: 0 ok, 1 state conflict, 2 input/usage, 3 not found, 4 control plane unreachable, 5 auth, 6 internal.',
   ].join('\n')
@@ -630,12 +644,13 @@ export function parseCommand(argv: string[]): { spec: Spec; inv: Invocation } {
     (a, b) => b.path.length - a.path.length,
   )[0]
   if (!spec) fail('DR101', { path: 'command', reason: `unknown command "${argv.join(' ')}"; see devrounds --help` })
+  // --cursor on every read command, so `more:` is always the same command with --cursor N. Mutations reject it.
+  const options: ParseArgsOptionsConfig = spec.pages ? { ...spec.options, cursor: str } : spec.options
   let parsed: ReturnType<typeof parseArgs>
   try {
     parsed = parseArgs({
       args: argv.slice(spec.path.length),
-      // --cursor on every command, so `more:` is always the same command with --cursor N.
-      options: { ...spec.options, cursor: str },
+      options,
       allowPositionals: true,
       strict: true,
     })
@@ -707,7 +722,10 @@ export async function runCli(
     }
     const result = await spec.run(inv, connect, deps)
     if (result.raw !== undefined) return { exitCode: 0, stdout: result.raw, stderr: '' }
-    const opts = { budget: BODY_BUDGET, cursor: inv.cursor, moreCommand: moreCommandFor(argv) }
+    // Other commands print bounded bodies (a summary line, or import's capped samples), so they are never cut and
+    // never offer a `more:` that would run a mutation again.
+    const budget = spec.pages ? BODY_BUDGET : Number.POSITIVE_INFINITY
+    const opts = { budget, cursor: inv.cursor, moreCommand: moreCommandFor(argv) }
     const next = result.nextFor?.(fitBody(result.body, opts)) ?? result.next
     return { exitCode: 0, stdout: `${renderAgent({ ...result, next }, opts)}\n`, stderr: '' }
   } catch (err) {
