@@ -115,6 +115,7 @@ const TABLES = [
     kind text not null,
     ref text not null,
     title text,
+    check (num_nonnulls(task_id, phase_id) = 1),
     foreign key (tenant_id, task_id) references tasks (tenant_id, id),
     foreign key (tenant_id, phase_id) references phases (tenant_id, id)
   )`,
@@ -169,13 +170,15 @@ function isolate(table: string, column: string): string[] {
 
 // Why security definer: token lookup happens before the tenant is known, so it must read across tenants.
 // It exposes only the tenant and member of a live token, never the hashes themselves.
+// It sees other tenants only because its owner (the superuser admin) bypasses RLS; migrateToLatest enforces that.
+// Qualified names and pg_temp last: otherwise an app session could shadow the tables with temp tables of its own.
 const RESOLVE_TOKEN = `create function resolve_token(hash bytea)
   returns table (tenant_id uuid, member_id uuid, kind text)
-  language sql stable security definer set search_path = public
+  language sql stable security definer set search_path = pg_catalog, public, pg_temp
   as $$
     select t.tenant_id, t.member_id, m.kind
-    from api_tokens t
-    join members m on m.tenant_id = t.tenant_id and m.id = t.member_id
+    from public.api_tokens t
+    join public.members m on m.tenant_id = t.tenant_id and m.id = t.member_id
     where t.token_hash = hash and t.revoked_at is null
   $$`
 
@@ -186,8 +189,10 @@ export function core({ appRole }: MigrationOptions): Migration {
         ...TABLES,
         ...isolate('tenants', 'id'),
         ...TENANT_TABLES.flatMap((table) => isolate(table, 'tenant_id')),
+        // Functions are executable by PUBLIC by default; only the app role may resolve tokens. The default
+        // privilege covers functions added by later migrations; the explicit revoke covers this one regardless.
+        'alter default privileges revoke execute on functions from public',
         RESOLVE_TOKEN,
-        // Functions are executable by PUBLIC by default; only the app role may resolve tokens.
         'revoke all on function resolve_token(bytea) from public',
       ]
       for (const statement of statements) await sql.raw(statement).execute(db)

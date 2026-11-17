@@ -8,9 +8,9 @@ import type { Database, Member } from '../db/schema.ts'
 // Tests run as their own role, not devrounds_app: roles are cluster-wide and the server sets a different password.
 const APP_ROLE = 'devrounds_test_app'
 const APP_PASSWORD = 'devrounds'
-const DATABASE_URL =
+export const TEST_DATABASE_URL =
   process.env.DEVROUNDS_TEST_DATABASE_URL ?? `postgres://${APP_ROLE}:${APP_PASSWORD}@127.0.0.1:15433/devrounds_test`
-const ADMIN_URL =
+export const TEST_ADMIN_URL =
   process.env.DEVROUNDS_TEST_ADMIN_DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:15433/devrounds_test'
 
 export type TestTenant = { tenantId: string; human: Member; agent: Member }
@@ -49,9 +49,9 @@ async function newTenant(admin: Kysely<Database>, name = `tenant-${randomUUID()}
 // Migrates once per process; tests isolate by creating fresh tenants, never by truncating.
 export function testDb(): Promise<TestDb> {
   pending ??= (async () => {
-    await migrateToLatest(ADMIN_URL, { appRole: APP_ROLE, appPassword: APP_PASSWORD })
-    const db = createDb(DATABASE_URL)
-    const admin = createDb(ADMIN_URL)
+    await migrateToLatest(TEST_ADMIN_URL, { appRole: APP_ROLE, appPassword: APP_PASSWORD })
+    const db = createDb(TEST_DATABASE_URL)
+    const admin = createDb(TEST_ADMIN_URL)
     pools.push(db, admin)
     return { db, admin, newTenant: (name?: string) => newTenant(admin, name) }
   })()

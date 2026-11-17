@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { sql } from 'kysely'
-import { testDb } from '../test-support/db.ts'
+import { migrateToLatest } from '../db/migrate.ts'
+import { TEST_ADMIN_URL, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import { withTenant } from './scope.ts'
 
 function hashOf(token: Buffer): Buffer {
@@ -133,4 +134,50 @@ test('every public table has forced RLS and a tenant policy', async () => {
         and exists (select 1 from pg_policy p where p.polrelid = c.oid and p.polname = 'tenant_isolation'))
     order by 1`.execute(admin)
   assert.deepEqual(rows, [])
+})
+
+test('resolve_token ignores temp tables that shadow api_tokens and members', async () => {
+  const { db, newTenant } = await testDb()
+  const a = await newTenant()
+  const forged = randomBytes(32)
+
+  const rows = await db.transaction().execute(async (trx) => {
+    await sql`create temp table api_tokens (tenant_id uuid, member_id uuid, token_hash bytea, revoked_at timestamptz)
+      on commit drop`.execute(trx)
+    await sql`create temp table members (tenant_id uuid, id uuid, kind text) on commit drop`.execute(trx)
+    await sql`insert into pg_temp.api_tokens values (${a.tenantId}, ${a.human.id}, ${hashOf(forged)}, null)`.execute(
+      trx,
+    )
+    await sql`insert into pg_temp.members values (${a.tenantId}, ${a.human.id}, 'human')`.execute(trx)
+    return (await sql`select * from resolve_token(${hashOf(forged)})`.execute(trx)).rows
+  })
+
+  assert.deepEqual(rows, [])
+})
+
+test('a link must point to exactly one of task or phase', async () => {
+  const { db, newTenant } = await testDb()
+  const a = await newTenant()
+
+  await assert.rejects(
+    withTenant(db, a.tenantId, (trx) =>
+      trx.insertInto('links').values({ tenant_id: a.tenantId, kind: 'doc', ref: 'docs/design.md' }).execute(),
+    ),
+    { code: '23514' },
+  )
+})
+
+test('migrateToLatest refuses an admin connection that is not a superuser', async () => {
+  await testDb()
+  await assert.rejects(migrateToLatest(TEST_DATABASE_URL, { appRole: 'devrounds_test_other' }), {
+    code: 'DR502',
+    message: /must be a superuser/,
+  })
+})
+
+test('migrateToLatest refuses the admin role as the app role', async () => {
+  await assert.rejects(migrateToLatest(TEST_ADMIN_URL, { appRole: 'postgres' }), {
+    code: 'DR502',
+    message: /must differ from the admin role/,
+  })
 })
