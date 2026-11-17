@@ -162,6 +162,7 @@ phases:
       - Executor stays at or under 50 MB private bytes idle
       - Control plane stays at or under 300 MB private bytes idle
       - A job runs end to end on the executor with every spawn hidden and supervised
+      - Final whole-phase review passed
     tasks:
       - key: P1-T01
         title: Confirm spec §11 decisions and the P1 design
@@ -214,6 +215,8 @@ phases:
         title: Idempotency and outbox
         blocked_by:
           - P1-T08
+        criteria:
+          - The CLI retries a timed-out mutation once with the same Idempotency-Key
       - key: P1-T14
         title: OpenTelemetry
         blocked_by:
@@ -237,6 +240,78 @@ phases:
         blocked_by:
           - P1-T08
           - P1-T17
+      - key: P1-T19
+        title: Catalog guard checks the tenant policy expression, not only its name
+        criteria:
+          - The guard fails on a table whose policy has the right name and a different expression
+      - key: P1-T20
+        title: Indexes on referencing FK columns
+        criteria:
+          - Every composite FK has an index on its referencing columns
+      - key: P1-T21
+        title: editTask racing closePhase on the source phase
+        criteria:
+          - A task moved out while its source phase closes cannot deliver the phase on a stale read
+      - key: P1-T22
+        title: Task start locks the blocking phases it reads
+        criteria:
+          - "Starting a task while a blocking phase is reopened is serialized: DR304 or a start against a delivered blocker, never both"
+      - key: P1-T23
+        title: Moving the last open task out of a phase delivers the source phase
+        criteria:
+          - editTask moving the last open task out auto-delivers a closable source phase
+      - key: P1-T24
+        title: Import closes an already-closable delivered phase before later task states
+        criteria:
+          - Importing such a phase with in_progress tasks in a later phase does not answer DR304
+      - key: P1-T25
+        title: Root-cause the 119/120 test flake
+        criteria:
+          - Root cause found and fixed, without a rerun
+      - key: P1-T26
+        title: Prune and cap control plane logs
+        criteria:
+          - Old log files are pruned and a long-lived serve cannot grow one file without bound
+      - key: P1-T27
+        title: service uninstall stops an orphan supervisor when the task is already gone
+        criteria:
+          - uninstall leaves no supervisor or serve process when the scheduled task is missing
+      - key: P1-T28
+        title: Supervisor survives a log write failure
+        criteria:
+          - A failed log write does not exit the supervisor
+      - key: P1-T29
+        title: "CLI: no 'undefined' in output and DR502 for a non-object config"
+        criteria:
+          - Missing values never print as undefined; a non-object config.json answers DR502
+      - key: P1-T30
+        title: "CLI: -h as an option value and EPIPE on a closed pipe"
+        criteria:
+          - A -h value is accepted and a closed stdout ends the CLI without a stack
+      - key: P1-T31
+        title: "CLI: per-command --help"
+        criteria:
+          - devrounds <command> --help prints that command's usage
+      - key: P1-T32
+        title: One error code for a missing reason (DR104 vs DR101 /reason)
+        criteria:
+          - Every missing reason answers the same code, with words that cover tasks and phases
+      - key: P1-T33
+        title: "next: points to criterion check at the end of a task or phase"
+        criteria:
+          - plan show and task start suggest devrounds criterion check while criteria are open
+      - key: P1-T34
+        title: HTTP plan import records the requesting member
+        criteria:
+          - Every import event names the token's member
+      - key: P1-T35
+        title: Balance ignores import-time transitions
+        criteria:
+          - Tasks moved to done by plan import do not count as done that day
+      - key: P1-T36
+        title: "AGENTS.md: local superuser exception and owner-side admin reads"
+        criteria:
+          - AGENTS.md lists the local postgres superuser as an accepted exception with its removal phase, and exempts admin owner-side commands from withTenant (with Guilherme's approval)
   - key: P2
     title: Gates on DevRounds
     goal: The Clickmax pre-PR gates run on DevRounds instead of cx-env.
@@ -246,6 +321,7 @@ phases:
       - Gates for the Clickmax monorepo run on DevRounds instead of cx-env, end to end, on Guilherme's machine, with no run killed by memory pressure and no regression in wall time
       - The data model and APIs are tenant-scoped and machine-agnostic, so a second machine or a second account is configuration, not a redesign
       - cx-env keeps running everything else for Clickmax during the migration, and each migrated process is switched off in cx-env only after it is green on DevRounds
+      - Final whole-phase review passed
     tasks:
       - key: P2-T01
         title: Gate job types mirroring the /ship pre-flight
@@ -290,6 +366,10 @@ phases:
         title: DevRounds's own gates
         blocked_by:
           - P2-T01
+      - key: P2-T12
+        title: Plan files carry links and unphased tasks
+        criteria:
+          - Export and import round-trip links and unphased tasks, and plan show lists unphased tasks
   - key: P3
     title: Project conventions
     goal: DevRounds reads a codebase, records its conventions with evidence and checks them as a gate.
@@ -298,6 +378,7 @@ phases:
     criteria:
       - The conventions gate runs on Clickmax and on DevRounds
       - Rule changes in generated docs reach the repo only after human approval
+      - Final whole-phase review passed
     tasks:
       - key: P3-T01
         title: Conventions extraction with evidence
@@ -322,6 +403,7 @@ phases:
     criteria:
       - /work and /ship run as DevRounds job types, and task-to-pr opens a PR end to end
       - Credentials reach integrations only through the vault
+      - Final whole-phase review passed
     tasks:
       - key: P4-T01
         title: Secrets vault
@@ -376,6 +458,7 @@ phases:
     criteria:
       - The operational view updates live over SSE, replacing the 10 s polling
       - A flow built in the visual editor runs
+      - Final whole-phase review passed
     tasks:
       - key: P5-T01
         title: Full operational view
@@ -396,6 +479,7 @@ phases:
       - P5
     criteria:
       - A second tenant runs jobs on the cloud control plane without seeing the first tenant's data
+      - Final whole-phase review passed
     tasks:
       - key: P6-T01
         title: Cloud control plane
@@ -409,6 +493,14 @@ phases:
         title: Second tenant
         blocked_by:
           - P6-T01
+      - key: P6-T05
+        title: Balance DST test and tenant time zone proven in getBalance
+        criteria:
+          - A committed test covers a DST day and a non-default tenant timezone
+      - key: P6-T06
+        title: Unique tenant names (bootstrap race)
+        criteria:
+          - Two concurrent bootstraps with the same tenant name create one tenant
   - key: P7
     title: Blueprints and code node
     goal: Projects start from blueprints and pre-built modules, and flows run code nodes.
@@ -416,6 +508,7 @@ phases:
       - P6
     criteria:
       - A new project starts from a blueprint with the login module
+      - Final whole-phase review passed
     tasks:
       - key: P7-T01
         title: Blueprints

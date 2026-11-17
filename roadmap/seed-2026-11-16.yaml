@@ -146,6 +146,7 @@ phases:
       - Executor stays at or under 50 MB private bytes idle
       - Control plane stays at or under 300 MB private bytes idle
       - A job runs end to end on the executor with every spawn hidden and supervised
+      - Final whole-phase review passed
     tasks:
       - key: P1-T01
         title: Confirm spec §11 decisions and the P1 design
@@ -215,6 +216,7 @@ phases:
       - >-
         cx-env keeps running everything else for Clickmax during the migration, and each migrated process is switched
         off in cx-env only after it is green on DevRounds
+      - Final whole-phase review passed
     tasks:
       - key: P2-T01
         title: Gate job types mirroring the /ship pre-flight
@@ -256,6 +258,7 @@ phases:
     criteria:
       - The conventions gate runs on Clickmax and on DevRounds
       - Rule changes in generated docs reach the repo only after human approval
+      - Final whole-phase review passed
     tasks:
       - key: P3-T01
         title: Conventions extraction with evidence
@@ -276,6 +279,7 @@ phases:
     criteria:
       - /work and /ship run as DevRounds job types, and task-to-pr opens a PR end to end
       - Credentials reach integrations only through the vault
+      - Final whole-phase review passed
     tasks:
       - key: P4-T01
         title: Secrets vault
@@ -323,6 +327,7 @@ phases:
     criteria:
       - The operational view updates live over SSE, replacing the 10 s polling
       - A flow built in the visual editor runs
+      - Final whole-phase review passed
     tasks:
       - key: P5-T01
         title: Full operational view
@@ -342,6 +347,7 @@ phases:
     blocked_by: [P5]
     criteria:
       - A second tenant runs jobs on the cloud control plane without seeing the first tenant's data
+      - Final whole-phase review passed
     tasks:
       - key: P6-T01
         title: Cloud control plane
@@ -360,6 +366,7 @@ phases:
     blocked_by: [P6]
     criteria:
       - A new project starts from a blueprint with the login module
+      - Final whole-phase review passed
     tasks:
       - key: P7-T01
         title: Blueprints
