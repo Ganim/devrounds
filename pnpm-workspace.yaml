@@ -1,3 +1,5 @@
 packages:
   - control-plane
   - web
+allowBuilds:
+  esbuild: true

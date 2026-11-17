@@ -1,0 +1,78 @@
+# Demo plan for the web view: 3 phases with blockers, one done task with evidence, one cancelled task.
+# The assignee needs a member named guilherme (devrounds-admin bootstrap --human guilherme).
+project:
+  key: demo
+  name: Demo Roadmap
+phases:
+  - key: P0
+    title: Foundations
+    goal: Planning data model, API and the first views are usable.
+    criteria:
+      - text: Schema migrated on a clean database
+        evidence: gate:migrate
+      - Roadmap view reviewed by the owner
+    tasks:
+      - key: P0-T01
+        title: Database schema and migrations
+        assignee: guilherme
+        estimate_hours: 4
+        state: done
+        criteria:
+          - text: Migrations apply twice without error
+            evidence: commit:9308521
+      - key: P0-T02
+        title: HTTP API for plans and events
+        assignee: guilherme
+        estimate_hours: 6
+        state: in_progress
+        blocked_by: [P0-T01]
+        criteria:
+          - Every route answers errors as code, text and hint
+          - Balance accepts day and week
+      - key: P0-T03
+        title: Roadmap web view
+        estimate_hours: 5
+        blocked_by: [P0-T02]
+        criteria:
+          - Four pages render the plan
+      - key: P0-T04
+        title: Server-sent events
+        state: cancelled
+        reason: Moved to P5, polling is enough for now
+      - key: P0-T05
+        title: Token rotation
+        parent: P0-T02
+        state: blocked
+        reason: Waiting for the session login design
+  - key: P1
+    title: Sessions
+    goal: People sign in instead of pasting a token.
+    blocked_by: [P0]
+    criteria:
+      - Login works in the browser
+    tasks:
+      - key: P1-T01
+        title: Better Auth integration
+        estimate_hours: 8
+        criteria:
+          - Sign in and sign out work
+      - key: P1-T02
+        title: Session cookie on the API
+        blocked_by: [P1-T01]
+      - key: P1-T03
+        title: Remove the pasted token field
+        blocked_by: [P1-T01]
+      - key: P1-T04
+        title: Migrate existing tokens
+        blocked_by: [P1-T02, P1-T03]
+  - key: P2
+    title: Agents at work
+    goal: Agents pick tasks and report progress.
+    blocked_by: [P1]
+    tasks:
+      - key: P2-T01
+        title: Task claiming
+        estimate_hours: 3
+      - key: P2-T02
+        title: Progress reports
+        blocked_by: [P2-T01]

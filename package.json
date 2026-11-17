@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test \"control-plane/src/**/*.test.ts\"",
+    "test": "node --test \"control-plane/src/**/*.test.ts\" \"web/src/**/*.test.ts\"",
     "typecheck": "tsc -p control-plane && tsc -p web",
     "lint": "biome check --error-on-warnings .",
     "gen:errors": "node scripts/gen-error-docs.ts",
