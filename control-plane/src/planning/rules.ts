@@ -2,7 +2,7 @@ import { fail } from '../errors/error.ts'
 
 export type TaskState = 'todo' | 'in_progress' | 'blocked' | 'done' | 'cancelled'
 
-const ALLOWED: Record<TaskState, TaskState[]> = {
+export const ALLOWED: Record<TaskState, TaskState[]> = {
   todo: ['in_progress', 'blocked', 'cancelled'],
   in_progress: ['done', 'blocked', 'todo', 'cancelled'],
   blocked: ['todo', 'in_progress', 'cancelled'],

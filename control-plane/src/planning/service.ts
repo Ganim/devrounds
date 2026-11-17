@@ -20,7 +20,8 @@ export type Mutation = { eventId: string }
 // `delivered` is the key of the phase this call delivered automatically, or null.
 export type DeliveringMutation = Mutation & { delivered: string | null }
 
-const EVIDENCE = /^(commit:[0-9a-f]{7,40}|gate:\S+|url:https?:\/\/\S+|note:.+)$/
+// Also the plan file schema pattern, so a bad evidence string fails at parse time with its line and column.
+export const EVIDENCE = /^(commit:[0-9a-f]{7,40}|gate:\S+|url:https?:\/\/\S+|note:.+)$/
 
 function requireReason(reason: string | undefined): void {
   if (reason === undefined || reason.trim() === '') fail('DR101', { path: '/reason', reason: 'a reason is required' })
