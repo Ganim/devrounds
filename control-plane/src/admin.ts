@@ -1,11 +1,9 @@
 #!/usr/bin/env node
-import { execFile } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
-import { userInfo } from 'node:os'
+import { mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseArgs, promisify } from 'node:util'
+import { parseArgs } from 'node:util'
 import { type Kysely, sql } from 'kysely'
 import { issueToken, issueTokenIn, revokeToken } from './auth/tokens.ts'
 import { type Config, configPath, loadConfig } from './config.ts'
@@ -14,6 +12,7 @@ import { createDb } from './db/connection.ts'
 import { migrateToLatest } from './db/migrate.ts'
 import type { Database } from './db/schema.ts'
 import { explain, fail } from './errors/error.ts'
+import { restrictToOwner } from './owner-only.ts'
 import { createProject } from './planning/service.ts'
 import { withTenant } from './tenancy/scope.ts'
 
@@ -31,17 +30,6 @@ const USAGE = `usage: devrounds-admin <command>
   token create --tenant <name> --member <name> --kind human|agent
                                      prints a new token once (creates the member if missing)
   token revoke <id>                  revoke a token by id`
-
-const run = promisify(execFile)
-
-// Owner-only: the file holds both the owner and the app password. POSIX gets mode 600; on Windows mode bits do
-// nothing, so icacls drops inherited entries and grants only the current user.
-async function restrictToOwner(path: string): Promise<void> {
-  if (process.platform !== 'win32') return chmod(path, 0o600)
-  const domain = process.env.USERDOMAIN
-  const user = domain ? `${domain}\\${userInfo().username}` : userInfo().username
-  await run('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`])
-}
 
 export async function initConfig(path: string, opts: { force: boolean }): Promise<Config> {
   const appPassword = randomBytes(24).toString('base64url')
@@ -210,4 +198,5 @@ async function cli(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await cli()
+// realpath: the `devrounds-admin` bin from `npm link` runs this file through a symlinked folder.
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) await cli()
