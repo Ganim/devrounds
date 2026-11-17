@@ -28,6 +28,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 404,
     keys: ['kind', 'key'],
   },
+  DR202: {
+    text: 'The control plane has no route {route}.',
+    hint: 'Check the URL; if the CLI sent it, compare its version with `GET /api/health` and update the older one.',
+    httpStatus: 404,
+    keys: ['route'],
+  },
   DR301: {
     text: 'A task cannot move from {from} to {to}.',
     hint: 'Check the allowed moves for the current state, then pick another target state.',
@@ -63,6 +69,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     hint: 'A delivered phase accepts no open work: reopen {phase} first with a reason. An open phase cannot be reopened, and a delivered one cannot be closed again.',
     httpStatus: 409,
     keys: ['phase', 'state'],
+  },
+  DR401: {
+    text: 'Missing or invalid API token.',
+    hint: 'Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.',
+    httpStatus: 401,
+    keys: [],
   },
   DR501: {
     text: 'Internal error.',

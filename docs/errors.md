@@ -34,6 +34,14 @@ No {kind} {key} found.
 
 Check the {kind} key with `devrounds plan show`; keys are case-sensitive.
 
+## DR202
+
+The control plane has no route {route}.
+
+### Fix
+
+Check the URL; if the CLI sent it, compare its version with `GET /api/health` and update the older one.
+
 ## DR301
 
 A task cannot move from {from} to {to}.
@@ -81,6 +89,14 @@ Phase {phase} is {state}, which does not allow this change.
 ### Fix
 
 A delivered phase accepts no open work: reopen {phase} first with a reason. An open phase cannot be reopened, and a delivered one cannot be closed again.
+
+## DR401
+
+Missing or invalid API token.
+
+### Fix
+
+Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.
 
 ## DR501
 

@@ -1,0 +1,94 @@
+import { stat } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import fastifyStatic from '@fastify/static'
+import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox'
+import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
+import type { Kysely } from 'kysely'
+import pkg from '../../package.json' with { type: 'json' }
+import type { TokenOwner } from '../auth/tokens.ts'
+import { toDevRoundsError } from '../convert-error.ts'
+import type { Database } from '../db/schema.ts'
+import { DevRoundsError, explain, fail } from '../errors/error.ts'
+import { projectRoutes } from './routes.ts'
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    // Set by the auth hook on every /api/projects route; null elsewhere.
+    owner: TokenOwner | null
+  }
+}
+
+export type ServerOptions = {
+  db: Kysely<Database>
+  logger?: FastifyServerOptions['logger']
+  // Built by Task 10; served at `/` only when the directory exists.
+  webDir?: string
+}
+
+const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
+
+// Fastify's own 4xx errors (bad JSON, unsupported media type, body too large) reach clients as DR101.
+function inputError(err: FastifyError): DevRoundsError | null {
+  if (err.validation) {
+    const [first] = err.validation
+    // Ajv points at the parent object for a missing or unknown field; name the field itself.
+    const field = first.params.missingProperty ?? first.params.additionalProperty
+    const reasons: Record<string, string> = {
+      additionalProperties: 'is not a known field',
+      enum: `must be one of ${String(first.params.allowedValues).replaceAll(',', ', ')}`,
+    }
+    const reason = reasons[first.keyword] ?? first.message
+    // Body paths read like the service's (`/title`); query and params name their part (`querystring/limit`).
+    const path = `${first.instancePath}${field === undefined ? '' : `/${String(field)}`}` || '/'
+    const where = err.validationContext === 'body' ? '' : err.validationContext
+    return new DevRoundsError('DR101', { path: `${where ?? ''}${path}`, reason: reason ?? 'is invalid' })
+  }
+  if (err.code?.startsWith('FST_') && err.statusCode !== undefined && err.statusCode < 500) {
+    return new DevRoundsError('DR101', { path: '/', reason: err.message })
+  }
+  return null
+}
+
+export function buildServer(opts: ServerOptions) {
+  const app = Fastify({
+    logger: opts.logger ?? true,
+    // Reject unknown body fields instead of silently dropping them.
+    ajv: { customOptions: { removeAdditional: false } },
+  }).withTypeProvider<TypeBoxTypeProvider>()
+
+  app.decorateRequest('owner', null)
+
+  for (const type of ['text/yaml', 'application/yaml']) {
+    app.addContentTypeParser(type, { parseAs: 'string' }, (_req, body, done) => done(null, body))
+  }
+
+  app.setErrorHandler((err: FastifyError, request, reply) => {
+    const error = inputError(err) ?? toDevRoundsError(err)
+    const { text, hint, httpStatus } = explain(error.code, error.data)
+    // 5xx data carries raw internal messages (DR501's cause): log it, never send it.
+    if (httpStatus >= 500) request.log.error({ err, code: error.code, data: error.data }, 'request failed')
+    const data = httpStatus >= 500 ? {} : error.data
+    return reply.code(httpStatus).send({ code: error.code, text, hint, data })
+  })
+
+  // Not DR201: that one is about plan keys. A wrong route usually means the CLI and the server versions differ.
+  app.setNotFoundHandler(async (request) => fail('DR202', { route: `${request.method} ${request.url}` }))
+
+  app.get('/api/health', async () => ({ ok: true, version: pkg.version }))
+
+  app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
+
+  const webDir = opts.webDir ?? DEFAULT_WEB_DIR
+  app.register(async (instance) => {
+    const found = await stat(webDir).then(
+      (s) => s.isDirectory(),
+      () => false,
+    )
+    // Exact /api routes win over the static wildcard in Fastify's router, so the API is never shadowed.
+    if (found) await instance.register(fastifyStatic, { root: webDir, prefix: '/' })
+  })
+
+  return app
+}
+
+export type Server = ReturnType<typeof buildServer>
