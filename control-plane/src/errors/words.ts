@@ -70,6 +70,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['phase', 'state'],
   },
+  DR307: {
+    text: 'Task {task} is {state}, which does not allow this change.',
+    hint: 'A done or cancelled task accepts no new open criteria: reopen {task} first with `devrounds task reopen {task} --reason <text>`.',
+    httpStatus: 409,
+    keys: ['task', 'state'],
+  },
   DR401: {
     text: 'Missing or invalid API token.',
     hint: 'Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.',

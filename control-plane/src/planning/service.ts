@@ -614,6 +614,21 @@ export function addCriterion(ctx: Ctx, i: Target & { text: string }): Promise<Mu
     const project = await findProject(trx, i.projectKey)
     // Owner lock: two concurrent adds would otherwise read the same max(position).
     const target = await findTarget(trx, project.id, i, { lock: true })
+    // A new criterion is open work: a delivered phase (or a task in one) and a done or cancelled task would hold an
+    // unchecked criterion after the fact. Plan import reaches this too, so it fails instead of writing it.
+    if (target.taskId && target.phaseToCheck) {
+      const phase = await trx
+        .selectFrom('phases')
+        .select(['key', 'state'])
+        .where('id', '=', target.phaseToCheck)
+        .forShare()
+        .executeTakeFirstOrThrow()
+      if (phase.state === 'delivered') phaseConflict(phase)
+    }
+    if (target.state === 'delivered') phaseConflict({ key: target.label, state: target.state })
+    if (target.state === 'done' || target.state === 'cancelled') {
+      fail('DR307', { task: target.label, state: target.state })
+    }
     await insertCriteria(trx, ctx, target, [i.text])
     const eventId = await record(trx, ctx, {
       projectId: project.id,

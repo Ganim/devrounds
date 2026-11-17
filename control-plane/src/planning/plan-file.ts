@@ -5,7 +5,8 @@ import { fail } from '../errors/error.ts'
 import { EVIDENCE } from './service.ts'
 
 // The seed/plan file: position = order in the file. A criterion given as {text, evidence} is checked on import.
-const Key = Type.String({ minLength: 1 })
+// Same cap as the API's key params, so every imported key can be addressed through the API and CLI.
+const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Text = Type.String({ minLength: 1 })
 const Criterion = Type.Union([
   Text,
@@ -42,7 +43,8 @@ const PlanFilePhase = Type.Object(
   {
     key: Key,
     title: Text,
-    goal: Text,
+    // May be empty, like in the API and `devrounds phase add` without --goal; export writes it as "".
+    goal: Type.String(),
     state: Type.Optional(Type.Union([Type.Literal('open'), Type.Literal('delivered')])),
     blocked_by: Type.Optional(Type.Array(Key)),
     criteria: Type.Optional(Type.Array(Criterion)),

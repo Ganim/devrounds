@@ -63,16 +63,17 @@ export async function findMember(trx: Trx, name: string) {
 
 // `phaseToCheck` is the phase whose delivery may change when something on this target changes.
 // `lock` takes the owner row (task or phase) for no key update, e.g. before computing the next criterion position.
+// `state` is the owner's state (a task state or a phase state).
 export async function findTarget(trx: Trx, projectId: string, i: Target, opts: { lock?: boolean } = {}) {
   if ((i.taskKey === undefined) === (i.phaseKey === undefined)) {
     fail('DR101', { path: '/', reason: 'give exactly one of taskKey or phaseKey' })
   }
   if (i.taskKey !== undefined) {
     const task = await findTask(trx, projectId, i.taskKey, opts)
-    return { taskId: task.id, phaseId: null, label: task.key, phaseToCheck: task.phase_id }
+    return { taskId: task.id, phaseId: null, label: task.key, phaseToCheck: task.phase_id, state: task.state }
   }
   const phase = await findPhase(trx, projectId, i.phaseKey as string, opts.lock ? { lock: 'update' } : {})
-  return { taskId: null, phaseId: phase.id, label: phase.key, phaseToCheck: phase.id }
+  return { taskId: null, phaseId: phase.id, label: phase.key, phaseToCheck: phase.id, state: phase.state }
 }
 
 export async function findCriterion(

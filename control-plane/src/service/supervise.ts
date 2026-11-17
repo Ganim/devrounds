@@ -22,7 +22,8 @@ export function nextDelay(previousMs: number | null, uptimeMs: number): number {
 const LOG_DIR = join(homedir(), '.devrounds', 'logs')
 const SERVE = fileURLToPath(new URL('../main.ts', import.meta.url))
 
-// One file per day and process, so a log never grows past a day of output.
+// Named by the UTC day a serve spawn (or supervisor line) starts writing: a long-lived serve keeps its spawn-day file,
+// so a file can grow past a day, and old files are never pruned.
 const logFile = (name: string) => join(LOG_DIR, `${name}-${new Date().toISOString().slice(0, 10)}.log`)
 
 async function log(line: string): Promise<void> {

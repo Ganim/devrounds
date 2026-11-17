@@ -6,6 +6,7 @@ import { exportPlan } from './export.ts'
 import { importPlan } from './import.ts'
 import { parsePlanFile } from './plan-file.ts'
 import type { Ctx } from './resolve.ts'
+import { addCriterion, addPhase } from './service.ts'
 import { getPlan, listEvents } from './view.ts'
 
 const projectKey = 'devrounds'
@@ -272,4 +273,49 @@ phases:
   assert.deepEqual(reparsed.phases[0].criteria, [{ text: 'seeded', evidence: 'note:seed imported' }])
   const plan = await getPlan(ctx, projectKey)
   assert.equal(plan.phases[0].state, 'delivered')
+})
+
+test('a phase added without a goal survives export then import', async () => {
+  const { ctx } = await setup()
+  await importPlan(ctx, parsePlanFile(SEED))
+  await addPhase(ctx, { projectKey, key: 'P2', title: 'Later', goal: '' })
+  const before = await eventCount(ctx)
+
+  const result = await importPlan(ctx, parsePlanFile(await exportPlan(ctx, projectKey)))
+
+  assert.deepEqual(result, { created: [], updated: [], unchanged: 6, onlyInDb: [] })
+  assert.equal(await eventCount(ctx), before)
+})
+
+test('no new criterion on a delivered phase, a task in one, or a done task', async () => {
+  const { ctx } = await setup()
+  const text = `
+project: { key: devrounds, name: DevRounds }
+phases:
+  - key: P0
+    title: Foundation
+    goal: Plan
+    state: delivered
+    criteria: [{ text: seeded, evidence: 'note:seed imported' }]
+    tasks:
+      - { key: P0-T01, title: A, state: done }
+  - key: P1
+    title: Rounds
+    goal: Run rounds
+    tasks:
+      - { key: P1-T01, title: A, state: done }
+      - { key: P1-T02, title: B }
+`
+  await importPlan(ctx, parsePlanFile(text))
+  const before = await eventCount(ctx)
+
+  const phaseCriterion = text.replace("evidence: 'note:seed imported' }]", "evidence: 'note:seed imported' }, late]")
+  await rejectsWith(importPlan(ctx, parsePlanFile(phaseCriterion)), 'DR306')
+  const taskCriterion = text.replace(
+    '{ key: P0-T01, title: A, state: done }',
+    '{ key: P0-T01, title: A, state: done, criteria: [late] }',
+  )
+  await rejectsWith(importPlan(ctx, parsePlanFile(taskCriterion)), 'DR306')
+  await rejectsWith(addCriterion(ctx, { projectKey, taskKey: 'P1-T01', text: 'late' }), 'DR307')
+  assert.equal(await eventCount(ctx), before)
 })

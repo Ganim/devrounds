@@ -90,6 +90,14 @@ Phase {phase} is {state}, which does not allow this change.
 
 A delivered phase accepts no open work: reopen {phase} first with a reason. An open phase cannot be reopened, and a delivered one cannot be closed again.
 
+## DR307
+
+Task {task} is {state}, which does not allow this change.
+
+### Fix
+
+A done or cancelled task accepts no new open criteria: reopen {task} first with `devrounds task reopen {task} --reason <text>`.
+
 ## DR401
 
 Missing or invalid API token.
