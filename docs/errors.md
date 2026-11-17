@@ -10,6 +10,54 @@ Invalid input at {path}: {reason}.
 
 Fix the value at {path} and send the request again.
 
+## DR104
+
+A reason is required to move a task from {from} to {to}.
+
+### Fix
+
+Send a non-empty reason with the request and try again.
+
+## DR301
+
+A task cannot move from {from} to {to}.
+
+### Fix
+
+Check the allowed moves for the current state, then pick another target state.
+
+## DR302
+
+The task is blocked by open tasks: {blockers}.
+
+### Fix
+
+Finish or cancel {blockers}, or remove the blocker links, then start the task again.
+
+## DR303
+
+The task has {count} open acceptance criteria.
+
+### Fix
+
+Check off the {count} open criteria before marking the task done.
+
+## DR304
+
+Phases that must be delivered first are still open: {phases}.
+
+### Fix
+
+Deliver {phases} before starting tasks in this phase.
+
+## DR305
+
+The phase cannot close: {openTasks} open tasks, {openCriteria} open criteria, no done task: {noDoneTask}.
+
+### Fix
+
+Finish or cancel the open tasks, check off the criteria, and make sure at least one task is done.
+
 ## DR501
 
 Internal error.
