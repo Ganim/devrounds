@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { type Kysely, sql } from 'kysely'
+import { type Kysely, sql, type Transaction } from 'kysely'
 import type { Database, MemberKind } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { Actor } from '../planning/service.ts'
@@ -27,35 +27,42 @@ export function createToken(
 // The plaintext leaves this function once, to be printed to the operator; only its SHA-256 is stored. The id is
 // what `devrounds-admin token revoke` takes.
 // Creates the member when the tenant has none by that name; an existing member of the other kind is an input error.
-export async function issueToken(
+export function issueToken(
   adminDb: Kysely<Database>,
   tenantId: string,
   memberName: string,
   kind: MemberKind,
 ): Promise<{ id: string; token: string }> {
+  return withTenant(adminDb, tenantId, (trx) => issueTokenIn(trx, tenantId, memberName, kind))
+}
+
+// issueToken inside a caller's tenant-scoped transaction (bootstrap issues its token with the rest).
+export async function issueTokenIn(
+  trx: Transaction<Database>,
+  tenantId: string,
+  memberName: string,
+  kind: MemberKind,
+): Promise<{ id: string; token: string }> {
   const token = PREFIX + randomBytes(32).toString('base64url')
-  const id = await withTenant(adminDb, tenantId, async (trx) => {
-    await trx
-      .insertInto('members')
-      .values({ tenant_id: tenantId, kind, name: memberName })
-      .onConflict((oc) => oc.columns(['tenant_id', 'name']).doNothing())
-      .execute()
-    // The owner connection bypasses RLS, so withTenant alone does not narrow this read; the filter must be explicit.
-    const member = await trx
-      .selectFrom('members')
-      .select(['id', 'kind'])
-      .where('tenant_id', '=', tenantId)
-      .where('name', '=', memberName)
-      .executeTakeFirstOrThrow()
-    if (member.kind !== kind) fail('DR101', { path: '--kind', reason: `member ${memberName} is a ${member.kind}` })
-    const row = await trx
-      .insertInto('api_tokens')
-      .values({ tenant_id: tenantId, member_id: member.id, token_hash: hashOf(token) })
-      .returning('id')
-      .executeTakeFirstOrThrow()
-    return row.id
-  })
-  return { id, token }
+  await trx
+    .insertInto('members')
+    .values({ tenant_id: tenantId, kind, name: memberName })
+    .onConflict((oc) => oc.columns(['tenant_id', 'name']).doNothing())
+    .execute()
+  // The owner connection bypasses RLS, so withTenant alone does not narrow this read; the filter must be explicit.
+  const member = await trx
+    .selectFrom('members')
+    .select(['id', 'kind'])
+    .where('tenant_id', '=', tenantId)
+    .where('name', '=', memberName)
+    .executeTakeFirstOrThrow()
+  if (member.kind !== kind) fail('DR101', { path: '--kind', reason: `member ${memberName} is a ${member.kind}` })
+  const row = await trx
+    .insertInto('api_tokens')
+    .values({ tenant_id: tenantId, member_id: member.id, token_hash: hashOf(token) })
+    .returning('id')
+    .executeTakeFirstOrThrow()
+  return { id: row.id, token }
 }
 
 // Token ids are global uuids and the operator does not name a tenant, so this runs on the owner connection

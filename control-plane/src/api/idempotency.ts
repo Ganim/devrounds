@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { type Kysely, sql, type Transaction } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
@@ -5,7 +6,23 @@ import { withTenant } from '../tenancy/scope.ts'
 
 export type StoredResponse = { status: number; body: unknown }
 
-type Row = StoredResponse & { request: string }
+type Row = StoredResponse & { fingerprint: string }
+
+// JSON with keys sorted at every level, so two bodies that differ only in key order fingerprint the same.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+// SHA-256 over method, URL and body. A string body (the YAML import) is hashed as the raw text it arrived as.
+export function fingerprintOf(method: string, url: string, body: unknown): string {
+  const text = typeof body === 'string' ? body : body === undefined ? '' : canonical(body)
+  return createHash('sha256').update(`${method} ${url}\n${text}`).digest('hex')
+}
 
 // Same key + same tenant within 24 h returns the stored response without running the mutation again.
 //
@@ -15,13 +32,14 @@ type Row = StoredResponse & { request: string }
 // rollback (the mutation failed) it runs the mutation itself. Failed mutations are therefore never stored, which
 // is safe because they changed nothing.
 //
-// `request` (method and path) guards against a client reusing one key for a different call. Expired rows are only
-// removed when their key comes back; a periodic sweep can come later if the table ever matters.
+// The fingerprint (fingerprintOf) catches a client reusing one key for a different call or body: replaying the
+// first response would silently drop the second mutation, so that is DR101 instead. Expired rows are only removed
+// when their key comes back; a periodic sweep can come later if the table ever matters.
 export async function runIdempotent(
   db: Kysely<Database>,
   tenantId: string,
   key: string,
-  request: string,
+  fingerprint: string,
   mutate: (trx: Transaction<Database>) => Promise<StoredResponse>,
 ): Promise<StoredResponse> {
   return withTenant(db, tenantId, async (trx) => {
@@ -32,7 +50,7 @@ export async function runIdempotent(
       .execute()
     const claimed = await trx
       .insertInto('idempotency_keys')
-      .values({ tenant_id: tenantId, key, response: JSON.stringify({ request, status: 0, body: null }) })
+      .values({ tenant_id: tenantId, key, response: JSON.stringify({ fingerprint, status: 0, body: null }) })
       .onConflict((oc) => oc.columns(['tenant_id', 'key']).doNothing())
       .returning('key')
       .executeTakeFirst()
@@ -43,15 +61,15 @@ export async function runIdempotent(
         .where('key', '=', key)
         .executeTakeFirstOrThrow()
       const stored = (typeof row.response === 'string' ? JSON.parse(row.response) : row.response) as Row
-      if (stored.request !== request) {
-        fail('DR101', { path: 'Idempotency-Key', reason: `the key was already used for ${stored.request}` })
+      if (stored.fingerprint !== fingerprint) {
+        fail('DR101', { path: '/Idempotency-Key', reason: 'key reused with a different request' })
       }
       return { status: stored.status, body: stored.body }
     }
     const response = await mutate(trx)
     await trx
       .updateTable('idempotency_keys')
-      .set({ response: JSON.stringify({ request, ...response }) })
+      .set({ response: JSON.stringify({ fingerprint, ...response }) })
       .where('key', '=', key)
       .execute()
     return response

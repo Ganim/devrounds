@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { buildServer } from './api/server.ts'
-import { loadConfig } from './config.ts'
+import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
 import { explain } from './errors/error.ts'
@@ -8,7 +8,7 @@ import { explain } from './errors/error.ts'
 // The control plane. `serve` never migrates (that needs the owner URL; see `devrounds-admin migrate`) and binds to
 // loopback only: the API is reached locally or through the local reverse proxy.
 async function serve(): Promise<void> {
-  const config = await loadConfig()
+  const config = await loadServerConfig()
   const db = createDb(config.databaseUrl)
   const app = buildServer({ db })
   const stop = async () => {

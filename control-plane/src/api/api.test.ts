@@ -152,6 +152,41 @@ test('same Idempotency-Key twice runs once, also when the two arrive together', 
   assert.equal(events.length, 2)
 })
 
+test('a reused Idempotency-Key with a different body is DR101 and runs nothing', async () => {
+  const { tenant, auth } = await setup()
+  const send = (taskKey: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/projects/alpha/tasks',
+      headers: { ...auth, 'idempotency-key': 'k-reused' },
+      payload: { key: taskKey, title: 'Once', phaseKey: 'P0' },
+    })
+  assert.equal((await send('P0-T01')).statusCode, 200)
+  const reused = await send('P0-T02')
+  assert.equal(reused.statusCode, 400)
+  assert.deepEqual(reused.json().data, { path: '/Idempotency-Key', reason: 'key reused with a different request' })
+  const tasks = await t.admin.selectFrom('tasks').select('key').where('tenant_id', '=', tenant.tenantId).execute()
+  assert.deepEqual(
+    tasks.map((row) => row.key),
+    ['P0-T01'],
+  )
+})
+
+test('events and balance answer DR101 for out-of-range cursors and loose dates', async () => {
+  const { auth } = await setup()
+  const get = async (query: string) => {
+    const res = await app.inject({ method: 'GET', url: `/api/projects/alpha/${query}`, headers: auth })
+    return [res.statusCode, res.json().code, res.json().data?.path]
+  }
+  assert.deepEqual(await get('events?afterId=9223372036854775808'), [400, 'DR101', 'querystring/afterId'])
+  assert.deepEqual(await get('events?afterId=12345678901234567890'), [400, 'DR101', 'querystring/afterId'])
+  assert.deepEqual(await get('balance?from=2026-11-01T10:00'), [400, 'DR101', 'querystring/from'])
+  assert.deepEqual(await get('balance?from=2026-02-31'), [400, 'DR101', 'querystring/from'])
+  assert.deepEqual(await get('balance?from=11/01/2026'), [400, 'DR101', 'querystring/from'])
+  assert.deepEqual(await get('balance?from=2026-11-10&to=2026-11-01'), [400, 'DR101', 'querystring/from'])
+  assert.equal((await get('balance?from=2026-11-01&to=2026-11-10T12:00:00-03:00'))[0], 200)
+})
+
 function words(code: 'DR306' | 'DR401', data: Record<string, unknown> = {}) {
   const { text, hint } = explain(code, data)
   return { text, hint }

@@ -29,7 +29,7 @@ import {
   transition,
 } from '../planning/service.ts'
 import { getPlan, listEvents } from '../planning/view.ts'
-import { runIdempotent } from './idempotency.ts'
+import { fingerprintOf, runIdempotent } from './idempotency.ts'
 
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Text = Type.String({ minLength: 1 })
@@ -54,13 +54,26 @@ const object = <T extends Record<string, TSchema>>(props: T) => Type.Object(prop
 const DAY_MS = 86_400_000
 const BALANCE_WINDOW = { day: { defaultDays: 13, maxDays: 366 }, week: { defaultDays: 7 * 11, maxDays: 3660 } }
 
-// JS Date rules: a date without a time is UTC midnight, not tenant midnight; callers wanting local days send instants.
+// Strict ISO 8601: a date, or a date-time with an explicit zone (a zoneless time would take the server's zone).
+const ISO_INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})(T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,9})?)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d))?$/
+
+// A date without a time is UTC midnight, not tenant midnight; callers wanting local days send instants.
 function instant(value: string | undefined, path: string): Date | undefined {
   if (value === undefined) return undefined
+  const match = ISO_INSTANT.exec(value)
+  // Date.UTC rolls 2026-02-31 over into March; reading the day back catches it.
+  const [year, month, day] = [Number(match?.[1]), Number(match?.[2]), Number(match?.[3])]
+  const calendar = new Date(Date.UTC(year, month - 1, day))
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) fail('DR101', { path, reason: 'expected an ISO 8601 date or date-time' })
+  if (!match || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day || Number.isNaN(date.getTime())) {
+    fail('DR101', { path, reason: 'expected an ISO 8601 date (YYYY-MM-DD) or date-time with a zone' })
+  }
   return date
 }
+
+// Event ids are bigint; a longer cursor would make Postgres fail the cast, which is a 500.
+const BIGINT_MAX = 9_223_372_036_854_775_807n
 
 function bearer(request: FastifyRequest): string | undefined {
   const match = /^Bearer (\S+)$/.exec(request.headers.authorization ?? '')
@@ -84,7 +97,8 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
     const ctx = ctxOf(request)
     const key = request.headers['idempotency-key']
     if (typeof key !== 'string') return run(ctx)
-    const stored = await runIdempotent(db, ctx.tenantId, key, `${request.method} ${request.url}`, async (trx) => ({
+    const fingerprint = fingerprintOf(request.method, request.url, request.body)
+    const stored = await runIdempotent(db, ctx.tenantId, key, fingerprint, async (trx) => ({
       status: 200,
       body: await run({ ...ctx, trx }),
     }))
@@ -103,12 +117,18 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
       schema: {
         params: ProjectParams,
         querystring: object({
-          afterId: Type.Optional(Type.String({ pattern: '^[0-9]+$' })),
+          afterId: Type.Optional(Type.String({ pattern: '^[0-9]{1,19}$' })),
           limit: Type.Integer({ minimum: 1, maximum: 500, default: 100 }),
         }),
       },
     },
-    (request) => listEvents(ctxOf(request), request.params.key, request.query),
+    (request) => {
+      const { afterId } = request.query
+      if (afterId !== undefined && BigInt(afterId) > BIGINT_MAX) {
+        fail('DR101', { path: 'querystring/afterId', reason: 'is past the largest event id' })
+      }
+      return listEvents(ctxOf(request), request.params.key, request.query)
+    },
   )
 
   app.get(
@@ -129,6 +149,7 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
       const to = instant(request.query.to, 'querystring/to') ?? new Date()
       const from =
         instant(request.query.from, 'querystring/from') ?? new Date(to.getTime() - window.defaultDays * DAY_MS)
+      if (from.getTime() > to.getTime()) fail('DR101', { path: 'querystring/from', reason: 'must not be after to' })
       if (to.getTime() - from.getTime() > window.maxDays * DAY_MS) {
         fail('DR101', { path: 'querystring/from', reason: `a ${period} balance spans at most ${window.maxDays} days` })
       }

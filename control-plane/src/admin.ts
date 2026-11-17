@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { access, chmod, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs, promisify } from 'node:util'
 import { type Kysely, sql } from 'kysely'
-import { issueToken, revokeToken } from './auth/tokens.ts'
+import { issueToken, issueTokenIn, revokeToken } from './auth/tokens.ts'
 import { type Config, configPath, loadConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
@@ -44,11 +44,6 @@ async function restrictToOwner(path: string): Promise<void> {
 }
 
 export async function initConfig(path: string, opts: { force: boolean }): Promise<Config> {
-  const exists = await access(path).then(
-    () => true,
-    () => false,
-  )
-  if (exists && !opts.force) fail('DR101', { path, reason: 'the file already exists; pass --force to replace it' })
   const appPassword = randomBytes(24).toString('base64url')
   const config: Config = {
     databaseUrl: `postgres://${APP_ROLE}:${appPassword}@127.0.0.1:15433/devrounds`,
@@ -57,8 +52,22 @@ export async function initConfig(path: string, opts: { force: boolean }): Promis
     appPassword,
   }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  await restrictToOwner(path)
+  // 'wx' makes "already exists" atomic with the create, so two inits cannot both write.
+  try {
+    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: opts.force ? 'w' : 'wx' })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      fail('DR101', { path, reason: 'the file already exists; pass --force to replace it' })
+    }
+    throw err
+  }
+  try {
+    await restrictToOwner(path)
+  } catch (err) {
+    // The file holds passwords: never leave it readable by others because the permission step failed.
+    await rm(path, { force: true })
+    throw err
+  }
   return config
 }
 
@@ -75,13 +84,14 @@ export async function bootstrap(
 ): Promise<{ id: string; token: string }> {
   const existing = await admin.selectFrom('tenants').select('id').where('name', '=', i.tenant).executeTakeFirst()
   if (existing) fail('DR101', { path: '--tenant', reason: `tenant ${i.tenant} already exists` })
-  // The id is chosen here so the tenant row, its members and the project share one tenant-scoped transaction:
-  // a failed bootstrap leaves nothing behind and can simply run again.
+  // The id is chosen here so the tenant row, its members, the project and the token share one tenant-scoped
+  // transaction: a failed bootstrap leaves nothing behind and can simply run again.
   const tenantId = randomUUID()
-  await withTenant(admin, tenantId, async (trx) => {
+  return withTenant(admin, tenantId, async (trx) => {
     // A superuser skips RLS even when it is forced, and the planning service finds keys through RLS alone (its
     // lookups carry no tenant filter), so on the owner connection it would see other tenants' projects. Acting as
-    // the app role for this transaction puts the policies back.
+    // the app role for this transaction puts the policies back. The role stays on for the token too: the app role
+    // has DML on api_tokens, and the insert passes the same tenant policy.
     await sql`set local role ${sql.id(appRole)}`.execute(trx)
     await trx.insertInto('tenants').values({ id: tenantId, name: i.tenant }).execute()
     const [human] = await trx
@@ -93,8 +103,8 @@ export async function bootstrap(
       .returning(['id', 'kind'])
       .execute()
     await createProject({ db: admin, tenantId, actor: human, trx }, { key: i.project, name: i.name })
+    return issueTokenIn(trx, tenantId, i.human, 'human')
   })
-  return issueToken(admin, tenantId, i.human, 'human')
 }
 
 function printToken(issued: { id: string; token: string }): void {
