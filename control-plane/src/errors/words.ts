@@ -58,6 +58,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['openTasks', 'openCriteria', 'noDoneTask'],
   },
+  DR306: {
+    text: 'Phase {phase} is {state}, which does not allow this change.',
+    hint: 'A delivered phase accepts no open work: reopen {phase} first with a reason. An open phase cannot be reopened, and a delivered one cannot be closed again.',
+    httpStatus: 409,
+    keys: ['phase', 'state'],
+  },
   DR501: {
     text: 'Internal error.',
     hint: 'Retry once; if it keeps failing, check the control plane log for the cause.',

@@ -30,6 +30,21 @@ function requireNewKey(exists: unknown, kind: string, key: string): void {
   if (exists) fail('DR101', { path: '/key', reason: `${kind} ${key} already exists` })
 }
 
+// Two calls adding the same key at once both pass requireNewKey; the second then hits the unique index (23505).
+async function insertKeyed<T>(kind: string, key: string, insert: () => Promise<T>): Promise<T> {
+  try {
+    return await insert()
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === '23505') requireNewKey(true, kind, key)
+    throw err
+  }
+}
+
+// A delivered phase accepts no open work; closing it again or reopening an open phase is the same conflict.
+function phaseConflict(phase: { key: string; state: string }): never {
+  return fail('DR306', { phase: phase.key, state: phase.state })
+}
+
 async function record(
   trx: Trx,
   ctx: Ctx,
@@ -139,13 +154,15 @@ async function deliver(trx: Trx, ctx: Ctx, projectId: string, phaseId: string, d
   return record(trx, ctx, { projectId, phaseId, kind: 'deliver_phase', data })
 }
 
-// Delivers an open phase as soon as checkPhaseClose passes, so the cycle closes without a human.
+// Delivers an open phase as soon as checkPhaseClose passes, so the cycle closes without a human. The phase lock makes
+// two last tasks finishing at once deliver exactly once: the second waits, then reads the first's committed state.
 async function deliverIfClosable(trx: Trx, ctx: Ctx, projectKey: string, projectId: string, phaseId: string | null) {
   if (!phaseId) return null
   const phase = await trx
     .selectFrom('phases')
     .select(['key', 'state'])
     .where('id', '=', phaseId)
+    .forNoKeyUpdate()
     .executeTakeFirstOrThrow()
   if (phase.state !== 'open') return null
   try {
@@ -162,11 +179,13 @@ export function createProject(ctx: Ctx, i: { key: string; name: string }): Promi
   return run(ctx, async (trx) => {
     const existing = await trx.selectFrom('projects').select('id').where('key', '=', i.key).executeTakeFirst()
     requireNewKey(existing, 'project', i.key)
-    const { id } = await trx
-      .insertInto('projects')
-      .values({ tenant_id: ctx.tenantId, key: i.key, name: i.name })
-      .returning('id')
-      .executeTakeFirstOrThrow()
+    const { id } = await insertKeyed('project', i.key, () =>
+      trx
+        .insertInto('projects')
+        .values({ tenant_id: ctx.tenantId, key: i.key, name: i.name })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    )
     const eventId = await record(trx, ctx, { projectId: id, kind: 'create_project', data: i })
     return { eventId, projectId: id }
   })
@@ -178,7 +197,7 @@ export function addPhase(
 ): Promise<Mutation> {
   return run(ctx, async (trx) => {
     requirePosition(i.position)
-    const project = await findProject(trx, i.projectKey)
+    const project = await findProject(trx, i.projectKey, { lock: true })
     const existing = await trx
       .selectFrom('phases')
       .select('id')
@@ -187,18 +206,20 @@ export function addPhase(
       .executeTakeFirst()
     requireNewKey(existing, 'phase', i.key)
     const order = await phaseIdsInOrder(trx, project.id)
-    const { id } = await trx
-      .insertInto('phases')
-      .values({
-        tenant_id: ctx.tenantId,
-        project_id: project.id,
-        key: i.key,
-        title: i.title,
-        goal: i.goal,
-        position: order.length + 1,
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow()
+    const { id } = await insertKeyed('phase', i.key, () =>
+      trx
+        .insertInto('phases')
+        .values({
+          tenant_id: ctx.tenantId,
+          project_id: project.id,
+          key: i.key,
+          title: i.title,
+          goal: i.goal,
+          position: order.length + 1,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    )
     await renumberPhases(trx, insertAt(order, id, i.position))
     await insertCriteria(trx, ctx, { taskId: null, phaseId: id }, i.criteria ?? [])
     return { eventId: await record(trx, ctx, { projectId: project.id, phaseId: id, kind: 'add_phase', data: i }) }
@@ -234,7 +255,7 @@ export function movePhase(
   return run(ctx, async (trx) => {
     requireReason(i.reason)
     requirePosition(i.position)
-    const project = await findProject(trx, i.projectKey)
+    const project = await findProject(trx, i.projectKey, { lock: true })
     const phase = await findPhase(trx, project.id, i.phaseKey)
     const others = await phaseIdsInOrder(trx, project.id, phase.id)
     await renumberPhases(trx, insertAt(others, phase.id, i.position))
@@ -253,7 +274,7 @@ type PhaseDependency = { projectKey: string; phaseKey: string; blockedByKey: str
 
 export function addPhaseDependency(ctx: Ctx, i: PhaseDependency): Promise<Mutation> {
   return run(ctx, async (trx) => {
-    const project = await findProject(trx, i.projectKey)
+    const project = await findProject(trx, i.projectKey, { lock: true })
     const phase = await findPhase(trx, project.id, i.phaseKey)
     const blocker = await findPhase(trx, project.id, i.blockedByKey)
     const edges = await trx
@@ -311,9 +332,8 @@ export function removePhaseDependency(ctx: Ctx, i: PhaseDependency): Promise<Mut
 export function closePhase(ctx: Ctx, i: { projectKey: string; phaseKey: string }): Promise<Mutation> {
   return run(ctx, async (trx) => {
     const project = await findProject(trx, i.projectKey)
-    const phase = await findPhase(trx, project.id, i.phaseKey)
-    if (phase.state === 'delivered')
-      fail('DR101', { path: '/phaseKey', reason: `phase ${phase.key} is already delivered` })
+    const phase = await findPhase(trx, project.id, i.phaseKey, { lock: 'update' })
+    if (phase.state === 'delivered') phaseConflict(phase)
     checkPhaseClose(await closeState(trx, phase.id))
     return { eventId: await deliver(trx, ctx, project.id, phase.id, i) }
   })
@@ -323,8 +343,8 @@ export function reopenPhase(ctx: Ctx, i: { projectKey: string; phaseKey: string;
   return run(ctx, async (trx) => {
     requireReason(i.reason)
     const project = await findProject(trx, i.projectKey)
-    const phase = await findPhase(trx, project.id, i.phaseKey)
-    if (phase.state !== 'delivered') fail('DR101', { path: '/phaseKey', reason: `phase ${phase.key} is not delivered` })
+    const phase = await findPhase(trx, project.id, i.phaseKey, { lock: 'update' })
+    if (phase.state !== 'delivered') phaseConflict(phase)
     await trx
       .updateTable('phases')
       .set({ state: 'open', delivered_at: null, delivered_by: null })
@@ -365,27 +385,30 @@ export function addTask(
       .where('key', '=', i.key)
       .executeTakeFirst()
     requireNewKey(existing, 'task', i.key)
-    const phase = i.phaseKey === undefined ? null : await findPhase(trx, project.id, i.phaseKey)
+    const phase = i.phaseKey === undefined ? null : await findPhase(trx, project.id, i.phaseKey, { lock: 'share' })
+    if (phase?.state === 'delivered') phaseConflict(phase)
     const parent = i.parentKey === undefined ? null : await findTask(trx, project.id, i.parentKey)
     const assignee = i.assigneeName === undefined ? null : await findMember(trx, i.assigneeName)
     const blockers = []
     for (const key of new Set(i.blockedBy ?? [])) blockers.push(await findTask(trx, project.id, key))
     // A new task has no dependents yet, so its own blockers can never close a cycle.
-    const { id } = await trx
-      .insertInto('tasks')
-      .values({
-        tenant_id: ctx.tenantId,
-        project_id: project.id,
-        phase_id: phase?.id ?? null,
-        parent_id: parent?.id ?? null,
-        key: i.key,
-        title: i.title,
-        description: i.description ?? '',
-        assignee_id: assignee?.id ?? null,
-        estimate_hours: i.estimateHours ?? null,
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow()
+    const { id } = await insertKeyed('task', i.key, () =>
+      trx
+        .insertInto('tasks')
+        .values({
+          tenant_id: ctx.tenantId,
+          project_id: project.id,
+          phase_id: phase?.id ?? null,
+          parent_id: parent?.id ?? null,
+          key: i.key,
+          title: i.title,
+          description: i.description ?? '',
+          assignee_id: assignee?.id ?? null,
+          estimate_hours: i.estimateHours ?? null,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    )
     await insertCriteria(trx, ctx, { taskId: id, phaseId: null }, i.criteria ?? [])
     if (blockers.length > 0) {
       await trx
@@ -421,7 +444,8 @@ export function editTask(
   return run(ctx, async (trx) => {
     requireReason(i.reason)
     const project = await findProject(trx, i.projectKey)
-    const task = await findTask(trx, project.id, i.taskKey)
+    // Task before phase (the lock order); the target phase is locked for share like in addTask.
+    const task = await findTask(trx, project.id, i.taskKey, { lock: true })
     const changes: {
       title?: string
       description?: string
@@ -431,7 +455,12 @@ export function editTask(
     } = {}
     if (i.title !== undefined) changes.title = i.title
     if (i.description !== undefined) changes.description = i.description
-    if (i.phaseKey !== undefined) changes.phase_id = i.phaseKey && (await findPhase(trx, project.id, i.phaseKey)).id
+    if (typeof i.phaseKey === 'string') {
+      const phase = await findPhase(trx, project.id, i.phaseKey, { lock: 'share' })
+      if (phase.state === 'delivered' && isBlockerOpen(task.state)) phaseConflict(phase)
+      changes.phase_id = phase.id
+    }
+    if (i.phaseKey === null) changes.phase_id = null
     if (i.assigneeName !== undefined) changes.assignee_id = i.assigneeName && (await findMember(trx, i.assigneeName)).id
     if (i.estimateHours !== undefined) changes.estimate_hours = i.estimateHours
     if (Object.keys(changes).length > 0) await trx.updateTable('tasks').set(changes).where('id', '=', task.id).execute()
@@ -450,7 +479,7 @@ type TaskDependency = { projectKey: string; taskKey: string; blockedByKey: strin
 
 export function addDependency(ctx: Ctx, i: TaskDependency): Promise<Mutation> {
   return run(ctx, async (trx) => {
-    const project = await findProject(trx, i.projectKey)
+    const project = await findProject(trx, i.projectKey, { lock: true })
     const task = await findTask(trx, project.id, i.taskKey)
     const blocker = await findTask(trx, project.id, i.blockedByKey)
     const edges = await trx
@@ -512,6 +541,15 @@ export function transition(
     const project = await findProject(trx, i.projectKey)
     // Row lock: of two concurrent moves the second waits, then sees the new state and fails DR301.
     const task = await findTask(trx, project.id, i.taskKey, { lock: true })
+    // Phase lock (after the task): a reopen cannot slip past a concurrent delivery of the same phase.
+    const phase = task.phase_id
+      ? await trx
+          .selectFrom('phases')
+          .select(['key', 'state'])
+          .where('id', '=', task.phase_id)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow()
+      : null
     const blockers = await trx
       .selectFrom('task_dependencies as d')
       .innerJoin('tasks as b', 'b.id', 'd.blocked_by_task_id')
@@ -544,6 +582,7 @@ export function transition(
       blockingPhasesOpen: blockingPhases.map((p) => p.key),
       reason: i.reason,
     })
+    if (phase?.state === 'delivered' && isBlockerOpen(i.to)) phaseConflict(phase)
     // started_at keeps the first start; finished_at is set on done/cancelled and cleared on any move out of them.
     const finished = i.to === 'done' || i.to === 'cancelled'
     await trx
@@ -572,7 +611,8 @@ export function transition(
 export function addCriterion(ctx: Ctx, i: Target & { text: string }): Promise<Mutation> {
   return run(ctx, async (trx) => {
     const project = await findProject(trx, i.projectKey)
-    const target = await findTarget(trx, project.id, i)
+    // Owner lock: two concurrent adds would otherwise read the same max(position).
+    const target = await findTarget(trx, project.id, i, { lock: true })
     await insertCriteria(trx, ctx, target, [i.text])
     const eventId = await record(trx, ctx, {
       projectId: project.id,

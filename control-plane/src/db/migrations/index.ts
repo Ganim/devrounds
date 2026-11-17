@@ -1,5 +1,6 @@
 import type { Migration } from 'kysely/migration'
 import { core } from './0001_core.ts'
+import { criteriaPosition } from './0002_criteria_position.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -8,5 +9,6 @@ export type MigrationOptions = { appRole: string }
 export function migrations(options: MigrationOptions): Record<string, Migration> {
   return {
     '0001_core': core(options),
+    '0002_criteria_position': criteriaPosition,
   }
 }

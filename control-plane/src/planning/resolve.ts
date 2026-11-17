@@ -20,19 +20,30 @@ export function run<T>(ctx: Ctx, fn: (trx: Trx) => Promise<T>): Promise<T> {
 // Keys resolve inside the given project (and RLS keeps it inside the tenant), so a phase, parent or blocker of another
 // project is "not found" by construction; the schema alone only guarantees the same tenant.
 
-export async function findProject(trx: Trx, key: string) {
-  const row = await trx.selectFrom('projects').select(['id', 'key', 'name']).where('key', '=', key).executeTakeFirst()
-  return row ?? fail('DR201', { kind: 'project', key })
+// Row locks, always taken in the order project → task → phase so concurrent mutations cannot deadlock:
+// - project `for no key update`: serializes the mutations that read a whole-project graph (dependency edges, phase
+//   positions) before writing; two opposite edges added at once would otherwise both pass the cycle check.
+// - task `for no key update`: serializes moves of one task and criterion positions on it.
+// - phase `for no key update` (deciding delivery, positions) or `for share` (adding open work): delivery and new open
+//   work in the same phase cannot interleave.
+// `no key update` instead of `update` because FK inserts take `key share` on the parent, which `update` would block.
+export type Lock = 'update' | 'share'
+
+export async function findProject(trx: Trx, key: string, opts: { lock?: boolean } = {}) {
+  let query = trx.selectFrom('projects').select(['id', 'key', 'name']).where('key', '=', key)
+  if (opts.lock) query = query.forNoKeyUpdate()
+  return (await query.executeTakeFirst()) ?? fail('DR201', { kind: 'project', key })
 }
 
-export async function findPhase(trx: Trx, projectId: string, key: string) {
-  const row = await trx
+export async function findPhase(trx: Trx, projectId: string, key: string, opts: { lock?: Lock } = {}) {
+  let query = trx
     .selectFrom('phases')
     .select(['id', 'key', 'state'])
     .where('project_id', '=', projectId)
     .where('key', '=', key)
-    .executeTakeFirst()
-  return row ?? fail('DR201', { kind: 'phase', key })
+  if (opts.lock === 'update') query = query.forNoKeyUpdate()
+  if (opts.lock === 'share') query = query.forShare()
+  return (await query.executeTakeFirst()) ?? fail('DR201', { kind: 'phase', key })
 }
 
 export async function findTask(trx: Trx, projectId: string, key: string, opts: { lock?: boolean } = {}) {
@@ -41,7 +52,7 @@ export async function findTask(trx: Trx, projectId: string, key: string, opts: {
     .select(['id', 'key', 'state', 'phase_id'])
     .where('project_id', '=', projectId)
     .where('key', '=', key)
-  if (opts.lock) query = query.forUpdate()
+  if (opts.lock) query = query.forNoKeyUpdate()
   return (await query.executeTakeFirst()) ?? fail('DR201', { kind: 'task', key })
 }
 
@@ -51,15 +62,16 @@ export async function findMember(trx: Trx, name: string) {
 }
 
 // `phaseToCheck` is the phase whose delivery may change when something on this target changes.
-export async function findTarget(trx: Trx, projectId: string, i: Target) {
+// `lock` takes the owner row (task or phase) for no key update, e.g. before computing the next criterion position.
+export async function findTarget(trx: Trx, projectId: string, i: Target, opts: { lock?: boolean } = {}) {
   if ((i.taskKey === undefined) === (i.phaseKey === undefined)) {
     fail('DR101', { path: '/', reason: 'give exactly one of taskKey or phaseKey' })
   }
   if (i.taskKey !== undefined) {
-    const task = await findTask(trx, projectId, i.taskKey)
+    const task = await findTask(trx, projectId, i.taskKey, opts)
     return { taskId: task.id, phaseId: null, label: task.key, phaseToCheck: task.phase_id }
   }
-  const phase = await findPhase(trx, projectId, i.phaseKey as string)
+  const phase = await findPhase(trx, projectId, i.phaseKey as string, opts.lock ? { lock: 'update' } : {})
   return { taskId: null, phaseId: phase.id, label: phase.key, phaseToCheck: phase.id }
 }
 

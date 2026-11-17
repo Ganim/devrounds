@@ -211,7 +211,8 @@ export function getPlan(ctx: Ctx, projectKey: string): Promise<PlanView> {
   })
 }
 
-export function listEvents(
+// async so input errors arrive as rejected promises, like every other failure here.
+export async function listEvents(
   ctx: Ctx,
   projectKey: string,
   opts: { afterId?: string; limit: number },

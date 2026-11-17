@@ -1,6 +1,6 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts. pg returns int8 and numeric as strings, so those stay strings here.
+// Mirrors migrations/0001_core.ts (0002 only adds indexes). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.

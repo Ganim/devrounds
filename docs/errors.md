@@ -74,6 +74,14 @@ The phase cannot close: {openTasks} open tasks, {openCriteria} open criteria, no
 
 Finish or cancel the open tasks, check off the criteria, and make sure at least one task is done.
 
+## DR306
+
+Phase {phase} is {state}, which does not allow this change.
+
+### Fix
+
+A delivered phase accepts no open work: reopen {phase} first with a reason. An open phase cannot be reopened, and a delivered one cannot be closed again.
+
 ## DR501
 
 Internal error.

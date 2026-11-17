@@ -129,49 +129,215 @@ test('dependency closing a cycle → DR103, nothing written', async () => {
   assert.deepEqual(plan.phases.find((p) => p.key === 'P0')?.blockedBy, [])
 })
 
-test('concurrent start: one ok, one DR301', async () => {
-  const { ctx } = await setup()
+// Runs `first` in a transaction that stays open until `second` waits on a lock of the `table` rows (or 5 s pass),
+// then commits it. So `second` always runs against the uncommitted first change: without the lock under test it
+// would read the old state and both would succeed. Returns 'ok' or the error code of each.
+async function race(
+  ctx: Ctx,
+  table: string,
+  first: (inner: Ctx) => Promise<unknown>,
+  second: () => Promise<unknown>,
+): Promise<string[]> {
   const { admin } = await testDb()
-  await addTask(ctx, { projectKey, key: 'P0-T01', title: 'Race' })
-  const start = { projectKey, taskKey: 'P0-T01', to: 'in_progress' as const }
   const outcome = (promise: Promise<unknown>) =>
     promise.then(
       () => 'ok',
       (err: unknown) => (err instanceof DevRoundsError ? err.code : String(err)),
     )
-
-  // The first start keeps its transaction open until the second is waiting on the task row, so the second always
-  // runs against an uncommitted move; without the row lock it would read `todo` and both would succeed.
-  let moved!: () => void
+  let done!: () => void
   let commit!: () => void
-  const firstMoved = new Promise<void>((resolve) => {
-    moved = resolve
+  const firstDone = new Promise<void>((resolve) => {
+    done = resolve
   })
   const held = new Promise<void>((resolve) => {
     commit = resolve
   })
-  const first = outcome(
+  const a = outcome(
     withTenant(ctx.db, ctx.tenantId, async (trx) => {
-      await transition({ ...ctx, trx }, start)
-      moved()
+      try {
+        await first({ ...ctx, trx })
+      } finally {
+        done()
+      }
       await held
     }),
   )
-  await firstMoved
-  const second = outcome(transition(ctx, start))
+  await firstDone
+  const b = outcome(second())
   for (let waited = 0; waited < 5000; waited += 20) {
     const { rows } = await sql<{ n: number }>`
       select count(*)::int as n from pg_stat_activity
-      where wait_event_type = 'Lock' and query like '%"tasks"%'`.execute(admin)
+      where wait_event_type = 'Lock' and query like ${`%"${table}"%`}`.execute(admin)
     if (rows[0].n > 0) break
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
   commit()
-  const results = await Promise.all([first, second])
+  return Promise.all([a, b])
+}
+
+test('concurrent start: one ok, one DR301', async () => {
+  const { ctx } = await setup()
+  await addTask(ctx, { projectKey, key: 'P0-T01', title: 'Race' })
+  const start = { projectKey, taskKey: 'P0-T01', to: 'in_progress' as const }
+
+  const results = await race(
+    ctx,
+    'tasks',
+    (inner) => transition(inner, start),
+    () => transition(ctx, start),
+  )
 
   assert.deepEqual(results, ['ok', 'DR301'])
   const [task] = (await getPlan(ctx, projectKey)).unphased
   assert.deepEqual([task.state, task.version], ['in_progress', 1])
+})
+
+test('concurrent opposite dependencies: one ok, one DR103, no cycle stored', async () => {
+  const { ctx } = await setup()
+  await addTask(ctx, { projectKey, key: 'P0-T01', title: 'A' })
+  await addTask(ctx, { projectKey, key: 'P0-T02', title: 'B' })
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'A', goal: '' })
+  await addPhase(ctx, { projectKey, key: 'P1', title: 'B', goal: '' })
+
+  const tasks = await race(
+    ctx,
+    'projects',
+    (inner) => addDependency(inner, { projectKey, taskKey: 'P0-T01', blockedByKey: 'P0-T02' }),
+    () => addDependency(ctx, { projectKey, taskKey: 'P0-T02', blockedByKey: 'P0-T01' }),
+  )
+  const phases = await race(
+    ctx,
+    'projects',
+    (inner) => addPhaseDependency(inner, { projectKey, phaseKey: 'P0', blockedByKey: 'P1' }),
+    () => addPhaseDependency(ctx, { projectKey, phaseKey: 'P1', blockedByKey: 'P0' }),
+  )
+
+  assert.deepEqual(
+    [tasks, phases],
+    [
+      ['ok', 'DR103'],
+      ['ok', 'DR103'],
+    ],
+  )
+  const plan = await getPlan(ctx, projectKey)
+  assert.deepEqual(
+    plan.unphased.map((t) => [t.key, t.blockedBy]),
+    [
+      ['P0-T01', ['P0-T02']],
+      ['P0-T02', []],
+    ],
+  )
+  assert.deepEqual(
+    plan.phases.map((p) => [p.key, p.blockedBy]),
+    [
+      ['P0', ['P1']],
+      ['P1', []],
+    ],
+  )
+})
+
+test('two last tasks done concurrently deliver the phase exactly once', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  for (const key of ['P0-T01', 'P0-T02']) {
+    await addTask(ctx, { projectKey, phaseKey: 'P0', key, title: key })
+    await transition(ctx, { projectKey, taskKey: key, to: 'in_progress' })
+  }
+
+  const results = await race(
+    ctx,
+    'phases',
+    (inner) => transition(inner, { projectKey, taskKey: 'P0-T01', to: 'done' }),
+    () => transition(ctx, { projectKey, taskKey: 'P0-T02', to: 'done' }),
+  )
+
+  assert.deepEqual(results, ['ok', 'ok'])
+  assert.equal((await getPlan(ctx, projectKey)).phases[0].state, 'delivered')
+  assert.equal((await events(ctx)).filter((e) => e.kind === 'deliver_phase').length, 1)
+})
+
+test('closePhase racing automatic delivery: delivered once, the close gets DR306', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T01', title: 'A' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress' })
+
+  const results = await race(
+    ctx,
+    'phases',
+    (inner) => transition(inner, { projectKey, taskKey: 'P0-T01', to: 'done' }),
+    () => closePhase(ctx, { projectKey, phaseKey: 'P0' }),
+  )
+
+  assert.deepEqual(results, ['ok', 'DR306'])
+  assert.equal((await events(ctx)).filter((e) => e.kind === 'deliver_phase').length, 1)
+})
+
+test('concurrent criteria on one task get distinct positions', async () => {
+  const { ctx } = await setup()
+  await addTask(ctx, { projectKey, key: 'P0-T01', title: 'A' })
+
+  const results = await race(
+    ctx,
+    'tasks',
+    (inner) => addCriterion(inner, { projectKey, taskKey: 'P0-T01', text: 'first' }),
+    () => addCriterion(ctx, { projectKey, taskKey: 'P0-T01', text: 'second' }),
+  )
+
+  assert.deepEqual(results, ['ok', 'ok'])
+  const [task] = (await getPlan(ctx, projectKey)).unphased
+  assert.deepEqual(
+    task.criteria.map((c) => [c.position, c.text]),
+    [
+      [1, 'first'],
+      [2, 'second'],
+    ],
+  )
+})
+
+test('concurrent tasks with the same key: one ok, one DR101 on /key', async () => {
+  const { ctx } = await setup()
+
+  const results = await race(
+    ctx,
+    'tasks',
+    (inner) => addTask(inner, { projectKey, key: 'P0-T01', title: 'A' }),
+    () => addTask(ctx, { projectKey, key: 'P0-T01', title: 'B' }),
+  )
+
+  assert.deepEqual(results, ['ok', 'DR101'])
+})
+
+test('a delivered phase accepts no open work → DR306', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  await addPhase(ctx, { projectKey, key: 'P1', title: 'Next', goal: '' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T01', title: 'A' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T02', title: 'B' })
+  await addTask(ctx, { projectKey, phaseKey: 'P1', key: 'P1-T01', title: 'C' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'done' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T02', to: 'cancelled', reason: 'dropped' })
+  assert.equal((await getPlan(ctx, projectKey)).phases[0].state, 'delivered')
+  const before = (await events(ctx)).length
+
+  await rejectsWith(addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T03', title: 'late' }), 'DR306')
+  await rejectsWith(transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress', reason: 'bug' }), 'DR306')
+  await rejectsWith(transition(ctx, { projectKey, taskKey: 'P0-T02', to: 'todo', reason: 'back' }), 'DR306')
+  await rejectsWith(editTask(ctx, { projectKey, taskKey: 'P1-T01', phaseKey: 'P0', reason: 'move' }), 'DR306')
+  await rejectsWith(closePhase(ctx, { projectKey, phaseKey: 'P0' }), 'DR306')
+  await rejectsWith(reopenPhase(ctx, { projectKey, phaseKey: 'P1', reason: 'x' }), 'DR306')
+  assert.equal((await events(ctx)).length, before)
+
+  await reopenPhase(ctx, { projectKey, phaseKey: 'P0', reason: 'regression' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress', reason: 'bug' })
+})
+
+test('listEvents rejects bad input as a promise', async () => {
+  const { ctx } = await setup()
+
+  await rejectsWith(listEvents(ctx, projectKey, { limit: 0 }), 'DR101')
+  await rejectsWith(listEvents(ctx, projectKey, { afterId: 'x', limit: 10 }), 'DR101')
 })
 
 test('cancel without reason → DR104', async () => {
