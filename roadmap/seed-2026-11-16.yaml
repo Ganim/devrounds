@@ -1,0 +1,372 @@
+# DevRounds roadmap seed (16/11): phases P0-P7 from the foundation spec §9. Loaded once with `devrounds plan import`;
+# from then on the roadmap in DevRounds is the source of truth and roadmap/snapshot.yaml is its latest export.
+# Evidence SHAs are quoted so YAML keeps them as strings.
+project:
+  key: devrounds
+  name: DevRounds
+phases:
+  - key: P0
+    title: Manifesto and project planning
+    goal: >-
+      The control plane holds DevRounds's own roadmap (tenant, project, phases, tasks, criteria, history, balance) and
+      agents and Guilherme work from it through the API, the agent CLI and the roadmap view.
+    criteria:
+      - Control plane runs as the DevRounds scheduled task and comes back after its server or supervisor is killed
+      - DevRounds's roadmap P0-P7 is seeded and shown at devrounds.clickmax.localhost
+    tasks:
+      - key: P0-T01
+        title: Repo, manifesto, workspace and guards
+        assignee: claude
+        state: done
+        criteria:
+          - text: control-plane/src has no synchronous child-process or fs calls
+            evidence: "commit:ba4cee5225521ff3e4f9f59b45dd5d66e621db53"
+          - text: every ALLOWED entry still contains a synchronous call
+            evidence: "commit:ba4cee5225521ff3e4f9f59b45dd5d66e621db53"
+          - text: no inline lint suppressions anywhere in the repo
+            evidence: "commit:ba4cee5225521ff3e4f9f59b45dd5d66e621db53"
+      - key: P0-T02
+        title: Error codes and words layer
+        assignee: claude
+        state: done
+        blocked_by: [P0-T01]
+        criteria:
+          - text: every code emitted in source has words, and every code in words is emitted somewhere
+            evidence: "commit:cae83341c1ed58bc8ab1f50b7d00df6c8c5a3b00"
+          - text: exit code follows the range table
+            evidence: "commit:cae83341c1ed58bc8ab1f50b7d00df6c8c5a3b00"
+          - text: docs/errors.md is current
+            evidence: "commit:cae83341c1ed58bc8ab1f50b7d00df6c8c5a3b00"
+      - key: P0-T03
+        title: Schema, migrations, tenant scope and RLS
+        assignee: claude
+        state: done
+        blocked_by: [P0-T02]
+        criteria:
+          - text: rows of another tenant are invisible
+            evidence: "commit:7c04430c5d8362cc6d2c19b4f163d1b0fdb36b49"
+          - text: the app role cannot bypass RLS
+            evidence: "commit:7c04430c5d8362cc6d2c19b4f163d1b0fdb36b49"
+          - text: every public table has forced RLS and a tenant policy
+            evidence: "commit:7c04430c5d8362cc6d2c19b4f163d1b0fdb36b49"
+      - key: P0-T04
+        title: Planning rules
+        assignee: claude
+        state: done
+        blocked_by: [P0-T02]
+        criteria:
+          - text: "order: DR301, then DR104, then DR302, DR304, DR303"
+            evidence: "commit:7a76b659af0244827cc341b7655faef100173a94"
+          - text: closing a loop is a cycle, a shortcut is not
+            evidence: "commit:7a76b659af0244827cc341b7655faef100173a94"
+          - text: counts and percent exclude cancelled
+            evidence: "commit:7a76b659af0244827cc341b7655faef100173a94"
+      - key: P0-T05
+        title: Planning service, editing and plan history
+        assignee: claude
+        state: done
+        blocked_by: [P0-T03, P0-T04]
+        criteria:
+          - text: "concurrent start: one ok, one DR301"
+            evidence: "commit:dd040ffca0747bb9435242c4563ec6283a5b9efe"
+          - text: dependency closing a cycle → DR103, nothing written
+            evidence: "commit:dd040ffca0747bb9435242c4563ec6283a5b9efe"
+          - text: every mutation writes exactly one event (plus deliver_phase when it delivers)
+            evidence: "commit:dd040ffca0747bb9435242c4563ec6283a5b9efe"
+      - key: P0-T06
+        title: Balance
+        assignee: claude
+        state: done
+        blocked_by: [P0-T05]
+        criteria:
+          - text: interval across local midnight splits
+            evidence: "commit:ad9a8f79a39825cec69219235fb08ed48cdfa7af"
+          - text: week rows start on Monday
+            evidence: "commit:ad9a8f79a39825cec69219235fb08ed48cdfa7af"
+      - key: P0-T07
+        title: Seed import and export
+        assignee: claude
+        state: done
+        blocked_by: [P0-T05]
+        criteria:
+          - text: "second import of same file: no change, no events"
+            evidence: "commit:2262b7ab80e0916b60905f733028a73f6d5609f0"
+          - text: cycle in file → DR103 and nothing written
+            evidence: "commit:2262b7ab80e0916b60905f733028a73f6d5609f0"
+          - text: export then import is a no-op
+            evidence: "commit:2262b7ab80e0916b60905f733028a73f6d5609f0"
+      - key: P0-T08
+        title: Tokens and HTTP API
+        assignee: claude
+        state: done
+        blocked_by: [P0-T05, P0-T06, P0-T07]
+        criteria:
+          - text: no token, an unknown token and a revoked token all get 401 DR401
+            evidence: "commit:93085210e4f5b5269a8b934f6777310706229fb4"
+          - text: project key existing only in another tenant answers 404 DR201
+            evidence: "commit:93085210e4f5b5269a8b934f6777310706229fb4"
+          - text: same Idempotency-Key twice runs once, also when the two arrive together
+            evidence: "commit:93085210e4f5b5269a8b934f6777310706229fb4"
+      - key: P0-T09
+        title: Agent CLI
+        assignee: claude
+        state: done
+        blocked_by: [P0-T08]
+        criteria:
+          - text: body cut on a whole line at 16384 bytes with the exact more command
+            evidence: "commit:ad4be72a83ead6919a1cb8ec2eb8f97b4a5d72a6"
+          - text: exit code 3 for a project of another tenant
+            evidence: "commit:ad4be72a83ead6919a1cb8ec2eb8f97b4a5d72a6"
+          - text: every devrounds command quoted in AGENTS.md parses
+            evidence: "commit:ad4be72a83ead6919a1cb8ec2eb8f97b4a5d72a6"
+      - key: P0-T10
+        title: Roadmap web view
+        assignee: claude
+        state: done
+        blocked_by: [P0-T08]
+        criteria:
+          - text: segments widths sum to 100 and skip zero counts
+            evidence: "commit:a51a6b599f717aa3792b16151e827b69938689a8"
+          - text: Roadmap, phase, balance and history views reviewed with screenshots
+            evidence: "commit:a51a6b599f717aa3792b16151e827b69938689a8"
+      - key: P0-T11
+        title: Run it as a service, seed DevRounds's roadmap, hand over
+        assignee: claude
+        blocked_by: [P0-T09, P0-T10]
+        criteria:
+          - restart delay doubles from 1 s to 30 s and starts over after 5 min up
+          - Killing serve brings /api/health back within 35 s; killing the supervisor brings it back within 5 min
+          - plan show after the import shows P0 at 91% (10/11) and next devrounds task start P0-T11
+
+  - key: P1
+    title: Foundation
+    goal: Executor, protocol, queues and jobs run locally beside cx-env, within their own footprint budgets.
+    blocked_by: [P0]
+    criteria:
+      - Executor stays at or under 50 MB private bytes idle
+      - Control plane stays at or under 300 MB private bytes idle
+      - A job runs end to end on the executor with every spawn hidden and supervised
+    tasks:
+      - key: P1-T01
+        title: Confirm spec §11 decisions and the P1 design
+      - key: P1-T02
+        title: Build-vs-adopt spike (spec §14)
+        blocked_by: [P1-T01]
+      - key: P1-T03
+        title: Rust executor skeleton with core traits
+        blocked_by: [P1-T02]
+      - key: P1-T04
+        title: Job Object supervision
+        blocked_by: [P1-T03]
+      - key: P1-T05
+        title: Every spawn hidden (no console window, ConPTY/PTY)
+        blocked_by: [P1-T03]
+      - key: P1-T06
+        title: Memory start-gate and AIMD
+        blocked_by: [P1-T03]
+      - key: P1-T07
+        title: Protocol Hello, features and seq
+        blocked_by: [P1-T03]
+      - key: P1-T08
+        title: Queues, jobs, runs and learned_needs keyed by (project, job type, machine)
+        blocked_by: [P1-T02]
+      - key: P1-T09
+        title: Log segments
+        blocked_by: [P1-T08]
+      - key: P1-T10
+        title: Machine pairing
+        blocked_by: [P1-T07]
+      - key: P1-T11
+        title: Orphans
+        blocked_by: [P1-T04, P1-T08]
+      - key: P1-T12
+        title: isolation/none
+        blocked_by: [P1-T03]
+      - key: P1-T13
+        title: Idempotency and outbox
+        blocked_by: [P1-T08]
+      - key: P1-T14
+        title: OpenTelemetry
+        blocked_by: [P1-T03]
+      - key: P1-T15
+        title: Minimal operational view (jobs, runs, logs, machines)
+        blocked_by: [P1-T08, P1-T09, P1-T10]
+      - key: P1-T16
+        title: Session login with Better Auth
+        blocked_by: [P1-T02]
+      - key: P1-T17
+        title: Footprint by private bytes
+        blocked_by: [P1-T03]
+      - key: P1-T18
+        title: Resource and queue-time indicators (spec §13)
+        blocked_by: [P1-T08, P1-T17]
+
+  - key: P2
+    title: Gates on DevRounds
+    goal: The Clickmax pre-PR gates run on DevRounds instead of cx-env.
+    blocked_by: [P1]
+    criteria:
+      - >-
+        Gates for the Clickmax monorepo run on DevRounds instead of cx-env, end to end, on Guilherme's machine, with no
+        run killed by memory pressure and no regression in wall time
+      - >-
+        The data model and APIs are tenant-scoped and machine-agnostic, so a second machine or a second account is
+        configuration, not a redesign
+      - >-
+        cx-env keeps running everything else for Clickmax during the migration, and each migrated process is switched
+        off in cx-env only after it is green on DevRounds
+    tasks:
+      - key: P2-T01
+        title: Gate job types mirroring the /ship pre-flight
+      - key: P2-T02
+        title: depends_on DAG
+        blocked_by: [P2-T01]
+      - key: P2-T03
+        title: Per-worktree lock
+        blocked_by: [P2-T01]
+      - key: P2-T04
+        title: Replay comparison of 10 gates
+        blocked_by: [P2-T02, P2-T03]
+      - key: P2-T05
+        title: /ship switch and fallback
+        blocked_by: [P2-T04]
+      - key: P2-T06
+        title: Wall time at or under baseline +10%
+        blocked_by: [P2-T04]
+      - key: P2-T07
+        title: Gate result cache by input hash
+        blocked_by: [P2-T01]
+      - key: P2-T08
+        title: Learned needs for heavy checks
+        blocked_by: [P2-T01]
+      - key: P2-T09
+        title: Shared package store and build cache
+        blocked_by: [P2-T01]
+      - key: P2-T10
+        title: Success and failure-class indicators
+        blocked_by: [P2-T01]
+      - key: P2-T11
+        title: DevRounds's own gates
+        blocked_by: [P2-T01]
+
+  - key: P3
+    title: Project conventions
+    goal: DevRounds reads a codebase, records its conventions with evidence and checks them as a gate.
+    blocked_by: [P2]
+    criteria:
+      - The conventions gate runs on Clickmax and on DevRounds
+      - Rule changes in generated docs reach the repo only after human approval
+    tasks:
+      - key: P3-T01
+        title: Conventions extraction with evidence
+      - key: P3-T02
+        title: Generated README and AGENTS docs with human approval of rule changes
+        blocked_by: [P3-T01]
+      - key: P3-T03
+        title: conventions gate
+        blocked_by: [P3-T01]
+      - key: P3-T04
+        title: Conventions on Clickmax and DevRounds
+        blocked_by: [P3-T02, P3-T03]
+
+  - key: P4
+    title: Agent runs and flows
+    goal: Headless agent runs, browsers and the task-to-pr flow run on DevRounds with credentials from the vault.
+    blocked_by: [P3]
+    criteria:
+      - /work and /ship run as DevRounds job types, and task-to-pr opens a PR end to end
+      - Credentials reach integrations only through the vault
+    tasks:
+      - key: P4-T01
+        title: Secrets vault
+      - key: P4-T02
+        title: Integration hub per machine (MCP; credentials from the vault; Linear, GitHub, browsers, Sentry)
+        blocked_by: [P4-T01]
+      - key: P4-T03
+        title: /work and /ship as job types
+        blocked_by: [P4-T02]
+      - key: P4-T04
+        title: Browser engine spike
+      - key: P4-T05
+        title: browser/playwright provider
+        blocked_by: [P4-T04]
+      - key: P4-T06
+        title: visual gate
+        blocked_by: [P4-T05]
+      - key: P4-T07
+        title: Artifact gallery
+        blocked_by: [P4-T06]
+      - key: P4-T08
+        title: Terminal sessions on the cx-env model
+        description: >-
+          Hidden by default, cockpit-style report, answers and instructions from the page, child terminals, opt-in
+          visible tab, idle sessions frozen after 15 min and parked later, gain measured.
+        blocked_by: [P4-T03]
+      - key: P4-T09
+        title: Shared browser pool
+        blocked_by: [P4-T05]
+      - key: P4-T10
+        title: task-to-pr
+        blocked_by: [P4-T03]
+      - key: P4-T11
+        title: GitHub App and webhooks
+        blocked_by: [P4-T02]
+      - key: P4-T12
+        title: environments/devlanes
+      - key: P4-T13
+        title: Executor hand-over on upgrade
+
+  - key: P5
+    title: Interface
+    goal: The web UI shows operations live and edits visual flows.
+    blocked_by: [P4]
+    criteria:
+      - The operational view updates live over SSE, replacing the 10 s polling
+      - A flow built in the visual editor runs
+    tasks:
+      - key: P5-T01
+        title: Full operational view
+      - key: P5-T02
+        title: SSE live UI
+      - key: P5-T03
+        title: Visual flows
+      - key: P5-T04
+        title: Node catalog
+        blocked_by: [P5-T03]
+      - key: P5-T05
+        title: messaging with Slack
+
+  - key: P6
+    title: Cloud and second tenant
+    goal: The control plane runs in the cloud and a second tenant works beside Guilherme's.
+    blocked_by: [P5]
+    criteria:
+      - A second tenant runs jobs on the cloud control plane without seeing the first tenant's data
+    tasks:
+      - key: P6-T01
+        title: Cloud control plane
+      - key: P6-T02
+        title: Compute providers beyond local
+        blocked_by: [P6-T01]
+      - key: P6-T03
+        title: isolation/container
+      - key: P6-T04
+        title: Second tenant
+        blocked_by: [P6-T01]
+
+  - key: P7
+    title: Blueprints and code node
+    goal: Projects start from blueprints and pre-built modules, and flows run code nodes.
+    blocked_by: [P6]
+    criteria:
+      - A new project starts from a blueprint with the login module
+    tasks:
+      - key: P7-T01
+        title: Blueprints
+      - key: P7-T02
+        title: Pre-built modules (login first)
+        blocked_by: [P7-T01]
+      - key: P7-T03
+        title: Code node
+      - key: P7-T04
+        title: Code viewer editor provider

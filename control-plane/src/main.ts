@@ -17,6 +17,9 @@ async function serve(): Promise<void> {
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
+  // Only under the supervisor (it spawns serve with an IPC channel): when the supervisor dies, the channel closes and
+  // serve stops too, so the next supervisor finds the port free instead of an orphan holding it.
+  process.once('disconnect', stop)
   await app.listen({ host: '127.0.0.1', port: config.port })
 }
 

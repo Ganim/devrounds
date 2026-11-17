@@ -9,3 +9,13 @@ pnpm test
 pnpm typecheck
 pnpm lint
 ```
+
+Run the control plane on this machine (Windows):
+
+```
+devrounds-admin init               # ~/.devrounds/server.json
+devrounds-admin migrate
+devrounds-admin service install    # scheduled task DevRounds: supervisor + server on 127.0.0.1:4992
+```
+
+Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and removes the task.

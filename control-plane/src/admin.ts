@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { type Kysely, sql } from 'kysely'
 import { issueToken, issueTokenIn, revokeToken } from './auth/tokens.ts'
@@ -12,11 +11,14 @@ import { createDb } from './db/connection.ts'
 import { migrateToLatest } from './db/migrate.ts'
 import type { Database } from './db/schema.ts'
 import { explain, fail } from './errors/error.ts'
+import { isMain } from './is-main.ts'
 import { restrictToOwner } from './owner-only.ts'
 import { createProject } from './planning/service.ts'
+import { installService, TASK_NAME, uninstallService } from './service/install.ts'
 import { withTenant } from './tenancy/scope.ts'
 
-// devrounds-admin: operator commands. Every command except `init` connects with the owner URL from the config.
+// devrounds-admin: operator commands. Every command except `init` and `service` connects with the owner URL from the
+// config.
 
 const APP_ROLE = 'devrounds_app'
 const IMPORT_MEMBER = 'import'
@@ -29,7 +31,9 @@ const USAGE = `usage: devrounds-admin <command>
                                      create a tenant, its members and project; prints a token once
   token create --tenant <name> --member <name> --kind human|agent
                                      prints a new token once (creates the member if missing)
-  token revoke <id>                  revoke a token by id`
+  token revoke <id>                  revoke a token by id
+  service install                    run the control plane as the ${TASK_NAME} scheduled task (Windows) and start it
+  service uninstall                  stop and remove the ${TASK_NAME} scheduled task`
 
 export async function initConfig(path: string, opts: { force: boolean }): Promise<Config> {
   const appPassword = randomBytes(24).toString('base64url')
@@ -176,6 +180,16 @@ export async function main(argv: string[]): Promise<number> {
     printToken(issued)
     return 0
   }
+  if (command === 'service install') {
+    const target = await installService()
+    console.log(`scheduled task ${TASK_NAME} registered and started\nnode: ${target.node}\nlogs: ~/.devrounds/logs/`)
+    return 0
+  }
+  if (command === 'service uninstall') {
+    await uninstallService()
+    console.log(`scheduled task ${TASK_NAME} removed`)
+    return 0
+  }
   if (positionals[0] === 'token' && positionals[1] === 'revoke' && positionals.length === 3) {
     await withAdminDb((admin) => revokeToken(admin, positionals[2]))
     console.log(`revoked ${positionals[2]}`)
@@ -198,5 +212,4 @@ async function cli(): Promise<void> {
   }
 }
 
-// realpath: the `devrounds-admin` bin from `npm link` runs this file through a symlinked folder.
-if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) await cli()
+if (await isMain(import.meta.url)) await cli()
