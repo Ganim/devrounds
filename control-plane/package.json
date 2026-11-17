@@ -1,5 +1,8 @@
 {
   "name": "control-plane",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.52"
+  }
 }
