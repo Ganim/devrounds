@@ -17,3 +17,11 @@ Internal error.
 ### Fix
 
 Retry once; if it keeps failing, check the control plane log for the cause.
+
+## DR502
+
+Control plane configuration is invalid: {reason}.
+
+### Fix
+
+Fix ~/.devrounds/server.json or the DEVROUNDS_* environment variables, then start again.

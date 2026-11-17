@@ -1,5 +1,5 @@
 // Codes are `DR` + 3 digits by range and never renumbered. Add one only in the task that first emits it.
-export const ERROR_CODES = ['DR101', 'DR501'] as const
+export const ERROR_CODES = ['DR101', 'DR501', 'DR502'] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
 

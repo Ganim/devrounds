@@ -16,4 +16,10 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 500,
     keys: [],
   },
+  DR502: {
+    text: 'Control plane configuration is invalid: {reason}.',
+    hint: 'Fix ~/.devrounds/server.json or the DEVROUNDS_* environment variables, then start again.',
+    httpStatus: 500,
+    keys: ['reason'],
+  },
 }
