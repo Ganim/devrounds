@@ -1,0 +1,17 @@
+{
+  "name": "devrounds",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"control-plane/src/**/*.test.ts\"",
+    "typecheck": "tsc -p control-plane && tsc -p web",
+    "lint": "biome check .",
+    "gen:errors": "node scripts/gen-error-docs.ts",
+    "db:up": "docker compose up -d"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8",
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}

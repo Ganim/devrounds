@@ -1,0 +1,16 @@
+services:
+  devrounds-postgres:
+    image: postgres:17
+    container_name: devrounds-postgres
+    restart: unless-stopped
+    ports:
+      - "15433:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: devrounds
+    volumes:
+      - devrounds_pg:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+volumes:
+  devrounds_pg:

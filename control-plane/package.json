@@ -1,0 +1,5 @@
+{
+  "name": "control-plane",
+  "private": true,
+  "type": "module"
+}
