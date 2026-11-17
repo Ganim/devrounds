@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
@@ -8,7 +8,7 @@ import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
-import { type AgentOutput, BODY_BUDGET, planShow, renderAgent } from './output.ts'
+import { type AgentOutput, BODY_BUDGET, fitBody, planShow, renderAgent, shellArg } from './output.ts'
 
 // `devrounds`: the agent CLI. It talks only to the control plane's HTTP API (imports here are types and pure
 // modules, never the DB layer), and prints every result in agent output mode (see output.ts).
@@ -18,6 +18,12 @@ export type CliConfig = { url: string; token: string; project: string }
 export function defaultConfigPath(): string {
   return join(homedir(), '.devrounds', 'config.json')
 }
+
+// Config problems send the agent to login, never print a token: the placeholders are filled by a human.
+const LOGIN_NEXT = 'devrounds login --url <url> --token <token> --project <key>'
+
+// A DevRoundsError whose fix is `devrounds login` (missing or broken config).
+class LoginNeeded extends DevRoundsError {}
 
 const ENV = { url: 'DEVROUNDS_URL', token: 'DEVROUNDS_TOKEN', project: 'DEVROUNDS_PROJECT' } as const
 
@@ -34,13 +40,13 @@ async function loadCliConfig(env: NodeJS.ProcessEnv, path: string): Promise<CliC
     try {
       file = JSON.parse(text) as Partial<CliConfig>
     } catch {
-      fail('DR101', { path, reason: 'is not valid JSON; run devrounds login again' })
+      throw new LoginNeeded('DR101', { path, reason: 'is not valid JSON; run devrounds login again' })
     }
   }
   const pick = (field: keyof CliConfig): string => {
     const value = fromEnv[field] || file[field]
     if (typeof value !== 'string' || value === '') {
-      fail('DR101', { path: field, reason: `is not set; run devrounds login or set ${ENV[field]}` })
+      throw new LoginNeeded('DR101', { path: field, reason: `is not set; run devrounds login or set ${ENV[field]}` })
     }
     return value
   }
@@ -52,22 +58,29 @@ class ApiError extends Error {
   code: string
   text: string
   hint: string
+  data: Record<string, unknown>
 
-  constructor(code: string, text: string, hint: string) {
+  constructor(code: string, text: string, hint: string, data: Record<string, unknown> = {}) {
     super(`${code} ${text}`)
     this.code = code
     this.text = text
     this.hint = hint
+    this.data = data
   }
 }
 
+// No answer from the control plane: exit 4, with the next step depending on whether a mutation may have landed.
 class Unreachable extends Error {
-  constructor(url: string, reason: string) {
-    super(`control plane unreachable at ${url}: ${reason}`)
+  next: string
+
+  constructor(message: string, next: string) {
+    super(message)
+    this.next = next
   }
 }
 
-const TIMEOUT_MS = 30_000
+const START_SERVER_NEXT = 'start the control plane (node control-plane/src/main.ts serve)'
+export const DEFAULT_TIMEOUT_MS = 30_000
 
 type Api = {
   get<T>(path: string, query?: Record<string, string | undefined>): Promise<T>
@@ -76,7 +89,7 @@ type Api = {
   send<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<T>
 }
 
-function apiFor(config: CliConfig): Api {
+function apiFor(config: CliConfig, timeoutMs: number): Api {
   const base = `${config.url}/api/projects/${encodeURIComponent(config.project)}`
   const call = async (path: string, init: RequestInit & { headers?: Record<string, string> }): Promise<Response> => {
     let res: Response
@@ -84,21 +97,32 @@ function apiFor(config: CliConfig): Api {
       res = await fetch(`${base}${path}`, {
         ...init,
         headers: { authorization: `Bearer ${config.token}`, ...init.headers },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       })
     } catch (err) {
       const e = err as Error & { cause?: { code?: string; message?: string } }
-      throw new Unreachable(config.url, e.cause?.code ?? e.cause?.message ?? e.message)
+      const reason =
+        e.name === 'TimeoutError' ? `no answer in ${timeoutMs} ms` : (e.cause?.code ?? e.cause?.message ?? e.message)
+      // Only a refused connection proves the request never arrived. After a timeout or a dropped connection a
+      // mutation may have committed, and running it again would apply it twice: check the events first.
+      if (init.method !== 'GET' && e.cause?.code !== 'ECONNREFUSED') {
+        throw new Unreachable(
+          `control plane at ${config.url} did not answer (${reason}); outcome unknown`,
+          'devrounds events',
+        )
+      }
+      throw new Unreachable(`control plane unreachable at ${config.url}: ${reason}`, START_SERVER_NEXT)
     }
     if (res.ok) return res
     const text = await res.text()
-    let body: { code?: unknown; text?: unknown; hint?: unknown } = {}
+    let body: { code?: unknown; text?: unknown; hint?: unknown; data?: Record<string, unknown> } = {}
     try {
       body = JSON.parse(text)
     } catch {
       // Not the control plane answering (a proxy, another service on the port): handled below.
     }
-    if (typeof body.code === 'string') throw new ApiError(body.code, String(body.text), String(body.hint))
+    if (typeof body.code === 'string')
+      throw new ApiError(body.code, String(body.text), String(body.hint), body.data ?? {})
     throw new ApiError(
       'DR501',
       `HTTP ${res.status} from ${config.url} without an error code.`,
@@ -125,8 +149,9 @@ function apiFor(config: CliConfig): Api {
 
 type Values = Record<string, string | boolean | string[] | undefined>
 type Invocation = { args: string[]; values: Values; cursor: number }
-type Deps = { env: NodeJS.ProcessEnv; configPath: string }
-type Result = AgentOutput & { more?: (cursor: number) => string; raw?: string }
+type Deps = { env: NodeJS.ProcessEnv; configPath: string; timeoutMs?: number }
+// `nextFor` gets the index one past the last body line printed, for a next step that depends on what was shown.
+type Result = AgentOutput & { nextFor?: (shownEnd: number) => string; raw?: string }
 
 type Spec = {
   path: string[]
@@ -139,7 +164,6 @@ type Spec = {
 
 const str = { type: 'string' } as const
 const many = { type: 'string', multiple: true } as const
-const cursorOption = { cursor: str }
 
 function arg(inv: Invocation, index: number, name: string): string {
   return inv.args[index] ?? fail('DR101', { path: name, reason: 'is required' })
@@ -206,7 +230,7 @@ function taskTransition(verb: string, to: string, next?: (key: string) => string
         to,
         reason: text(inv, 'reason'),
       })
-      return done(`${key} ${to}`, result, next?.(key))
+      return done(`${key} ${to}`, result, next?.(shellArg(key)))
     },
   }
 }
@@ -245,10 +269,19 @@ export const COMMANDS: Spec[] = [
       const need = (name: string) => text(inv, name) ?? fail('DR101', { path: `--${name}`, reason: 'is required' })
       const config = { url: need('url').replace(/\/+$/, ''), token: need('token'), project: need('project') }
       // Check the three values together before saving them: a typo shows up now, not in the next session.
-      const plan = await apiFor(config).get<PlanView>('/plan')
+      const plan = await apiFor(config, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS).get<PlanView>('/plan')
       await mkdir(dirname(deps.configPath), { recursive: true, mode: 0o700 })
-      await writeFile(deps.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-      await restrictToOwner(deps.configPath)
+      // The token never sits in a file others can read: a fresh temp file is restricted before it is renamed over
+      // the config (rename keeps the temp file's ACL and mode), and removed if restricting fails.
+      const temp = `${deps.configPath}.${randomUUID()}.tmp`
+      await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+      try {
+        await restrictToOwner(temp)
+        await rename(temp, deps.configPath)
+      } catch (err) {
+        await rm(temp, { force: true })
+        throw err
+      }
       return {
         failures: [],
         body: [
@@ -261,17 +294,16 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['plan', 'show'],
-    usage: 'plan show [--phase <key>] [--cursor <n>]',
+    usage: 'plan show [--phase <key>]',
     args: 0,
-    options: { phase: str, ...cursorOption },
+    options: { phase: str },
     run: async (inv, connect) => {
       const api = await connect()
       const plan = await api.get<PlanView>('/plan')
       const phase = text(inv, 'phase')
       if (phase !== undefined && !plan.phases.some((p) => p.key === phase)) fail('DR201', { kind: 'phase', key: phase })
       const shown = planShow(plan, { phase })
-      const phaseFlag = phase === undefined ? '' : ` --phase ${phase}`
-      return { failures: [], ...shown, more: (n) => `devrounds plan show${phaseFlag} --cursor ${n}` }
+      return { failures: [], ...shown }
     },
   },
   {
@@ -286,7 +318,7 @@ export const COMMANDS: Spec[] = [
       // Raw YAML on stdout must stay a valid file, so it skips agent output mode.
       if (out === undefined) return { failures: [], body: [], next: '', raw: yaml }
       await writeFile(out, yaml)
-      return { failures: [], body: [`wrote ${out}`], next: `devrounds plan import ${out}` }
+      return { failures: [], body: [`wrote ${out}`], next: `devrounds plan import ${shellArg(out)}` }
     },
   },
   {
@@ -301,7 +333,9 @@ export const COMMANDS: Spec[] = [
         fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
       )
       const r = await api.send<ImportResult>('POST', '/import', yaml, 'text/yaml')
-      const keys = (label: string, items: string[]) => (items.length > 0 ? [`${label}: ${items.join(', ')}`] : [])
+      // One key per line, so a long list is cut and paged like any body.
+      const keys = (label: string, items: string[]) =>
+        items.length > 0 ? [`${label} (${items.length}):`, ...items.map((key) => `  ${key}`)] : []
       return {
         failures: [],
         body: [
@@ -411,7 +445,7 @@ export const COMMANDS: Spec[] = [
         criteria: list(inv, 'criterion'),
         blockedBy: list(inv, 'blocked-by'),
       })
-      return done(`added task ${key}`, result, `devrounds task start ${key}`)
+      return done(`added task ${key}`, result, `devrounds task start ${shellArg(key)}`)
     },
   },
   {
@@ -523,9 +557,9 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['events'],
-    usage: 'events [--after <id>] [--cursor <n>]',
+    usage: 'events [--after <id>]',
     args: 0,
-    options: { after: str, ...cursorOption },
+    options: { after: str },
     run: async (inv, connect) => {
       const api = await connect()
       const after = text(inv, 'after')
@@ -535,21 +569,25 @@ export const COMMANDS: Spec[] = [
         const reason = e.reason ? `  reason: ${e.reason}` : ''
         return `${e.id} ${e.at} ${e.actor} ${e.kind} ${subject}${reason}`.replace(/ +$/, '')
       })
-      const last = events.at(-1)?.id ?? after
-      const afterFlag = after === undefined ? '' : ` --after ${after}`
+      // Continue after the last event actually printed: when the body is cut, the later events of this page are
+      // still unread and must not be skipped.
+      const nextAfter = (shownEnd: number) => {
+        const last = events[shownEnd - 1]?.id ?? after
+        return last === undefined ? 'devrounds events' : `devrounds events --after ${shellArg(last)}`
+      }
       return {
         failures: [],
         body: body.length > 0 ? body : ['no events'],
-        next: last === undefined ? 'devrounds events' : `devrounds events --after ${last}`,
-        more: (n) => `devrounds events${afterFlag} --cursor ${n}`,
+        next: nextAfter(events.length),
+        nextFor: nextAfter,
       }
     },
   },
   {
     path: ['balance'],
-    usage: 'balance [--week] [--cursor <n>]   per day (default) or per week, in the tenant time zone',
+    usage: 'balance [--week]   per day (default) or per week, in the tenant time zone',
     args: 0,
-    options: { week: { type: 'boolean' }, ...cursorOption },
+    options: { week: { type: 'boolean' } },
     run: async (inv, connect) => {
       const api = await connect()
       const week = inv.values.week === true
@@ -567,12 +605,7 @@ export const COMMANDS: Spec[] = [
           `${r.periodStart}  done ${r.done} · opened ${r.opened} · cancelled ${r.cancelled} · ` +
           `in progress ${r.hoursInProgress} h · avg cycle ${r.avgCycleHours === null ? '-' : `${r.avgCycleHours} h`}`,
       )
-      return {
-        failures: [],
-        body,
-        next: 'devrounds plan show',
-        more: (n) => `devrounds balance${week ? ' --week' : ''} --cursor ${n}`,
-      }
+      return { failures: [], body, next: 'devrounds plan show' }
     },
   },
 ]
@@ -584,6 +617,7 @@ export function usage(): string {
     '',
     ...lines,
     '',
+    'Every command takes --cursor <n> to continue an output cut at 16384 bytes (`truncated; more:` gives the command).',
     'Config: ~/.devrounds/config.json from `devrounds login`, or DEVROUNDS_URL, DEVROUNDS_TOKEN, DEVROUNDS_PROJECT.',
     'Exit codes: 0 ok, 1 state conflict, 2 input/usage, 3 not found, 4 control plane unreachable, 5 auth, 6 internal.',
   ].join('\n')
@@ -600,7 +634,8 @@ export function parseCommand(argv: string[]): { spec: Spec; inv: Invocation } {
   try {
     parsed = parseArgs({
       args: argv.slice(spec.path.length),
-      options: spec.options,
+      // --cursor on every command, so `more:` is always the same command with --cursor N.
+      options: { ...spec.options, cursor: str },
       allowPositionals: true,
       strict: true,
     })
@@ -615,11 +650,19 @@ export function parseCommand(argv: string[]): { spec: Spec; inv: Invocation } {
   return { spec, inv }
 }
 
-const UNREACHABLE_NEXT = 'start the control plane (node control-plane/src/main.ts serve)'
+// The exact command that was run, with --cursor N in place of any cursor it had. Arguments are quoted (shellArg).
+export function moreCommandFor(argv: string[]): (cursor: number) => string {
+  const kept: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--cursor') i++
+    else if (!argv[i].startsWith('--cursor=')) kept.push(argv[i])
+  }
+  return (cursor) => ['devrounds', ...kept.map(shellArg), '--cursor', String(cursor)].join(' ')
+}
 
 function failureOutput(err: unknown): { output: AgentOutput; exitCode: number } {
   if (err instanceof Unreachable) {
-    return { output: { failures: [err.message], body: [], next: UNREACHABLE_NEXT }, exitCode: 4 }
+    return { output: { failures: [err.message], body: [], next: err.next }, exitCode: 4 }
   }
   let code: string
   let words: { text: string; hint: string }
@@ -635,9 +678,11 @@ function failureOutput(err: unknown): { output: AgentOutput; exitCode: number } 
     words = { text: `Internal error: ${(err as Error)?.message ?? String(err)}.`, hint: explain('DR501').hint }
   }
   const exitCode = exitCodeFor(code)
+  // The configured project itself not found (wrong key, or a key of another tenant) is a config problem too.
+  const projectMissing = err instanceof ApiError && code === 'DR201' && err.data.kind === 'project'
   const next =
-    exitCode === 5
-      ? 'devrounds login --url <url> --token <token> --project <key>'
+    exitCode === 5 || projectMissing || err instanceof LoginNeeded
+      ? LOGIN_NEXT
       : exitCode === 2
         ? 'devrounds --help'
         : 'devrounds plan show'
@@ -649,22 +694,22 @@ export async function runCli(
   deps: Deps,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
-    return argv.length === 0
-      ? { exitCode: 2, stdout: '', stderr: `${usage()}\n` }
-      : { exitCode: 0, stdout: `${usage()}\n`, stderr: '' }
+    const text = `${usage()}\n`
+    return argv.length === 0 ? { exitCode: 2, stdout: '', stderr: text } : { exitCode: 0, stdout: text, stderr: '' }
   }
   try {
     const { spec, inv } = parseCommand(argv)
+    const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS
     let connected: Promise<Api> | undefined
     const connect = () => {
-      connected ??= loadCliConfig(deps.env, deps.configPath).then(apiFor)
+      connected ??= loadCliConfig(deps.env, deps.configPath).then((config) => apiFor(config, timeoutMs))
       return connected
     }
     const result = await spec.run(inv, connect, deps)
     if (result.raw !== undefined) return { exitCode: 0, stdout: result.raw, stderr: '' }
-    const more = result.more ?? (() => 'devrounds plan show')
-    const text = renderAgent(result, { budget: BODY_BUDGET, cursor: inv.cursor, moreCommand: more })
-    return { exitCode: 0, stdout: `${text}\n`, stderr: '' }
+    const opts = { budget: BODY_BUDGET, cursor: inv.cursor, moreCommand: moreCommandFor(argv) }
+    const next = result.nextFor?.(fitBody(result.body, opts)) ?? result.next
+    return { exitCode: 0, stdout: `${renderAgent({ ...result, next }, opts)}\n`, stderr: '' }
   } catch (err) {
     const { output, exitCode } = failureOutput(err)
     const text = renderAgent(output, { budget: BODY_BUDGET, cursor: 0, moreCommand: () => '' })
