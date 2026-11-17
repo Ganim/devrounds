@@ -39,6 +39,7 @@ export function checkTransition(i: {
   if (to === 'done' && i.openCriteria > 0) fail('DR303', { count: i.openCriteria })
 }
 
+// Callers pass [key, blockedByKey] ("key is blocked by blockedByKey") for both tasks and phases.
 // Edges are [from, to]; adding `add` creates a cycle when `add[0]` is already reachable from `add[1]`.
 export function wouldCycle(edges: Array<[string, string]>, add: [string, string]): boolean {
   const [from, to] = add

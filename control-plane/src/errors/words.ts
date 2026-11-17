@@ -10,11 +10,23 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 400,
     keys: ['path', 'reason'],
   },
+  DR103: {
+    text: 'Making {key} blocked by {blockedBy} would create a dependency cycle.',
+    hint: 'Remove one of the existing dependencies between {key} and {blockedBy}, or drop this one.',
+    httpStatus: 400,
+    keys: ['key', 'blockedBy'],
+  },
   DR104: {
     text: 'A reason is required to move a task from {from} to {to}.',
     hint: 'Send a non-empty reason with the request and try again.',
     httpStatus: 400,
     keys: ['from', 'to'],
+  },
+  DR201: {
+    text: 'No {kind} {key} found.',
+    hint: 'Check the {kind} key with `devrounds plan show`; keys are case-sensitive.',
+    httpStatus: 404,
+    keys: ['kind', 'key'],
   },
   DR301: {
     text: 'A task cannot move from {from} to {to}.',

@@ -10,6 +10,14 @@ Invalid input at {path}: {reason}.
 
 Fix the value at {path} and send the request again.
 
+## DR103
+
+Making {key} blocked by {blockedBy} would create a dependency cycle.
+
+### Fix
+
+Remove one of the existing dependencies between {key} and {blockedBy}, or drop this one.
+
 ## DR104
 
 A reason is required to move a task from {from} to {to}.
@@ -17,6 +25,14 @@ A reason is required to move a task from {from} to {to}.
 ### Fix
 
 Send a non-empty reason with the request and try again.
+
+## DR201
+
+No {kind} {key} found.
+
+### Fix
+
+Check the {kind} key with `devrounds plan show`; keys are case-sensitive.
 
 ## DR301
 
