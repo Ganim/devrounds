@@ -4,7 +4,7 @@ services:
     container_name: devrounds-postgres
     restart: unless-stopped
     ports:
-      - "15433:5432"
+      - "127.0.0.1:15433:5432"
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: devrounds

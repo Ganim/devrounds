@@ -2,10 +2,14 @@
   "name": "devrounds",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "node --test \"control-plane/src/**/*.test.ts\"",
     "typecheck": "tsc -p control-plane && tsc -p web",
-    "lint": "biome check .",
+    "lint": "biome check --error-on-warnings .",
     "gen:errors": "node scripts/gen-error-docs.ts",
     "db:up": "docker compose up -d"
   },
