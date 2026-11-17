@@ -8,7 +8,7 @@ import { toDevRoundsError } from '../convert-error.ts'
 import { validate } from '../validate.ts'
 import { exitCodeFor } from './codes.ts'
 import { renderErrorDocs } from './docs.ts'
-import { DevRoundsError, explain, fail } from './error.ts'
+import { DevRoundsError, explain, fail, MISSING } from './error.ts'
 import { WORDS } from './words.ts'
 
 const SRC = fileURLToPath(new URL('..', import.meta.url))
@@ -52,6 +52,9 @@ test('exit code follows the range table', () => {
   assert.equal(exitCodeFor('DR301'), 1)
   assert.equal(exitCodeFor('DR401'), 5)
   assert.equal(exitCodeFor('DR501'), 6)
+  assert.equal(exitCodeFor('DR999'), 6)
+  assert.equal(exitCodeFor('garbage'), 6)
+  assert.equal(exitCodeFor(''), 6)
 })
 
 test('explain fills placeholders and maps statuses', () => {
@@ -88,4 +91,17 @@ test('toDevRoundsError keeps DevRoundsError and wraps anything else as DR501', (
 test('docs/errors.md is current', async () => {
   const onDisk = (await readFile(DOCS, 'utf8')).replace(/\r\n/g, '\n')
   assert.equal(onDisk, renderErrorDocs(), 'run pnpm gen:errors')
+})
+
+test('every placeholder in text and hint is declared in keys', () => {
+  for (const [code, words] of Object.entries(WORDS)) {
+    const used = new Set([...`${words.text} ${words.hint}`.matchAll(/\{(\w+)\}/g)].map((m) => m[1]))
+    assert.deepEqual([...used].sort(), [...words.keys].sort(), `${code}: keys must match placeholders`)
+  }
+})
+
+test('a missing data key renders the neutral marker, never a raw placeholder', () => {
+  const { text, hint } = explain('DR101', { path: '/a' })
+  assert.equal(text, `Invalid input at /a: ${MISSING}.`)
+  assert.ok(!text.includes('{') && !hint.includes('{'))
 })

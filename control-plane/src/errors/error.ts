@@ -15,8 +15,11 @@ export class DevRoundsError extends Error {
   }
 }
 
+// A missing key renders a neutral marker instead of a raw {placeholder}; WORDS.keys plus a test keep this rare.
+export const MISSING = '<unknown>'
+
 function fill(template: string, data: ErrorData): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in data ? String(data[key]) : match))
+  return template.replace(/\{(\w+)\}/g, (_match, key: string) => (key in data ? String(data[key]) : MISSING))
 }
 
 export function fail(code: ErrorCode, data?: ErrorData): never {
