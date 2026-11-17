@@ -119,6 +119,8 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
         querystring: object({
           afterId: Type.Optional(Type.String({ pattern: '^[0-9]{1,19}$' })),
           limit: Type.Integer({ minimum: 1, maximum: 500, default: 100 }),
+          // desc = newest first, for the web history; it cannot be combined with afterId (DR101).
+          order: oneOf<'asc' | 'desc'>(['asc', 'desc'], { default: 'asc' }),
         }),
       },
     },

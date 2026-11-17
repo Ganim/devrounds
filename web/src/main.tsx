@@ -17,6 +17,17 @@ const useHash = (): string => {
   return hash.replace(/^#/, '') || '/'
 }
 
+// A hand-typed hash like #/phase/% is not valid percent-encoding; treat it as the roadmap instead of throwing.
+function phaseOf(route: string): string | undefined {
+  const raw = /^\/phase\/(.+)$/.exec(route)?.[1]
+  if (raw === undefined) return undefined
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return undefined
+  }
+}
+
 function Login({ onDone }: { onDone: () => void }) {
   const [token, setValue] = useState('')
   const [project, setKey] = useState(getProject())
@@ -55,7 +66,7 @@ function App({ onSignOut }: { onSignOut: () => void }) {
     if (plan.error?.code === 'DR401') onSignOut()
   }, [plan.error, onSignOut])
 
-  const phaseKey = /^\/phase\/(.+)$/.exec(route)?.[1]
+  const phaseKey = phaseOf(route)
   const totals = (plan.data?.phases ?? []).reduce(
     (sum, p) => ({ done: sum.done + p.progress.done, total: sum.total + p.progress.total - p.progress.cancelled }),
     { done: 0, total: 0 },
@@ -66,7 +77,7 @@ function App({ onSignOut }: { onSignOut: () => void }) {
     </a>
   )
   let page = <RoadmapPage plan={plan} />
-  if (phaseKey !== undefined) page = <PhasePage phaseKey={decodeURIComponent(phaseKey)} plan={plan} />
+  if (phaseKey !== undefined) page = <PhasePage phaseKey={phaseKey} plan={plan} />
   else if (route === '/balance') page = <BalancePage />
   else if (route === '/history') page = <HistoryPage />
   return (

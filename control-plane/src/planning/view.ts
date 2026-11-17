@@ -215,13 +215,17 @@ export function getPlan(ctx: Ctx, projectKey: string): Promise<PlanView> {
 export async function listEvents(
   ctx: Ctx,
   projectKey: string,
-  opts: { afterId?: string; limit: number },
+  opts: { afterId?: string; limit: number; order?: 'asc' | 'desc' },
 ): Promise<EventView[]> {
   if (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > 1000) {
     fail('DR101', { path: '/limit', reason: 'must be an integer from 1 to 1000' })
   }
   if (opts.afterId !== undefined && !/^\d+$/.test(opts.afterId)) {
     fail('DR101', { path: '/afterId', reason: 'must be an event id' })
+  }
+  // desc is the newest-first view for people; afterId is the asc polling cursor, so the two do not mix.
+  if (opts.order === 'desc' && opts.afterId !== undefined) {
+    fail('DR101', { path: '/afterId', reason: 'cannot be combined with order=desc' })
   }
   return run(ctx, async (trx) => {
     const project = await findProject(trx, projectKey)
@@ -243,7 +247,10 @@ export async function listEvents(
       ])
       .where('e.project_id', '=', project.id)
     if (opts.afterId !== undefined) query = query.where('e.id', '>', opts.afterId)
-    const rows = await query.orderBy('e.id').limit(opts.limit).execute()
+    const rows = await query
+      .orderBy('e.id', opts.order === 'desc' ? 'desc' : 'asc')
+      .limit(opts.limit)
+      .execute()
     return rows.map((row) => ({ ...row, at: row.at.toISOString() }))
   })
 }

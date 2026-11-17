@@ -187,6 +187,22 @@ test('events and balance answer DR101 for out-of-range cursors and loose dates',
   assert.equal((await get('balance?from=2026-11-01&to=2026-11-10T12:00:00-03:00'))[0], 200)
 })
 
+test('events order=desc lists the newest first and refuses afterId', async () => {
+  const { auth } = await setup()
+  const get = (query: string) => app.inject({ method: 'GET', url: `/api/projects/alpha/events${query}`, headers: auth })
+  const asc = (await get('?limit=500')).json().map((e: { id: string }) => e.id)
+  const desc = (await get('?order=desc&limit=500')).json().map((e: { id: string }) => e.id)
+  assert.ok(asc.length >= 2)
+  assert.deepEqual(desc, [...asc].reverse())
+  assert.deepEqual(
+    (await get('?order=desc&limit=1')).json().map((e: { id: string }) => e.id),
+    [asc.at(-1)],
+  )
+  const clash = await get(`?order=desc&afterId=${asc[0]}`)
+  assert.equal(clash.statusCode, 400)
+  assert.equal(clash.json().data.path, '/afterId')
+})
+
 function words(code: 'DR306' | 'DR401', data: Record<string, unknown> = {}) {
   const { text, hint } = explain(code, data)
   return { text, hint }

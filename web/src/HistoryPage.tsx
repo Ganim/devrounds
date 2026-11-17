@@ -1,11 +1,10 @@
 import { type EventView, useRemote } from './api.ts'
 import { Loading, when } from './ui.tsx'
 
-// The API pages oldest first with a 500 cap; the view shows the newest of that page on top. A longer history needs
-// a cursor in the UI, which P0 does not have.
+// The newest 200 events; older history has no UI in P0.
 export function HistoryPage() {
-  const events = useRemote<EventView[]>('/events?limit=500')
-  const rows = [...(events.data ?? [])].reverse()
+  const events = useRemote<EventView[]>('/events?order=desc&limit=200')
+  const rows = events.data ?? []
   return (
     <Loading data={events.data} error={events.error}>
       <table>
