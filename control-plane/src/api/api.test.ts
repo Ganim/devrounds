@@ -123,6 +123,32 @@ test('plan returns PlanView with the task added through the API', async () => {
   assert.deepEqual(plan.unphased, [])
 })
 
+test('plan import records the member of the token on every event', async () => {
+  const { auth } = await setup()
+  const yaml = `
+project: { key: alpha, name: Alpha }
+phases:
+  - key: P0
+    title: Foundation
+    goal: Shipped
+    tasks:
+      - { key: P0-T01, title: Schema, state: done }
+`
+  const before = (await app.inject({ method: 'GET', url: '/api/projects/alpha/events', headers: auth })).json()
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/projects/alpha/import',
+    headers: { ...auth, 'content-type': 'text/yaml' },
+    payload: yaml,
+  })
+  assert.equal(res.statusCode, 200, res.body)
+
+  const events = (await app.inject({ method: 'GET', url: '/api/projects/alpha/events', headers: auth })).json()
+  const imported = events.slice(before.length) as Array<{ kind: string; actor: string }>
+  assert.ok(imported.length > 0)
+  assert.deepEqual([...new Set(imported.map((e) => e.actor))], ['human'])
+})
+
 test('same Idempotency-Key twice runs once, also when the two arrive together', async () => {
   const { tenant, auth } = await setup()
   const send = (key: string, taskKey: string) =>

@@ -1,6 +1,6 @@
 import { fail } from '../errors/error.ts'
 import { findIssue, type PlanFile, type PlanFileCriterion, type PlanFileTask } from './plan-file.ts'
-import { type Actor, type Ctx, findProject, run, type Target, type Trx } from './resolve.ts'
+import { type Ctx, findProject, run, type Target, type Trx } from './resolve.ts'
 import { ALLOWED, isPhaseClosable, type TaskState } from './rules.ts'
 import {
   addCriterion,
@@ -27,7 +27,6 @@ export type ImportResult = {
 }
 
 const REASON = 'import'
-const IMPORT_MEMBER = 'import'
 
 // Upserts by key and never deletes. What the file can no longer express stays as it is: phases and tasks missing
 // from the file (reported in onlyInDb), dependency edges and criteria missing from it, a checked criterion listed
@@ -41,19 +40,8 @@ export function importPlan(ctx: Ctx, file: PlanFile): Promise<ImportResult> {
   const issue = findIssue(file)
   if (issue) fail('DR101', issue)
   // One transaction: any error (DR103 cycle, DR303 done without evidence…) leaves nothing written.
-  return run(ctx, async (trx) => {
-    const c: Ctx = { ...ctx, trx, actor: await importActor(trx, ctx.tenantId) }
-    return new Importer(c, trx, file).run()
-  })
-}
-
-async function importActor(trx: Trx, tenantId: string): Promise<Actor> {
-  await trx
-    .insertInto('members')
-    .values({ tenant_id: tenantId, kind: 'agent', name: IMPORT_MEMBER })
-    .onConflict((oc) => oc.columns(['tenant_id', 'name']).doNothing())
-    .execute()
-  return trx.selectFrom('members').select(['id', 'kind']).where('name', '=', IMPORT_MEMBER).executeTakeFirstOrThrow()
+  // Every event names ctx.actor, the member who asked for the import.
+  return run(ctx, (trx) => new Importer({ ...ctx, trx }, trx, file).run())
 }
 
 const textOf = (c: PlanFileCriterion) => (typeof c === 'string' ? c : c.text)

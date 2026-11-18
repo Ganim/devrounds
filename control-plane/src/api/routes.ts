@@ -142,7 +142,7 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
 
   // Mutations.
 
-  // The actor of every change is the tenant's `import` member (importPlan picks it), not the token's member.
+  // The actor of every change is the token's member.
   app.post('/import', { schema: { params: ProjectParams, headers: Headers, body: Text } }, (request, reply) =>
     mutate(request, reply, (ctx) => {
       const file = parsePlanFile(request.body)

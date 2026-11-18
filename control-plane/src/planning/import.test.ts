@@ -87,7 +87,7 @@ test('first import creates everything', async () => {
   )
   assert.deepEqual([t2.parent, t2.blockedBy], ['P0-T01', ['P0-T01']])
   const events = await listEvents(ctx, projectKey, { limit: 1000 })
-  assert.ok(events.every((e) => e.actor === 'import' && e.actorKind === 'agent'))
+  assert.ok(events.every((e) => e.actor === 'human' && e.actorKind === 'human'))
 })
 
 test('second import of same file: no change, no events', async () => {
