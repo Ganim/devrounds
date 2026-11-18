@@ -60,23 +60,26 @@ executor\target\release\devrounds-executor service install          # scheduled 
 the task sees it). It copies the binary to `<home>\bin`, so later builds neither fail on a locked file nor change the
 running service; run it again to install a new build. The task starts `supervise` under a hidden console at logon (and
 every 5 minutes if it is gone); `supervise` keeps `run` going with the control plane's restart backoff (1 s doubling to
-30 s, reset after 5 min up) and writes `<home>\logs\executor-YYYY-MM-DD.log` (UTC days, 14 kept). `run` exits when its
-supervisor does; runs keep going and the next `run` reports them as orphans. `service uninstall` stops and removes the
-task and the copy, and keeps the home.
+30 s, reset after 5 min up) and writes `<home>\logs\executor-YYYY-MM-DD.log` (UTC days, rolling to `.1`, `.2`, ...
+past 10 MB, 14 days kept). One `supervise` runs per home; a second one exits at once. `run` exits when its supervisor
+does; runs keep going and the next `run` reports them as orphans. `service uninstall` stops and removes the task and the
+copy, and keeps the home; run it from the build, not from the installed copy, which cannot delete itself.
 
 ```
 pnpm footprint    # after 60 s with no job running: private bytes of both services against their budgets
 pnpm e2e          # the executor end to end: synthetic job, pnpm lint, orphan, footprint
 ```
 
-`pnpm footprint` finds the control plane (`supervise.ts`, `main.ts serve`) and the executor (`supervise`, `run`) by
-command line, waits until `GET /api/machines` reports no running job for 60 s (`DEVROUNDS_URL`/`DEVROUNDS_TOKEN` or the
+`pnpm footprint` finds what the `DevRounds` and `DevRoundsExecutor` tasks run: the control plane's `supervise.ts` and the
+`main.ts serve` under it, and the executor copy's `supervise` and `run` (a lane's or the e2e's processes do not count,
+and a missing one fails its side by name). It waits until `GET /api/machines` reports no running job for 60 s (`DEVROUNDS_URL`/`DEVROUNDS_TOKEN` or the
 `devrounds login` config) and fails over 50 MB (executor) or 300 MB (control plane), 1 MB = 1 000 000 bytes.
 `--control-plane-pids` and `--executor-pids` measure given processes instead; `--idle-ms` changes the window.
 
 `pnpm e2e` installs nothing: it builds the release binaries, starts its own control plane on the test database at
-port 4993 and its own executor under `supervise` with a home in `.superpowers/tmp`, pairs it into a fresh tenant, runs the
-job types of `roadmap/fixtures/job-types`, measures the footprint of its own processes and stops everything. It needs
+port 4993 and its own executor under `supervise` with a home and a `tree-fixture` copy in `.superpowers/tmp`, pairs it
+into a fresh tenant, runs the job types of `roadmap/fixtures/job-types`, measures the footprint of its own processes and
+stops those, and only those, so an installed executor service is left alone. It needs
 Postgres (`pnpm db:up`) and takes about 2 minutes, most of it the 60 s idle window.
 
 `pnpm devlanes-sync --fetch` fetches upstream devlanes into the gitignored `executor/.devlanes-cache`, stamps the fetch time

@@ -12,13 +12,14 @@
 //!
 //! `run`'s stdout and stderr come through a pipe too, so they land in the log
 //! file of the UTC day they are written, `<logs>/executor-YYYY-MM-DD.log`,
-//! with the supervisor's own lines; files older than [`KEEP_DAYS`] are
-//! pruned on every day change.
+//! with the supervisor's own lines, rolling to `.1`, `.2`, ... past
+//! [`MAX_LOG_BYTES`]; files older than [`KEEP_DAYS`] are pruned on every day
+//! change.
 
 use std::{
     convert::Infallible,
     ffi::OsStr,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{self, PipeReader, Read, Write},
     os::windows::io::AsHandle,
     path::{Path, PathBuf},
@@ -38,6 +39,9 @@ pub const MAX_DELAY: Duration = Duration::from_secs(30);
 pub const HEALTHY_UPTIME: Duration = Duration::from_secs(5 * 60);
 /// Days of log files kept, as the control plane keeps its own.
 pub const KEEP_DAYS: u64 = 14;
+/// A day's log file rolls to the next `.N` past this size. The control plane
+/// caps at 10 MiB; 10 MB here is the same order and reads plainly.
+pub const MAX_LOG_BYTES: u64 = 10_000_000;
 /// The argument `supervise` starts `run` with: watch stdin, exit at its end.
 pub const SUPERVISED_ARG: &str = "--supervised";
 
@@ -55,7 +59,7 @@ pub fn next_delay(previous: Option<Duration>, uptime: Duration) -> Duration {
 /// Returns only when the log directory cannot be created.
 pub fn supervise(exe: &Path, logs: &Path) -> io::Result<Infallible> {
     fs::create_dir_all(logs)?;
-    let log = Arc::new(DailyLog::new(logs.to_path_buf()));
+    let log = Arc::new(DailyLog::new(logs.to_path_buf(), MAX_LOG_BYTES));
     log.line(&format!("supervisor started (pid {})", std::process::id()));
     let mut delay = None;
     loop {
@@ -70,6 +74,24 @@ pub fn supervise(exe: &Path, logs: &Path) -> io::Result<Infallible> {
         delay = Some(next);
         log.line(&format!("restarting run in {} s", next.as_secs()));
         thread::sleep(next);
+    }
+}
+
+/// Takes `<home>/supervise.lock`, held while the file lives; `None` when
+/// another supervisor holds it. Stopping the task ends only its conhost, so
+/// the task's next trigger starts a `supervise` beside the running one; that
+/// one exits on `None` instead of crash looping a second `run` on DR352.
+pub fn lock_supervisor(home: &Path) -> io::Result<Option<File>> {
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("supervise.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
     }
 }
 
@@ -145,20 +167,29 @@ pub fn exit_with_supervisor() {
     });
 }
 
-/// Appends to `<dir>/executor-<UTC day>.log`, reopening per write so a day
-/// change starts the next file; a failed write is dropped, as there is
+/// Appends to `<dir>/executor-<UTC day>[.N].log`, reopening per write so a
+/// day change starts the next file; a failed write is dropped, as there is
 /// nowhere else to report it.
 struct DailyLog {
     dir: PathBuf,
-    /// The day of the last write, to prune once per day change.
-    day: Mutex<Option<String>>,
+    max_bytes: u64,
+    state: Mutex<LogState>,
+}
+
+/// Where the next write goes: the day, the file's suffix and its size.
+#[derive(Default)]
+struct LogState {
+    day: Option<String>,
+    seq: u32,
+    size: u64,
 }
 
 impl DailyLog {
-    fn new(dir: PathBuf) -> Self {
+    fn new(dir: PathBuf, max_bytes: u64) -> Self {
         Self {
             dir,
-            day: Mutex::new(None),
+            max_bytes,
+            state: Mutex::new(LogState::default()),
         }
     }
 
@@ -168,49 +199,89 @@ impl DailyLog {
     }
 
     fn write(&self, bytes: &[u8]) {
-        let now = SystemTime::now();
+        self.write_at(SystemTime::now(), bytes);
+    }
+
+    /// Rolls like the control plane's `LogWriter`: a write that would take a
+    /// non-empty file past `max_bytes` goes to the next suffix; one bigger
+    /// than the cap still lands whole in a file of its own.
+    fn write_at(&self, now: SystemTime, bytes: &[u8]) {
         let day = utc_day(now);
-        {
-            let mut last = self.day.lock().unwrap_or_else(PoisonError::into_inner);
-            if last.as_deref() != Some(day.as_str()) {
-                prune(&self.dir, now, KEEP_DAYS);
-                *last = Some(day.clone());
+        let len = bytes.len() as u64;
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.day.as_deref() != Some(day.as_str()) {
+            prune(&self.dir, now, KEEP_DAYS);
+            // A restarted supervisor goes on in the day's last file, so the
+            // day's lines stay in order across the numbered files.
+            let mut seq = 0;
+            while self.dir.join(log_name(&day, seq + 1)).exists() {
+                seq += 1;
             }
+            state.day = Some(day.clone());
+            state.seq = seq;
+            state.size = file_size(&self.dir.join(log_name(&day, seq)));
         }
-        let path = log_path(&self.dir, now);
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = file.write_all(bytes);
+        if state.size > 0 && state.size + len > self.max_bytes {
+            state.seq += 1;
+            state.size = 0;
+        }
+        let path = self.dir.join(log_name(&day, state.seq));
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path)
+            && file.write_all(bytes).is_ok()
+        {
+            state.size += len;
         }
     }
 }
 
-/// `<dir>/executor-YYYY-MM-DD.log` for the UTC day of `now`.
-pub fn log_path(dir: &Path, now: SystemTime) -> PathBuf {
-    dir.join(format!("executor-{}.log", utc_day(now)))
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
 
-/// Removes `executor-YYYY-MM-DD.log` files of days more than `keep_days`
+/// `executor-YYYY-MM-DD.log`, or `executor-YYYY-MM-DD.N.log` past the first.
+fn log_name(day: &str, seq: u32) -> String {
+    if seq == 0 {
+        format!("executor-{day}.log")
+    } else {
+        format!("executor-{day}.{seq}.log")
+    }
+}
+
+/// `<dir>/executor-YYYY-MM-DD.log`, the first log file of `now`'s UTC day.
+pub fn log_path(dir: &Path, now: SystemTime) -> PathBuf {
+    dir.join(log_name(&utc_day(now), 0))
+}
+
+/// Removes `executor-YYYY-MM-DD[.N].log` files of days more than `keep_days`
 /// before `now`'s UTC day. Other files are left alone.
 pub fn prune(dir: &Path, now: SystemTime, keep_days: u64) {
-    let cutoff = format!(
-        "executor-{}.log",
-        utc_day(now - Duration::from_secs(keep_days * 86_400))
-    );
+    let cutoff = utc_day(now - Duration::from_secs(keep_days * 86_400));
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        // Same length and prefix, so the names compare as their dates.
-        if name.len() == cutoff.len()
-            && name.starts_with("executor-")
-            && name.ends_with(".log")
-            && *name < *cutoff.as_str()
+        if let Some(day) = name.to_str().and_then(log_day)
+            && day < cutoff.as_str()
         {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// The `YYYY-MM-DD` of a day log's name, `executor-YYYY-MM-DD[.N].log`.
+fn log_day(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("executor-")?.strip_suffix(".log")?;
+    let (day, seq) = rest.split_at_checked(10)?;
+    let is_day = day.bytes().enumerate().all(|(index, byte)| match index {
+        4 | 7 => byte == b'-',
+        _ => byte.is_ascii_digit(),
+    });
+    let is_seq = seq.is_empty()
+        || seq
+            .strip_prefix('.')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+    (is_day && is_seq).then_some(day)
 }
 
 /// `YYYY-MM-DD` of `time` in UTC.
@@ -321,8 +392,12 @@ mod tests {
         assert_eq!(log_path(dir, now), dir.join("executor-2026-11-18.log"));
         for name in [
             "executor-2026-11-03.log",
+            "executor-2026-11-03.1.log",
             "executor-2026-11-04.log",
+            "executor-2026-11-04.2.log",
             "executor-2026-11-18.log",
+            "executor-2026-11-18.12.log",
+            "executor-2026-11-0x.log",
             "other-2020-01-01.log",
         ] {
             fs::write(dir.join(name), "x")?;
@@ -336,11 +411,67 @@ mod tests {
         assert_eq!(
             left,
             [
+                "executor-2026-11-04.2.log",
                 "executor-2026-11-04.log",
+                "executor-2026-11-0x.log",
+                "executor-2026-11-18.12.log",
                 "executor-2026-11-18.log",
                 "other-2020-01-01.log"
             ]
         );
+        Ok(())
+    }
+
+    /// Stopping the task ends only conhost, so its next trigger starts a
+    /// second `supervise` beside the first: that one must find the lock held.
+    #[test]
+    fn one_supervisor_per_home() -> io::Result<()> {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        fs::create_dir_all(&parent)?;
+        let temp = tempfile::tempdir_in(&parent)?;
+        let first = lock_supervisor(temp.path())?;
+        assert!(first.is_some(), "the first supervisor takes the lock");
+        assert!(
+            lock_supervisor(temp.path())?.is_none(),
+            "a second one does not"
+        );
+        drop(first);
+        assert!(
+            lock_supervisor(temp.path())?.is_some(),
+            "free once the first is gone"
+        );
+        Ok(())
+    }
+
+    /// A day log rolls to `.1`, `.2`, ... once the next write would take it
+    /// past the cap, as the control plane's `service/logs.ts` does; a fresh
+    /// supervisor appends to the last file of the day that still has room,
+    /// and a new day starts over at the unsuffixed name.
+    #[test]
+    fn a_day_log_rolls_to_a_numbered_file_past_the_size_cap() -> io::Result<()> {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        fs::create_dir_all(&parent)?;
+        let temp = tempfile::tempdir_in(&parent)?;
+        let dir = temp.path();
+        let now = UNIX_EPOCH + Duration::from_secs(1_795_046_399);
+        let log = DailyLog::new(dir.to_path_buf(), 10);
+        for chunk in ["aaaa", "bbbb", "cccc", "dddddddddddd", "ee"] {
+            log.write_at(now, chunk.as_bytes());
+        }
+        let read = |name: &str| fs::read_to_string(dir.join(name));
+        assert_eq!(read("executor-2026-11-18.log")?, "aaaabbbb");
+        assert_eq!(read("executor-2026-11-18.1.log")?, "cccc");
+        // Bigger than the cap: written whole to a file of its own.
+        assert_eq!(read("executor-2026-11-18.2.log")?, "dddddddddddd");
+        assert_eq!(read("executor-2026-11-18.3.log")?, "ee");
+
+        let restarted = DailyLog::new(dir.to_path_buf(), 10);
+        restarted.write_at(now, b"ff");
+        assert_eq!(read("executor-2026-11-18.3.log")?, "eeff");
+
+        let next_day = now + Duration::from_secs(1);
+        restarted.write_at(next_day, b"gg");
+        assert_eq!(read("executor-2026-11-19.log")?, "gg");
         Ok(())
     }
 }

@@ -72,6 +72,21 @@ fn supervise() -> ExitCode {
         Ok(home) => home,
         Err(error) => return fail(&error),
     };
+    // Held until this process ends; another supervisor of this home means
+    // there is nothing to do.
+    let _lock = match devrounds_executor::supervise::lock_supervisor(&home) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(error) => {
+            return fail(&devrounds_core::DrError::new(
+                "DR550",
+                serde_json::json!({
+                    "path": home.join("supervise.lock").display().to_string(),
+                    "reason": error.to_string(),
+                }),
+            ));
+        }
+    };
     let supervised = std::env::current_exe()
         .and_then(|exe| devrounds_executor::supervise::supervise(&exe, &home.join("logs")));
     match supervised {
@@ -87,7 +102,8 @@ fn supervise() -> ExitCode {
 #[cfg(windows)]
 fn service(install: bool) -> ExitCode {
     use devrounds_executor::service::{
-        TASK_NAME, current_target, register_script, run_powershell, unregister_script,
+        TASK_NAME, check_removed, current_target, register_script, run_powershell,
+        unregister_script,
     };
     let done = devrounds_executor::config::executor_home().and_then(|home| {
         if install {
@@ -106,6 +122,9 @@ fn service(install: bool) -> ExitCode {
             unregister_script(&target)
         };
         run_powershell(&script)?;
+        if !install {
+            check_removed(&target)?;
+        }
         Ok(target)
     });
     match done {

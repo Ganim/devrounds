@@ -38,15 +38,19 @@ pub struct ServiceTarget {
     pub exe: PathBuf,
     /// The executor home, the task's working directory.
     pub home: PathBuf,
+    /// The process running the scripts, never stopped by them: `service
+    /// install|uninstall` may be run from the installed copy itself.
+    pub own_pid: u32,
 }
 
 impl ServiceTarget {
-    /// The target for installing `source` into `home`.
+    /// The target for installing `source` into `home`, from this process.
     pub fn new(source: PathBuf, home: PathBuf) -> Self {
         Self {
             exe: home.join("bin").join(EXE_NAME),
             source,
             home,
+            own_pid: std::process::id(),
         }
     }
 }
@@ -67,16 +71,28 @@ fn find_task() -> String {
     format!("$task = Get-ScheduledTask | Where-Object TaskName -eq '{TASK_NAME}'")
 }
 
+/// Disabled before anything is stopped: otherwise the 5-minute trigger can
+/// start a fresh `supervise` of the old binary between the stop and the copy
+/// or the unregister.
+fn disable_and_stop_task() -> String {
+    format!(
+        "Disable-ScheduledTask -TaskName '{TASK_NAME}' | Out-Null\n\
+         Stop-ScheduledTask -TaskName '{TASK_NAME}'"
+    )
+}
+
 /// Stops every process of the installed binary: `supervise` first, so it
 /// does not restart `run`, then `run` and any console helper. Stopping the
 /// task ends only conhost; these outlive it. Waits for them to exit, since
-/// the binary is replaced next. Runs are other programs and keep running.
+/// the binary is replaced next. Runs are other programs and keep running,
+/// and so does [`ServiceTarget::own_pid`].
 pub fn stop_processes_script(target: &ServiceTarget) -> String {
     [
         format!(
             "$running = @(Get-CimInstance Win32_Process -Filter \"name='{EXE_NAME}'\" | \
-             Where-Object {{ $_.ExecutablePath -eq {} }})",
-            ps(&target.exe)
+             Where-Object {{ $_.ExecutablePath -eq {} -and $_.ProcessId -ne {} }})",
+            ps(&target.exe),
+            target.own_pid
         ),
         "$running | Sort-Object { $_.CommandLine -notmatch ' supervise$' } | \
          ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
@@ -94,7 +110,7 @@ pub fn register_script(target: &ServiceTarget) -> String {
     let mut lines = vec![
         find_task(),
         "if ($task) {".to_owned(),
-        format!("Stop-ScheduledTask -TaskName '{TASK_NAME}'"),
+        disable_and_stop_task(),
         "}".to_owned(),
         stop_processes_script(target),
     ];
@@ -130,6 +146,9 @@ pub fn register_script(target: &ServiceTarget) -> String {
             "Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger $logon,$repeat \
              -Settings $settings -Principal $principal -Force | Out-Null"
         ),
+        // A new definition is enabled already; explicit, as the old one was
+        // disabled above and a disabled task never starts again.
+        format!("Enable-ScheduledTask -TaskName '{TASK_NAME}' | Out-Null"),
         format!("Start-ScheduledTask -TaskName '{TASK_NAME}'"),
     ]);
     lines.join("\n")
@@ -140,7 +159,9 @@ pub fn register_script(target: &ServiceTarget) -> String {
 pub fn unregister_script(target: &ServiceTarget) -> String {
     [
         find_task(),
-        format!("if ($task) {{ Stop-ScheduledTask -TaskName '{TASK_NAME}' }}"),
+        "if ($task) {".to_owned(),
+        disable_and_stop_task(),
+        "}".to_owned(),
         stop_processes_script(target),
         "if ($task) {".to_owned(),
         format!("Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false"),
@@ -213,12 +234,46 @@ pub fn run_powershell(script: &str) -> Result<(), DrError> {
     }))
 }
 
-/// The target for installing the running binary into `home`.
-pub fn current_target(home: &Path) -> io::Result<ServiceTarget> {
-    Ok(ServiceTarget::new(
-        std::env::current_exe()?,
-        home.to_path_buf(),
+/// `path` without the `\\?\` (or `\\?\UNC\`) prefix `canonicalize` adds.
+fn plain(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{share}"))
+    } else if let Some(local) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(local)
+    } else {
+        path
+    }
+}
+
+/// DR550 when the installed copy outlived uninstall: it is still running,
+/// most likely as the very process that ran `service uninstall`.
+pub fn check_removed(target: &ServiceTarget) -> Result<(), DrError> {
+    if !target.exe.exists() {
+        return Ok(());
+    }
+    Err(DrError::new(
+        "DR550",
+        json!({
+            "path": target.exe.to_string_lossy(),
+            "reason": "the installed copy could not be removed, as a process still runs it; \
+                       run `service uninstall` from another copy of devrounds-executor.exe",
+        }),
     ))
+}
+
+/// The target for installing the running binary into `home`. The home is
+/// canonical, so the copy's path matches the `ExecutablePath` its processes
+/// are found by whatever form `DEVROUNDS_EXECUTOR_HOME` was given in; a home
+/// that does not exist yet is made absolute instead.
+pub fn current_target(home: &Path) -> io::Result<ServiceTarget> {
+    let home = match std::fs::canonicalize(home) {
+        Ok(canonical) => plain(canonical),
+        Err(_) => std::path::absolute(home)?,
+    };
+    Ok(ServiceTarget::new(std::env::current_exe()?, home))
 }
 
 #[cfg(test)]
@@ -230,7 +285,62 @@ mod tests {
             source: PathBuf::from(r"C:\src\devrounds-executor.exe"),
             exe: PathBuf::from(r"C:\Users\it's me\.devrounds\executor\bin\devrounds-executor.exe"),
             home: PathBuf::from(r"C:\Users\it's me\.devrounds\executor"),
+            own_pid: 4242,
         }
+    }
+
+    /// The 5-minute trigger would start a fresh `supervise` between the stop
+    /// and the copy (or the unregister): the task is disabled first.
+    #[test]
+    fn both_scripts_disable_the_task_before_stopping_its_processes() {
+        for script in [register_script(&target()), unregister_script(&target())] {
+            let disable = script
+                .find("Disable-ScheduledTask -TaskName 'DevRoundsExecutor'")
+                .unwrap_or_else(|| panic!("disables the task in\n{script}"));
+            let stop = script.find("Stop-Process").expect("stops the processes");
+            assert!(disable < stop, "{script}");
+        }
+    }
+
+    #[test]
+    fn the_process_running_the_script_is_never_stopped() {
+        let script = stop_processes_script(&target());
+        assert!(script.contains("$_.ProcessId -ne 4242"), "{script}");
+    }
+
+    /// `canonicalize` answers `\\?\` paths; the task's paths and the
+    /// `ExecutablePath` they are compared with are plain ones.
+    #[test]
+    fn verbatim_prefixes_are_stripped() {
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\C:\Users\me\.devrounds\executor")),
+            PathBuf::from(r"C:\Users\me\.devrounds\executor")
+        );
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\UNC\server\share\executor")),
+            PathBuf::from(r"\\server\share\executor")
+        );
+        assert_eq!(
+            plain(PathBuf::from(r"C:\plain")),
+            PathBuf::from(r"C:\plain")
+        );
+    }
+
+    /// Remove-Item cannot delete a running binary and is told to be silent,
+    /// so uninstall checks the copy is gone itself.
+    #[test]
+    fn a_copy_left_after_uninstall_answers_dr550() -> io::Result<()> {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        std::fs::create_dir_all(&parent)?;
+        let temp = tempfile::tempdir_in(&parent)?;
+        let mut target = target();
+        target.exe = temp.path().join(EXE_NAME);
+        assert!(check_removed(&target).is_ok());
+        std::fs::write(&target.exe, "x")?;
+        let error = check_removed(&target).expect_err("the copy is still there");
+        assert_eq!(error.code, "DR550");
+        assert_eq!(error.data["path"], target.exe.to_string_lossy().as_ref());
+        Ok(())
     }
 
     #[test]

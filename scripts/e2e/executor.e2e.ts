@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // pnpm e2e: the executor end to end on this machine, self-contained. Builds the release binaries, starts its own
 // control plane on the test database (port 4993) and its own executor under `supervise` with a home in
-// .superpowers/tmp, pairs it into a fresh tenant, then runs:
+// .superpowers/tmp and a tree-fixture copy of its own on PATH, pairs it into a fresh tenant, then runs:
 //   synthetic  tree-fixture with 3 lingering children: finished, stamped, swept, hidden, steps and 1000 log lines
 //   lint       `pnpm lint` of this repo through pnpm.cmd: finished and hidden
 //   orphan     `run` killed under a live run, restarted by its supervisor: the run is orphaned, killed, tree gone
 // then measures both sides with scripts/footprint.ts after 60 s idle, and checks that `run` exits once its supervisor
-// is gone. Nothing is installed; everything it started is stopped at the end.
+// is gone. Nothing is installed; everything it started, and nothing else, is stopped at the end, so it can run beside
+// an installed executor service.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -72,17 +73,41 @@ async function powershellJson<T>(script: string): Promise<T[]> {
   return stdout.trim() === '' ? [] : (JSON.parse(stdout) as T[])
 }
 
-// Processes started from `exe`; other copies (an installed executor, the debug fixture of cargo test) are not ours.
+// Processes started from `exe`; other copies (an installed executor, a live service's jobs, the debug fixture of
+// cargo test) are not ours.
 const ps = (value: string) => `'${value.replaceAll("'", "''")}'`
 const processesOf = (exe: string, name: string) =>
   powershellJson<Proc>(
     `Get-CimInstance Win32_Process -Filter "name='${name}'" | Where-Object { $_.ExecutablePath -eq ${ps(exe)} } | ` +
       'Select-Object ProcessId, CommandLine',
   )
-const fixtures = () => processesOf(FIXTURE, 'tree-fixture.exe')
 const executors = () => processesOf(EXE, 'devrounds-executor.exe')
 const runProcess = async () => (await executors()).find((p) => /\srun\s+--supervised\s*$/.test(p.CommandLine ?? ''))
 const kill = (pid: number) => run('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true }).catch(() => {})
+
+// A process seen under the e2e executor, by pid and start time so a reused pid is never killed at teardown.
+type Snapshot = { ProcessId: number; ParentProcessId: number; Started: string }
+const snapshot = () =>
+  powershellJson<Snapshot>(
+    "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, @{ n = 'Started'; e = { $_.CreationDate.ToString('o') } }",
+  )
+
+// Records every descendant of `root` alive now. Jobs other than tree-fixture (the lint job's pnpm and node) have no
+// path of their own to find them by, and once their parent is gone the tree cannot be walked any more.
+async function track(tracked: Map<number, string>, root: number): Promise<void> {
+  const all = await snapshot()
+  const below = new Set([root])
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const p of all) {
+      if (below.has(p.ParentProcessId) && !below.has(p.ProcessId)) {
+        below.add(p.ProcessId)
+        tracked.set(p.ProcessId, p.Started)
+        grew = true
+      }
+    }
+  }
+}
 
 function pathEnv(prepend: string): NodeJS.ProcessEnv {
   const env = { ...process.env }
@@ -107,6 +132,14 @@ async function main(): Promise<void> {
   await mkdir(join(ROOT, '.superpowers', 'tmp'), { recursive: true })
   const tmp = await mkdtemp(join(ROOT, '.superpowers', 'tmp', 'e2e-'))
   const home = join(tmp, 'executor')
+  // The jobs find `tree-fixture` on PATH: a copy of its own, so the tree checks and the teardown never touch the
+  // tree-fixture of a live executor service, which runs the one in target\release or its own copy.
+  const bin = join(tmp, 'bin')
+  const fixture = join(bin, 'tree-fixture.exe')
+  await mkdir(bin)
+  await copyFile(FIXTURE, fixture)
+  const fixtures = () => processesOf(fixture, 'tree-fixture.exe')
+  const tracked = new Map<number, string>()
   const admin = createDb(TEST_ADMIN_URL)
   const serveOutput: string[] = []
   let serve: ReturnType<typeof spawn> | undefined
@@ -150,12 +183,18 @@ async function main(): Promise<void> {
       if (!res.ok) throw new Error(`GET ${path} answered ${res.status}: ${await res.text()}`)
       return (await res.json()) as T
     }
+    let notListening: unknown
     await until('the control plane to listen', 30_000, () =>
       api('/machines').then(
         () => true,
-        () => undefined,
+        (err) => {
+          notListening = err
+          return undefined
+        },
       ),
-    )
+    ).catch((err) => {
+      throw new Error(`${(err as Error).message}; last answer: ${(notListening as Error)?.message}`)
+    })
 
     const cliEnv = { DEVROUNDS_URL: BASE, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: PROJECT }
     const cli = async (...args: string[]): Promise<string> => {
@@ -167,7 +206,7 @@ async function main(): Promise<void> {
     const machine = `e2e-${randomBytes(4).toString('hex')}`
     const pairing = await cli('machine', 'pair-code', '--name', machine)
     const code = /pairing code for machine \S+: (\S+)/.exec(pairing)?.[1] ?? assert.fail(pairing)
-    const executorEnv = { ...pathEnv(RELEASE), DEVROUNDS_EXECUTOR_HOME: home }
+    const executorEnv = { ...pathEnv(bin), DEVROUNDS_EXECUTOR_HOME: home }
     log(`pairing ${machine}; executor home ${home}`)
     await run(EXE, ['pair', '--url', BASE, '--code', code], { env: executorEnv, windowsHide: true })
 
@@ -188,8 +227,9 @@ async function main(): Promise<void> {
       return /run ([0-9a-f-]{36})/.exec(out)?.[1] ?? assert.fail(out)
     }
     const view = (id: string) => api<RunJson>(`/projects/${PROJECT}/runs/${id}`)
-    const ended = (id: string, timeoutMs: number) =>
+    const ended = (id: string, timeoutMs: number, onPoll?: () => Promise<void>) =>
       until(`run ${id} to end`, timeoutMs, async () => {
+        await onPoll?.()
         const r = await view(id)
         return TERMINAL.includes(r.state) ? r : undefined
       })
@@ -227,7 +267,7 @@ async function main(): Promise<void> {
     })
     assert.equal(lines.length, 1000)
     assert.equal(lines.at(-1), 'line 1000')
-    // The swept children were the only tree-fixture processes of this build.
+    // The swept children were the only processes of this e2e's tree-fixture copy.
     await until('the swept tree to be gone', 10_000, async () => ((await fixtures()).length === 0 ? true : undefined))
     log(
       `synthetic finished: swept ${synthetic.resources.swept}, visible windows 0, peak ${synthetic.resources.peak} ` +
@@ -236,7 +276,9 @@ async function main(): Promise<void> {
 
     // lint
     log('lint: pnpm lint in the repo root')
-    const lint = await ended(await start('lint', ROOT.replace(/[\\/]$/, '')), 300_000)
+    const lint = await ended(await start('lint', ROOT.replace(/[\\/]$/, '')), 300_000, () =>
+      track(tracked, supervisePid),
+    )
     assert.equal(lint.state, 'finished', JSON.stringify(lint))
     assert.equal(lint.resources.visibleWindows, 0, JSON.stringify(lint))
     log(`lint finished in ${lint.durations.runTimeMs} ms, visible windows 0, swept ${lint.resources.swept}`)
@@ -297,7 +339,12 @@ async function main(): Promise<void> {
     }
     process.exitCode = 1
   } finally {
+    // Supervisor first, so nothing restarts; then what ran under it, still the same processes; then the rest of
+    // this e2e's binaries.
     if (supervise?.pid) await kill(supervise.pid)
+    for (const p of await snapshot().catch(() => [])) {
+      if (tracked.get(p.ProcessId) === p.Started) await kill(p.ProcessId)
+    }
     for (const p of [...(await executors().catch(() => [])), ...(await fixtures().catch(() => []))]) {
       await kill(p.ProcessId)
     }

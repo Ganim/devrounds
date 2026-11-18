@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // pnpm footprint: the idle private bytes (commit, never working set; spec §16.5) of the control plane and the
-// executor against their budgets. Exits 1 when a side is over budget, has no process, or the machines never go idle.
+// executor against their budgets. Exits 1 when a side is over budget, misses a process, or the machines never go idle.
 //
-//   pnpm footprint                                     the installed services, found by command line
+//   pnpm footprint                                     the installed services: both roles of each scheduled task
 //   pnpm footprint --control-plane-pids 1,2 --executor-pids 3,4   given processes (scripts/e2e uses this)
 //   --idle-ms <n>                                      idle window before measuring (default 60000)
 //
@@ -27,7 +27,7 @@ const POLL_MS = 5_000
 const IDLE_TIMEOUT_MS = 10 * 60_000
 
 export type Measured = { pid: number; name: string; privateBytes: number }
-export type Side = { name: string; budget: number; processes: Measured[] }
+export type Side = { name: string; budget: number; processes: Measured[]; missing?: string[] }
 export type Api = { url: string; token: string }
 
 async function powershellJson<T>(script: string): Promise<T[]> {
@@ -39,34 +39,81 @@ async function powershellJson<T>(script: string): Promise<T[]> {
   return stdout.trim() === '' ? [] : (JSON.parse(stdout) as T[])
 }
 
-type CimProcess = { ProcessId: number; Name: string; CommandLine: string | null }
-
-// The control plane is its supervisor (service/supervise.ts) and `main.ts serve`; the executor is `supervise` and
-// `run` of devrounds-executor.exe. Their console hosts and helpers are outside the budgets.
-export function classify(processes: CimProcess[]): { controlPlane: number[]; executor: number[] } {
-  const controlPlane: number[] = []
-  const executor: number[] = []
-  for (const p of processes) {
-    const line = p.CommandLine ?? ''
-    const name = p.Name.toLowerCase()
-    if (
-      name === 'node.exe' &&
-      (/[\\/]service[\\/]supervise\.ts"?(\s|$)/.test(line) || /main\.ts"?\s+serve\s*$/.test(line))
-    ) {
-      controlPlane.push(p.ProcessId)
-    } else if (name === 'devrounds-executor.exe' && /\s(supervise|run(\s+--supervised)?)\s*$/.test(line)) {
-      executor.push(p.ProcessId)
-    }
-  }
-  return { controlPlane, executor }
+type CimProcess = {
+  ProcessId: number
+  ParentProcessId: number
+  Name: string
+  ExecutablePath: string | null
+  CommandLine: string | null
 }
 
-export async function findServiceProcesses(): Promise<{ controlPlane: number[]; executor: number[] }> {
+// What the two scheduled tasks run: the control plane's supervise.ts and the executor's installed copy. A lane, a
+// worktree or the e2e runs the same programs from elsewhere, and none of those count.
+export type Installed = { supervisor: string | null; executor: string | null }
+
+// From the tasks' action arguments, as written by control-plane/src/service/install.ts and the executor's
+// service.rs: `--headless "<node>" "<supervise.ts>"` and `--headless "<exe>" supervise`.
+export function installedPaths(args: { controlPlane: string | null; executor: string | null }): Installed {
+  return {
+    supervisor: args.controlPlane?.match(/"([^"]+supervise\.ts)"/i)?.[1] ?? null,
+    executor: args.executor?.match(/"([^"]+\.exe)"\s+supervise/i)?.[1] ?? null,
+  }
+}
+
+export type Roles = {
+  controlPlane: { supervise: number[]; serve: number[] }
+  executor: { supervise: number[]; run: number[] }
+}
+
+const same = (a: string | null, b: string | null) => a !== null && b !== null && a.toLowerCase() === b.toLowerCase()
+
+// The control plane is the installed supervisor and the `main.ts serve` it started; the executor is `supervise` and
+// `run` of the installed copy. Their console hosts and helpers are outside the budgets.
+export function classify(processes: CimProcess[], installed: Installed): Roles {
+  const roles: Roles = { controlPlane: { supervise: [], serve: [] }, executor: { supervise: [], run: [] } }
+  const supervisor = installed.supervisor?.toLowerCase() ?? null
+  // conhost passes the task's arguments on unquoted, so the path is matched as the line's last argument.
+  const runsSupervisor = (line: string) =>
+    supervisor !== null &&
+    [supervisor, `"${supervisor}"`].some((arg) => line.toLowerCase().trimEnd().endsWith(` ${arg}`))
+  for (const p of processes) {
+    const line = p.CommandLine ?? ''
+    if (p.Name.toLowerCase() === 'node.exe' && runsSupervisor(line)) {
+      roles.controlPlane.supervise.push(p.ProcessId)
+    } else if (same(p.ExecutablePath, installed.executor)) {
+      if (/\ssupervise\s*$/.test(line)) roles.executor.supervise.push(p.ProcessId)
+      else if (/\srun(\s+--supervised)?\s*$/.test(line)) roles.executor.run.push(p.ProcessId)
+    }
+  }
+  // serve by parent: the supervisor spawns it directly, so a serve of a lane or of the e2e is never picked.
+  for (const p of processes) {
+    if (
+      p.Name.toLowerCase() === 'node.exe' &&
+      /main\.ts"?\s+serve\s*$/.test(p.CommandLine ?? '') &&
+      roles.controlPlane.supervise.includes(p.ParentProcessId)
+    ) {
+      roles.controlPlane.serve.push(p.ProcessId)
+    }
+  }
+  return roles
+}
+
+export function missingRoles(roles: Roles): { controlPlane: string[]; executor: string[] } {
+  const empty = (side: Record<string, number[]>) => Object.keys(side).filter((role) => side[role].length === 0)
+  return { controlPlane: empty(roles.controlPlane), executor: empty(roles.executor) }
+}
+
+export async function findServiceProcesses(): Promise<Roles> {
+  const actions = await powershellJson<{ TaskName: string; Arguments: string | null }>(
+    "Get-ScheduledTask | Where-Object { $_.TaskName -in 'DevRounds', 'DevRoundsExecutor' } | " +
+      'ForEach-Object { $name = $_.TaskName; $_.Actions | ForEach-Object { [pscustomobject]@{ TaskName = $name; Arguments = $_.Arguments } } }',
+  )
+  const args = (task: string) => actions.find((a) => a.TaskName === task)?.Arguments ?? null
   const processes = await powershellJson<CimProcess>(
     `Get-CimInstance Win32_Process -Filter "name='node.exe' or name='devrounds-executor.exe'" | ` +
-      'Select-Object ProcessId, Name, CommandLine',
+      'Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine',
   )
-  return classify(processes)
+  return classify(processes, installedPaths({ controlPlane: args('DevRounds'), executor: args('DevRoundsExecutor') }))
 }
 
 // PrivateMemorySize64 is the process's commit (private bytes). A PID that is gone is left out, which shows up as a
@@ -102,17 +149,20 @@ export async function waitIdle(api: Api, idleMs: number, timeoutMs = IDLE_TIMEOU
 
 const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`
 
+// `missing` names the roles found without a process (discovery only): half a service is not an idle service.
 export function verdict(sides: Side[]): { ok: boolean; lines: string[] } {
   let ok = true
   const lines: string[] = []
   for (const side of sides) {
+    const missing = side.missing ?? []
     const total = side.processes.reduce((sum, p) => sum + p.privateBytes, 0)
-    const pass = side.processes.length > 0 && total <= side.budget
+    const pass = side.processes.length > 0 && missing.length === 0 && total <= side.budget
     ok &&= pass
     const each = side.processes.map((p) => `${p.name} ${p.pid} ${mb(p.privateBytes)}`).join(', ')
+    const found = side.processes.length === 0 && missing.length === 0 ? 'no process found' : each
     lines.push(
       `${side.name}: ${mb(total)} private bytes (budget ${mb(side.budget)}) ${pass ? 'PASS' : 'FAIL'}` +
-        ` · ${side.processes.length === 0 ? 'no process found' : each}`,
+        ` · ${[found, missing.length > 0 ? `missing ${missing.join(', ')}` : ''].filter((s) => s !== '').join(' · ')}`,
     )
   }
   return { ok, lines }
@@ -125,24 +175,37 @@ export async function footprint(opts: {
 }): Promise<{ ok: boolean; lines: string[] }> {
   await waitIdle(opts.api, opts.idleMs ?? IDLE_MS)
   // Looked up after the idle window: a supervisor may have restarted a process meanwhile.
-  const pids = opts.pids ?? (await findServiceProcesses())
+  const roles = opts.pids ? null : await findServiceProcesses()
+  const pids = opts.pids ?? {
+    controlPlane: Object.values(roles?.controlPlane ?? {}).flat(),
+    executor: Object.values(roles?.executor ?? {}).flat(),
+  }
+  const missing = roles === null ? { controlPlane: [], executor: [] } : missingRoles(roles)
   const [controlPlane, executor] = await Promise.all([measure(pids.controlPlane), measure(pids.executor)])
   return verdict([
-    { name: 'executor', budget: EXECUTOR_BUDGET, processes: executor },
-    { name: 'control plane', budget: CONTROL_PLANE_BUDGET, processes: controlPlane },
+    { name: 'executor', budget: EXECUTOR_BUDGET, processes: executor, missing: missing.executor },
+    { name: 'control plane', budget: CONTROL_PLANE_BUDGET, processes: controlPlane, missing: missing.controlPlane },
   ])
 }
 
-async function apiFromEnv(): Promise<Api> {
-  let url = process.env.DEVROUNDS_URL
-  let token = process.env.DEVROUNDS_TOKEN
+export async function apiFromEnv(env: NodeJS.ProcessEnv = process.env, home = homedir()): Promise<Api> {
+  let url = env.DEVROUNDS_URL
+  let token = env.DEVROUNDS_TOKEN
+  const hint = 'set DEVROUNDS_URL and DEVROUNDS_TOKEN or run devrounds login'
   if (!url || !token) {
-    const path = join(homedir(), '.devrounds', 'config.json')
-    const file = JSON.parse(await readFile(path, 'utf8')) as Partial<Api>
+    const path = join(home, '.devrounds', 'config.json')
+    let text: string
+    try {
+      text = await readFile(path, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      throw new Error(`no ${path}: ${hint}`)
+    }
+    const file = JSON.parse(text) as Partial<Api>
     url ||= file.url
     token ||= file.token
   }
-  if (!url || !token) throw new Error('set DEVROUNDS_URL and DEVROUNDS_TOKEN or run devrounds login')
+  if (!url || !token) throw new Error(hint)
   return { url, token }
 }
 
