@@ -45,7 +45,8 @@ export async function foreignKeysWithoutIndex(db: Kysely<Database>, schema = 'pu
         where i.indrelid = c.conrelid and i.indisvalid and i.indpred is null
           and (select array_agg(u.k order by u.k)
                from unnest(i.indkey::int2[]) with ordinality as u(k, ord)
-               where u.ord <= cardinality(c.conkey))
+               -- indnkeyatts excludes INCLUDE columns, which cannot be searched.
+               where u.ord <= cardinality(c.conkey) and u.ord <= i.indnkeyatts)
             = (select array_agg(k order by k) from unnest(c.conkey) as k))
     order by 1`.execute(db)
   return rows.map((row) => row.fk)

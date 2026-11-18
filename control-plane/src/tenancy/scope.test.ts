@@ -141,16 +141,23 @@ test('the foreign key guard flags a key whose columns are not the leading column
     await sql.raw(`create table ${schema}.parent (tenant_id uuid, id uuid, unique (tenant_id, id))`).execute(admin)
     await sql
       .raw(`create table ${schema}.child (
-        tenant_id uuid, parent_id uuid, other_id uuid,
+        tenant_id uuid, parent_id uuid, other_id uuid, extra_id uuid,
         constraint fk_covered foreign key (tenant_id, parent_id) references ${schema}.parent (tenant_id, id),
         constraint fk_trailing foreign key (tenant_id, other_id) references ${schema}.parent (tenant_id, id),
-        constraint fk_reordered foreign key (parent_id, other_id) references ${schema}.parent (tenant_id, id))`)
+        constraint fk_reordered foreign key (parent_id, other_id) references ${schema}.parent (tenant_id, id),
+        constraint fk_included foreign key (tenant_id, extra_id) references ${schema}.parent (tenant_id, id))`)
       .execute(admin)
     await sql.raw(`create index on ${schema}.child (parent_id, tenant_id)`).execute(admin)
     // Leads with (parent_id, other_id): covers `fk_reordered`, but not `fk_trailing` (tenant_id, other_id).
     await sql.raw(`create index on ${schema}.child (parent_id, other_id, tenant_id)`).execute(admin)
 
-    assert.deepEqual(await foreignKeysWithoutIndex(admin, schema), [`${schema}.child.fk_trailing`])
+    // INCLUDE columns are payload, not search keys: the index leads with tenant_id only, so `fk_included` is bare.
+    await sql.raw(`create index on ${schema}.child (tenant_id) include (extra_id)`).execute(admin)
+
+    assert.deepEqual(await foreignKeysWithoutIndex(admin, schema), [
+      `${schema}.child.fk_included`,
+      `${schema}.child.fk_trailing`,
+    ])
   } finally {
     await sql.raw(`drop schema ${schema} cascade`).execute(admin)
   }
