@@ -1,11 +1,14 @@
 //! `devrounds-executor`: runs DevRounds jobs on this machine. Later tasks add
-//! `run`, `supervise` and `service`.
+//! `supervise` and `service`.
 
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: devrounds-executor pair --url <url> --code <code> | version";
+#[cfg(windows)]
+mod serve;
+
+const USAGE: &str = "usage: devrounds-executor pair --url <url> --code <code> | run | version";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -32,6 +35,8 @@ fn main() -> ExitCode {
         }
         #[cfg(windows)]
         Some("pair") => pair(args.collect()),
+        #[cfg(windows)]
+        Some("run") if args.next().is_none() => run(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -80,6 +85,29 @@ fn pair(args: Vec<OsString>) -> ExitCode {
             println!("paired; wrote {}", home.display());
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("{error}\nsee docs/errors.md");
+            ExitCode::from(exit_code(error.code))
+        }
+    }
+}
+
+/// `run`: keeps the session with the control plane and runs what it offers,
+/// until the token is revoked or a newer session of this machine takes over.
+#[cfg(windows)]
+fn run() -> ExitCode {
+    let served = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            devrounds_core::DrError::new(
+                "DR501",
+                serde_json::json!({ "reason": format!("tokio runtime: {error}") }),
+            )
+        })
+        .and_then(|runtime| runtime.block_on(serve::serve()));
+    match served {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}\nsee docs/errors.md");
             ExitCode::from(exit_code(error.code))

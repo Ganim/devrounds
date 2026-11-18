@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 devrounds-core = { path = "../core" }
+devrounds-logs = { path = "../logs" }
 devrounds-metrics = { path = "../metrics" }
 devrounds-protocol = { path = "../protocol" }
 devrounds-start-gate = { path = "../start-gate" }

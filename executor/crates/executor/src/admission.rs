@@ -12,12 +12,15 @@ use devrounds_core::{
     },
 };
 use devrounds_start_gate::{AdaptiveConfig, AdaptiveGate, GateOptions};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 pub use devrounds_core::gate::DEFAULT_MEMORY_NEED;
 
-/// Admission tuning; executor config `admission.*`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Admission tuning; executor config `admission.*`. Missing fields take the
+/// defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AdmissionConfig {
     /// Window at the start of each busy period.
     pub initial_window: usize,
@@ -27,7 +30,23 @@ pub struct AdmissionConfig {
     pub target_cpu: f64,
     /// A start slot is given back after this even if the run never settled or
     /// exited, so a long-starting run cannot hold the queue.
+    #[serde(rename = "slot_timeout_s", with = "seconds")]
     pub slot_timeout: Duration,
+}
+
+/// A duration as whole seconds in config.json.
+mod seconds {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(value.as_secs())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        u64::deserialize(deserializer).map(Duration::from_secs)
+    }
 }
 
 impl Default for AdmissionConfig {
@@ -155,7 +174,9 @@ impl Admitting {
             // Mark the current state seen before reading it, so a change made
             // after the read wakes the wait below.
             self.changes.borrow_and_update();
-            let delay = delay(&self.gate.snapshot(), &self.run, self.reported);
+            // Marks the reason reported even when the ticket wins below: after
+            // `Admitted` no delay is reported again.
+            let delay = delay(&self.gate.snapshot(), &self.run, &mut self.reported);
             tokio::select! {
                 biased;
                 slot = &mut *ticket => {
@@ -164,7 +185,6 @@ impl Admitting {
                 }
                 () = std::future::ready(()), if delay.is_some() => {
                     if let Some((reason, position, available)) = delay {
-                        self.reported = Some(reason);
                         let need = self.need;
                         return AdmissionStep::Delayed { reason, position, need, available };
                     }
@@ -176,23 +196,76 @@ impl Admitting {
     }
 }
 
-/// Reason, position and available memory to report for `run`, unless it is
-/// not queued, the reason was already reported, or the gate only waits for
-/// its first memory reading.
+/// Reason, position and available memory to report for `run`, unless the
+/// reason was already reported or the gate only waits for its first memory
+/// reading. `reported` is the reason last reported: a run seen without a hold
+/// (or not queued) clears it, so any later hold reports again, even one with
+/// the reason reported before the clear.
 fn delay(
     snapshot: &GateSnapshot,
     run: &str,
-    reported: Option<DelayReason>,
+    reported: &mut Option<DelayReason>,
 ) -> Option<(DelayReason, usize, Option<u64>)> {
-    let entry = snapshot.find(run)?;
-    let hold = snapshot.hold?;
+    let (Some(entry), Some(hold)) = (snapshot.find(run), snapshot.hold) else {
+        *reported = None;
+        return None;
+    };
     // A memory hold with no reading yet is the gate fetching its first one
     // (it samples at once), not memory being short: every second start of a
     // busy period passes through it. A failed read or a platform without the
-    // number lets starts through, so this never hides a real hold.
+    // number lets starts through, so this never hides a real hold. It counts
+    // as no change, neither a report nor a clear.
     if hold == HoldReason::Memory && snapshot.available_memory.is_none() {
         return None;
     }
     let reason = DelayReason::from(hold);
-    (reported != Some(reason)).then_some((reason, entry.position, snapshot.available_memory))
+    if *reported == Some(reason) {
+        return None;
+    }
+    *reported = Some(reason);
+    Some((reason, entry.position, snapshot.available_memory))
+}
+
+#[cfg(test)]
+mod tests {
+    use devrounds_core::gate::{GateSnapshot, HoldReason, QueuedStart, StartRequest};
+
+    use super::{DelayReason, delay};
+
+    fn held(hold: Option<HoldReason>) -> GateSnapshot {
+        GateSnapshot {
+            mode: "adaptive".into(),
+            window: Some(1),
+            in_flight: 1,
+            queued: vec![QueuedStart {
+                request: StartRequest {
+                    run: "run-1".into(),
+                    job_type: "check".into(),
+                    order: 0,
+                    memory_need: 1 << 30,
+                },
+                position: 1,
+            }],
+            hold,
+            pressure: None,
+            available_memory: Some(1 << 20),
+            burst: None,
+        }
+    }
+
+    /// The public gate never shows a queued run without a hold, so the clear
+    /// is only reachable on a hand-built snapshot.
+    #[test]
+    fn a_cleared_hold_reports_the_same_reason_again() {
+        let mut reported = None;
+        let first = delay(&held(Some(HoldReason::Memory)), "run-1", &mut reported);
+        assert_eq!(first.map(|d| d.0), Some(DelayReason::Memory));
+        assert_eq!(
+            delay(&held(Some(HoldReason::Memory)), "run-1", &mut reported),
+            None
+        );
+        assert_eq!(delay(&held(None), "run-1", &mut reported), None);
+        let again = delay(&held(Some(HoldReason::Memory)), "run-1", &mut reported);
+        assert_eq!(again.map(|d| d.0), Some(DelayReason::Memory));
+    }
 }

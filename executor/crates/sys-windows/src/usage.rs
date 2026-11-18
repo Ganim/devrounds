@@ -56,6 +56,10 @@ pub struct MemoryStatus {
     /// Memory available without paging anything out: free, zeroed and
     /// standby (cache) pages.
     pub available_physical: u64,
+    /// Commit charge limit: physical memory plus page files.
+    pub commit_limit: u64,
+    /// Memory committed now, against `commit_limit`.
+    pub commit_total: u64,
 }
 
 /// The usage of `pid`, or `None` when it is gone, has exited, refuses
@@ -110,6 +114,11 @@ pub fn memory_status() -> io::Result<MemoryStatus> {
     Ok(MemoryStatus {
         total_physical: status.ullTotalPhys,
         available_physical: status.ullAvailPhys,
+        // "PageFile" here is the commit limit and what is left of it.
+        commit_limit: status.ullTotalPageFile,
+        commit_total: status
+            .ullTotalPageFile
+            .saturating_sub(status.ullAvailPageFile),
     })
 }
 

@@ -17,6 +17,10 @@ devrounds-executor = { path = "../../crates/executor" }
 [target.'cfg(windows)'.dependencies]
 devrounds-runner-windows = { path = "../../crates/runner-windows" }
 devrounds-core = { path = "../../crates/core" }
+devrounds-metrics-windows = { path = "../../crates/metrics-windows" }
+devrounds-protocol = { path = "../../crates/protocol" }
+devrounds-store = { path = "../../crates/store" }
+devrounds-sys-windows = { path = "../../crates/sys-windows" }
 serde_json.workspace = true
 tokio.workspace = true
 

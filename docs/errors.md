@@ -114,13 +114,21 @@ Task {task} is {state}, which does not allow this change.
 
 A done or cancelled task accepts no new open criteria: reopen {task} first with `devrounds task reopen {task} --reason <text>`.
 
+## DR350
+
+Machine {machine} is not connected.
+
+### Fix
+
+Start the executor on {machine} with `devrounds-executor run`, then check `devrounds machine list` shows it connected.
+
 ## DR351
 
 Run {run} is {state}, which does not allow this change.
 
 ### Fix
 
-Read the state of run {run} again: a finished, failed, stopped or orphaned run takes no more events and is the only kind that can be retried.
+Read the state of run {run} again with `devrounds run show {run}`: a finished, failed, stopped or orphaned run takes no more events and is the only kind that can be retried.
 
 ## DR352
 

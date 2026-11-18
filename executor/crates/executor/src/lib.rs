@@ -1,5 +1,5 @@
 //! The DevRounds executor: pairing, the session with the control plane,
-//! admission, isolation and sampling. Later tasks add the run loop here.
+//! admission, isolation, sampling and the run loop.
 
 pub mod admission;
 #[cfg(windows)]
@@ -8,9 +8,14 @@ pub mod config;
 pub mod connection;
 pub mod isolation;
 #[cfg(windows)]
+mod output;
+#[cfg(windows)]
 pub mod pair;
 #[cfg(windows)]
+pub mod runs;
+#[cfg(windows)]
 mod sampler;
+pub mod steps;
 
 #[cfg(windows)]
 pub use sampler::{IDLE_INTERVAL, SLOT_INTERVAL, Sampler};

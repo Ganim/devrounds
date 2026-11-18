@@ -47,6 +47,7 @@ async fn tick(clock: &ManualClock, seconds: u64) {
 #[derive(Default)]
 struct Scripted {
     cpu: Mutex<f64>,
+    memory: Mutex<MemoryPressure>,
     available: Mutex<Option<u64>>,
 }
 
@@ -54,8 +55,13 @@ impl Scripted {
     fn new(cpu: f64, available: u64) -> Arc<Self> {
         Arc::new(Self {
             cpu: Mutex::new(cpu),
+            memory: Mutex::new(MemoryPressure::Normal),
             available: Mutex::new(Some(available)),
         })
+    }
+
+    fn set_memory(&self, level: MemoryPressure) {
+        *self.memory.lock().unwrap_or_else(PoisonError::into_inner) = level;
     }
 
     fn set_cpu(&self, cpu: f64) {
@@ -79,7 +85,7 @@ impl PressureSource for Scripted {
     async fn sample(&self) -> Result<PressureSample, Error> {
         Ok(PressureSample {
             cpu_percent: Some(*self.cpu.lock().unwrap_or_else(PoisonError::into_inner)),
-            memory: Some(MemoryPressure::Normal),
+            memory: Some(*self.memory.lock().unwrap_or_else(PoisonError::into_inner)),
             cpu_stall_percent: None,
         })
     }
@@ -142,6 +148,34 @@ async fn memory_hold_reports_delayed_memory_then_admits() {
             other => panic!("expected admission once memory fits, got {other:?}"),
         };
         assert_eq!(admission.snapshot().in_flight, 2);
+    })
+    .await;
+}
+
+/// The reason of a `Delayed` step; panics on `Admitted`.
+fn delayed(step: AdmissionStep) -> DelayReason {
+    match step {
+        AdmissionStep::Delayed { reason, .. } => reason,
+        AdmissionStep::Admitted(_) => panic!("expected a delay"),
+    }
+}
+
+/// Memory, then critical memory pressure, then memory again: each change is
+/// one `Delayed`, the return to `Memory` included.
+#[tokio::test]
+async fn every_change_of_reason_reports_once_back_to_memory_included() {
+    bounded(async {
+        let pressure = Scripted::new(10.0, GIB);
+        let (admission, clock) = admission(AdmissionConfig::default(), pressure.clone());
+        let _first = admitted(&mut admission.admit("run-1", "test", DEFAULT_MEMORY_NEED)).await;
+        let mut second = admission.admit("run-2", "test", 2 * GIB);
+        assert_eq!(delayed(second.next().await), DelayReason::Memory);
+        pressure.set_memory(MemoryPressure::Critical);
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(delayed(second.next().await), DelayReason::MemoryCritical);
+        pressure.set_memory(MemoryPressure::Normal);
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(delayed(second.next().await), DelayReason::Memory);
     })
     .await;
 }

@@ -6,8 +6,10 @@ import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { restrictToOwner } from '../owner-only.ts'
+import { parseJobTypeFile } from '../job-types/file.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
+import type { RunView } from '../runs/view.ts'
 import { type AgentOutput, BODY_BUDGET, fitBody, planShow, renderAgent, shellArg } from './output.ts'
 
 // `devrounds`: the agent CLI. It talks only to the control plane's HTTP API (imports here are types and pure
@@ -86,7 +88,7 @@ type Api = {
   get<T>(path: string, query?: Record<string, string | undefined>): Promise<T>
   getText(path: string): Promise<string>
   // Every mutation sends a random Idempotency-Key, one per invocation: running the command again is a new request.
-  send<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<T>
+  send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<T>
   // The control plane URL, for next steps run elsewhere (the executor's pair command).
   url: string
   // The same client on paths under `/api/machines` instead of the configured project.
@@ -268,6 +270,59 @@ function dependency(scope: 'phase' | 'task', verb: 'add' | 'rm'): Spec {
 }
 
 const IMPORT_SAMPLE = 20
+
+// A run as JSON: its dates arrive as ISO strings.
+type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
+  timeline: Record<keyof RunView['timeline'], string | null>
+  steps: { step: number; name: string; startedAt: string; finishedAt: string | null; outcome: string | null }[]
+  delays: { at: string; reason: string; needBytes: number; availableBytes: number | null; position: number }[]
+}
+
+const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned']
+// Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
+const RUN_WAIT_S = 25
+
+const mib = (bytes: number | null) => (bytes === null ? '-' : `${(bytes / 1048576).toFixed(1)} MiB`)
+const ms = (value: number | null) => (value === null ? '-' : `${value} ms`)
+
+// Failures first (state, class, summary), then timeline, durations, resources, steps and delays.
+function runShow(r: RunJson): Result {
+  const failed = r.state === 'failed' || r.state === 'stopped' || r.state === 'orphaned'
+  const exit = r.outcome.exitCode === null ? '' : ` (exit ${r.outcome.exitCode})`
+  const failures = failed
+    ? [
+        `run ${r.id} ${r.state}${r.outcome.failureClass ? `: ${r.outcome.failureClass}` : ''}${exit}`,
+        ...(r.outcome.failureSummary ? [`summary: ${r.outcome.failureSummary}`] : []),
+      ]
+    : []
+  const t = r.timeline
+  const res = r.resources
+  const body = [
+    `run ${r.id} ${r.state}${failed ? '' : exit} · ${r.jobType} on ${r.machine} · attempt ${r.attempt}${r.task ? ` · task ${r.task}` : ''}`,
+    `timeline: queued ${t.queuedAt} · offered ${t.offeredAt ?? '-'} · admitted ${t.admittedAt ?? '-'} · started ${t.startedAt ?? '-'} · finished ${t.finishedAt ?? '-'}`,
+    `durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
+    `resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds ?? '-'} s · swept ${res.swept ?? '-'} · visible windows ${res.visibleWindows ?? '-'}`,
+  ]
+  if (r.steps.length > 0) {
+    body.push('steps:')
+    for (const s of r.steps) body.push(`  ${s.step} ${s.name} ${s.outcome ?? 'open'} · ${s.startedAt} → ${s.finishedAt ?? '-'}`)
+  }
+  if (r.delays.length > 0) {
+    body.push('delays:')
+    for (const d of r.delays) {
+      body.push(
+        `  ${d.at} ${d.reason} · position ${d.position} · need ${mib(d.needBytes)} · available ${mib(d.availableBytes)}`,
+      )
+    }
+  }
+  const id = shellArg(r.id)
+  const next = failed
+    ? `devrounds run show ${id}`
+    : TERMINAL_RUN.includes(r.state)
+      ? 'devrounds plan show'
+      : `devrounds run show ${id} --wait`
+  return { failures, body, next }
+}
 
 export const COMMANDS: Spec[] = [
   {
@@ -675,6 +730,73 @@ export const COMMANDS: Spec[] = [
       const name = arg(inv, 0, '<name>')
       await api.machines().send('POST', path(name, 'revoke'))
       return { failures: [], body: [`revoked machine ${name}`], next: 'devrounds machine list' }
+    },
+  },
+  {
+    path: ['jobtype', 'set'],
+    usage: 'jobtype set <file.yaml>   create or replace the job type the file describes',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const file = arg(inv, 0, '<file.yaml>')
+      const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
+        fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
+      )
+      // Parsed here only for its key (the route's path); the server checks the file again.
+      const { key } = parseJobTypeFile(yaml)
+      await api.send('PUT', path('job-types', key), yaml, 'text/yaml')
+      return {
+        failures: [],
+        body: [`saved job type ${key}`],
+        next: `devrounds run start ${shellArg(key)} --machine <name> --cwd <path>`,
+      }
+    },
+  },
+  {
+    path: ['run', 'start'],
+    usage: 'run start <jobType> --machine <name> --cwd <path> [--task <key>]',
+    args: 1,
+    options: { machine: str, cwd: str, task: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const jobType = arg(inv, 0, '<jobType>')
+      const need = (name: string) => text(inv, name) ?? fail('DR101', { path: `--${name}`, reason: 'is required' })
+      const body = { jobType, machine: need('machine'), cwd: need('cwd'), task: text(inv, 'task') }
+      const r = await api.send<RunJson>('POST', '/runs', body)
+      return {
+        failures: [],
+        body: [`run ${r.id} ${r.state} · ${r.jobType} on ${r.machine}`],
+        next: `devrounds run show ${shellArg(r.id)} --wait`,
+      }
+    },
+  },
+  {
+    path: ['run', 'show'],
+    usage: 'run show <id> [--wait]   --wait returns once the run ended',
+    args: 1,
+    options: { wait: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const id = arg(inv, 0, '<id>')
+      const wait = inv.values.wait === true
+      let r = await api.get<RunJson>(path('runs', id), wait ? { wait: String(RUN_WAIT_S) } : {})
+      while (wait && !TERMINAL_RUN.includes(r.state)) {
+        r = await api.get<RunJson>(path('runs', id), { wait: String(RUN_WAIT_S) })
+      }
+      return runShow(r)
+    },
+  },
+  {
+    path: ['run', 'stop'],
+    usage: 'run stop <id>   the executor stops the process tree; the run ends as stopped',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const id = arg(inv, 0, '<id>')
+      await api.send('POST', path('runs', id, 'stop'))
+      return { failures: [], body: [`asked the executor to stop run ${id}`], next: `devrounds run show ${shellArg(id)} --wait` }
     },
   },
 ]

@@ -88,9 +88,15 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['task', 'state'],
   },
+  DR350: {
+    text: 'Machine {machine} is not connected.',
+    hint: 'Start the executor on {machine} with `devrounds-executor run`, then check `devrounds machine list` shows it connected.',
+    httpStatus: 409,
+    keys: ['machine'],
+  },
   DR351: {
     text: 'Run {run} is {state}, which does not allow this change.',
-    hint: 'Read the state of run {run} again: a finished, failed, stopped or orphaned run takes no more events and is the only kind that can be retried.',
+    hint: 'Read the state of run {run} again with `devrounds run show {run}`: a finished, failed, stopped or orphaned run takes no more events and is the only kind that can be retried.',
     httpStatus: 409,
     keys: ['run', 'state'],
   },

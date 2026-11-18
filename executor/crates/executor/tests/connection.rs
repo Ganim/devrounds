@@ -12,6 +12,7 @@ use std::{
 
 use devrounds_core::{DrError, gate::MemoryPressure};
 use devrounds_executor::{
+    admission::AdmissionConfig,
     config::{CONFIG_FILE, ExecutorConfig, HomeLock, STORE_FILE, TOKEN_FILE},
     connection::{Connection, Handler},
     pair::pair,
@@ -97,6 +98,7 @@ async fn ws_to_a_non_loopback_host_is_refused() {
         let config = ExecutorConfig {
             url: url.to_owned(),
             machine_id: "m".to_owned(),
+            admission: AdmissionConfig::default(),
         };
         let dir = home();
         let connection = connection(&dir).await;
@@ -167,7 +169,8 @@ async fn pair_writes_an_owner_only_token_file() {
         config,
         ExecutorConfig {
             url,
-            machine_id: "m-1".to_owned()
+            machine_id: "m-1".to_owned(),
+            admission: AdmissionConfig::default(),
         }
     );
     let config_text = std::fs::read_to_string(home.join(CONFIG_FILE)).expect("config");
@@ -215,6 +218,7 @@ async fn hello_then_machine_report_reach_the_server() {
     let config = ExecutorConfig {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
     };
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept");

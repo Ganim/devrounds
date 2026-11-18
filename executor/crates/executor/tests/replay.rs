@@ -7,6 +7,7 @@ use std::{future::Future, time::Duration};
 
 use devrounds_core::gate::MemoryPressure;
 use devrounds_executor::{
+    admission::AdmissionConfig,
     config::ExecutorConfig,
     connection::{Connection, Handler},
 };
@@ -143,6 +144,7 @@ async fn a_fresh_store_continues_after_the_control_planes_last_seq() {
     let config = ExecutorConfig {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
     };
     let connection = Connection::new(store.clone());
     let mut connected = connection.connected();
@@ -181,6 +183,7 @@ async fn reconnect_replays_unacked_events_in_order() {
     let config = ExecutorConfig {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
     };
     let connection = Connection::new(store.clone());
     let mut connected = connection.connected();

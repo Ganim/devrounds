@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::http::Uri;
 
+use crate::admission::AdmissionConfig;
+
 /// Overrides the default home, `~/.devrounds/executor`.
 pub const HOME_ENV: &str = "DEVROUNDS_EXECUTOR_HOME";
 pub const CONFIG_FILE: &str = "config.json";
@@ -24,12 +26,38 @@ const LOCK_FILE: &str = "executor.lock";
 /// other processes from reading the locked file itself.
 const PID_FILE: &str = "executor.pid";
 
-/// `<home>/config.json`. Later tasks add `admission` and `otlp_endpoint`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `<home>/config.json`. Later tasks add `otlp_endpoint`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutorConfig {
     /// The control plane base URL, `http(s)://host[:port][/prefix]`.
     pub url: String,
     pub machine_id: String,
+    /// Admission tuning; the defaults when absent.
+    #[serde(default)]
+    pub admission: AdmissionConfig,
+}
+
+/// `config.json` and the machine token of a paired home; DR551 when either
+/// is missing or `config.json` does not parse.
+pub async fn load_pairing(home: &Path) -> Result<(ExecutorConfig, String), DrError> {
+    let home = home.to_path_buf();
+    blocking(move || {
+        let not_paired = |path: &Path, reason: String| {
+            DrError::new(
+                "DR551",
+                json!({ "reason": format!("{}: {reason}; run devrounds-executor pair first", path.display()) }),
+            )
+        };
+        let config_path = home.join(CONFIG_FILE);
+        let text = fs::read(&config_path).map_err(|error| not_paired(&config_path, error.to_string()))?;
+        let config: ExecutorConfig = serde_json::from_slice(&text)
+            .map_err(|error| not_paired(&config_path, error.to_string()))?;
+        let token_path = home.join(TOKEN_FILE);
+        let token = fs::read_to_string(&token_path)
+            .map_err(|error| not_paired(&token_path, error.to_string()))?;
+        Ok((config, token.trim().to_owned()))
+    })
+    .await
 }
 
 /// `DEVROUNDS_EXECUTOR_HOME`, else `~/.devrounds/executor`.

@@ -14,6 +14,7 @@ import { executorRoutes, MAX_PAYLOAD, Sessions } from '../executor/gateway.ts'
 import { PairingLimiter } from '../machines/pairing.ts'
 import { machineRoutes } from './machine-routes.ts'
 import { projectRoutes } from './routes.ts'
+import { runRoutes } from './run-routes.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -88,6 +89,7 @@ export function buildServer(opts: ServerOptions) {
   const limiter = opts.pairingLimiter ?? new PairingLimiter()
   app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD } })
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
   app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter })
 

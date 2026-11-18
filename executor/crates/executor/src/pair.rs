@@ -41,6 +41,7 @@ pub async fn pair(home: &Path, url: &str, code: &str) -> Result<(), DrError> {
     let config = ExecutorConfig {
         url: url.http(""),
         machine_id: paired.machine_id,
+        admission: crate::admission::AdmissionConfig::default(),
     };
     save_pairing(home, &config, &paired.token).await
 }

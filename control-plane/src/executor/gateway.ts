@@ -10,6 +10,7 @@ import { DevRoundsError } from '../errors/error.ts'
 import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../machines/pairing.ts'
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
+import { runEvents } from '../runs/dispatch.ts'
 import { applyRunEvent } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import {
@@ -114,10 +115,13 @@ async function skipEvent(ctx: TenantCtx, rejected: Rejected, log: FastifyBaseLog
  */
 async function applyEvent(ctx: TenantCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
   try {
-    await withTenant(ctx.db, ctx.tenantId, async (trx) => {
-      if (!(await advanceLastSeq(trx, machineId, message.seq)) || message.event.kind === 'Unknown') return
+    const applied = await withTenant(ctx.db, ctx.tenantId, async (trx) => {
+      if (!(await advanceLastSeq(trx, machineId, message.seq)) || message.event.kind === 'Unknown') return undefined
       await applyRunEvent({ ...ctx, trx }, machineId, message.event, new Date(message.at), log)
+      return 'run' in message.event ? message.event.run : undefined
     })
+    // After the commit, so a waiting `GET /runs/:id?wait` reads the new state.
+    if (applied !== undefined) runEvents.emit('changed', applied)
   } catch (err) {
     if (!(err instanceof DevRoundsError)) throw err
     const run = 'run' in message.event ? message.event.run : undefined
