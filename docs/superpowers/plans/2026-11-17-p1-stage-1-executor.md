@@ -137,7 +137,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 
 **Files:**
 
-- Create: `docs/superpowers/specs/2026-11-18-p1-spike-queue-and-auth.md`
+- Create: `docs/superpowers/specs/2026-11-17-p1-spike-queue-and-auth.md`
 - Scratch (gitignored): `.superpowers/spike/<candidate>/`
 
 **Interfaces:**
