@@ -217,3 +217,11 @@ Executor configuration is invalid: {reason}.
 ### Fix
 
 Fix the URL passed to `devrounds-executor pair` or config.json in the executor home, then start again.
+
+## DR552
+
+The installed executor copy {path} is still there after `service uninstall`.
+
+### Fix
+
+A process still holds {path}: the installed executor itself when `service uninstall` ran from it, or another program such as an antivirus scan. Run `service uninstall` again from another copy (executor\target\release\devrounds-executor.exe), or once that process is done.

@@ -27,6 +27,7 @@ export const ERROR_CODES = [
   'DR503',
   'DR550',
   'DR551',
+  'DR552',
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]

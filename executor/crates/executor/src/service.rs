@@ -73,12 +73,31 @@ fn find_task() -> String {
 
 /// Disabled before anything is stopped: otherwise the 5-minute trigger can
 /// start a fresh `supervise` of the old binary between the stop and the copy
-/// or the unregister.
-fn disable_and_stop_task() -> String {
+/// or the unregister. Everything after it goes in [`reenable_on_failure`].
+fn disable_task() -> [String; 3] {
+    [
+        "if ($task) {".to_owned(),
+        format!("Disable-ScheduledTask -TaskName '{TASK_NAME}' | Out-Null"),
+        "}".to_owned(),
+    ]
+}
+
+fn stop_task() -> String {
+    format!("if ($task) {{ Stop-ScheduledTask -TaskName '{TASK_NAME}' }}")
+}
+
+fn reenable_on_failure_catch() -> String {
     format!(
-        "Disable-ScheduledTask -TaskName '{TASK_NAME}' | Out-Null\n\
-         Stop-ScheduledTask -TaskName '{TASK_NAME}'"
+        "\n}} catch {{\nif ($task) {{ Enable-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue | Out-Null }}\nthrow\n}}"
     )
+}
+
+/// `body` in a `try` whose `catch` re-enables the task when one existed
+/// before (`$task`) and rethrows, so the script still fails with the step's
+/// error. Without it a reinstall or uninstall that fails after the Disable
+/// would leave the old task disabled for good.
+pub fn reenable_on_failure(body: &str) -> String {
+    format!("try {{\n{body}{}", reenable_on_failure_catch())
 }
 
 /// Stops every process of the installed binary: `supervise` first, so it
@@ -107,26 +126,20 @@ pub fn stop_processes_script(target: &ServiceTarget) -> String {
 pub fn register_script(target: &ServiceTarget) -> String {
     let user = "\"$env:USERDOMAIN\\$env:USERNAME\"";
     let argument = format!("--headless \"{}\" supervise", target.exe.to_string_lossy());
-    let mut lines = vec![
-        find_task(),
-        "if ($task) {".to_owned(),
-        disable_and_stop_task(),
-        "}".to_owned(),
-        stop_processes_script(target),
-    ];
+    let mut guarded = vec![stop_task(), stop_processes_script(target)];
     if target.source != target.exe {
         let bin = target.exe.parent().unwrap_or(&target.home);
-        lines.push(format!(
+        guarded.push(format!(
             "New-Item -ItemType Directory -Force -Path {} | Out-Null",
             ps(bin)
         ));
-        lines.push(format!(
+        guarded.push(format!(
             "Copy-Item -LiteralPath {} -Destination {} -Force",
             ps(&target.source),
             ps(&target.exe)
         ));
     }
-    lines.extend([
+    guarded.extend([
         format!(
             "$action = New-ScheduledTaskAction -Execute \"$env:SystemRoot\\System32\\conhost.exe\" \
              -Argument {} -WorkingDirectory {}",
@@ -151,21 +164,31 @@ pub fn register_script(target: &ServiceTarget) -> String {
         format!("Enable-ScheduledTask -TaskName '{TASK_NAME}' | Out-Null"),
         format!("Start-ScheduledTask -TaskName '{TASK_NAME}'"),
     ]);
+    let mut lines = vec![find_task()];
+    lines.extend(disable_task());
+    lines.push(reenable_on_failure(&guarded.join("\n")));
     lines.join("\n")
 }
 
 /// Stops the task and its processes, removes the task and the installed
-/// copy. The home (pairing, store, logs) stays.
+/// copy. The home (pairing, store, logs) stays. The task is re-enabled only
+/// when the steps up to its Unregister fail; once it is gone there is
+/// nothing to enable.
 pub fn unregister_script(target: &ServiceTarget) -> String {
+    let guarded = [
+        stop_task(),
+        stop_processes_script(target),
+        format!(
+            "if ($task) {{ Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false }}"
+        ),
+    ];
+    let [open, disable, close] = disable_task();
     [
         find_task(),
-        "if ($task) {".to_owned(),
-        disable_and_stop_task(),
-        "}".to_owned(),
-        stop_processes_script(target),
-        "if ($task) {".to_owned(),
-        format!("Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false"),
-        "}".to_owned(),
+        open,
+        disable,
+        close,
+        reenable_on_failure(&guarded.join("\n")),
         format!(
             "Remove-Item -LiteralPath {} -Force -ErrorAction SilentlyContinue",
             ps(&target.exe)
@@ -248,19 +271,15 @@ fn plain(path: PathBuf) -> PathBuf {
     }
 }
 
-/// DR550 when the installed copy outlived uninstall: it is still running,
-/// most likely as the very process that ran `service uninstall`.
+/// DR552 when the installed copy outlived uninstall: a process still holds
+/// it, most likely the very one that ran `service uninstall`, or a scanner.
 pub fn check_removed(target: &ServiceTarget) -> Result<(), DrError> {
     if !target.exe.exists() {
         return Ok(());
     }
     Err(DrError::new(
-        "DR550",
-        json!({
-            "path": target.exe.to_string_lossy(),
-            "reason": "the installed copy could not be removed, as a process still runs it; \
-                       run `service uninstall` from another copy of devrounds-executor.exe",
-        }),
+        "DR552",
+        json!({ "path": target.exe.to_string_lossy() }),
     ))
 }
 
@@ -302,6 +321,49 @@ mod tests {
         }
     }
 
+    /// Everything that can throw between the Disable and the end of the
+    /// replacement (or the Unregister) sits in one `try`, whose `catch`
+    /// re-enables a task that existed and rethrows: a failed reinstall must
+    /// not leave the old task disabled for good. The `Remove-Item` after a
+    /// successful Unregister is outside it, as there is no task left.
+    #[test]
+    fn a_failure_after_the_disable_re_enables_the_task() {
+        for (script, last) in [
+            (register_script(&target()), "Start-ScheduledTask"),
+            (unregister_script(&target()), "Unregister-ScheduledTask"),
+        ] {
+            let at = |needle: &str| {
+                script
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("{needle:?} missing in\n{script}"))
+            };
+            let disable = at("Disable-ScheduledTask");
+            let open = at("\ntry {\n");
+            let catch = at(&reenable_on_failure_catch());
+            assert!(disable < open, "{script}");
+            for guarded in ["Stop-ScheduledTask", "Stop-Process", last] {
+                let index = at(guarded);
+                assert!(
+                    open < index && index < catch,
+                    "{guarded} unguarded in\n{script}"
+                );
+            }
+        }
+        let unregister = unregister_script(&target());
+        assert!(
+            unregister.find("Remove-Item") > unregister.find(&reenable_on_failure_catch()),
+            "{unregister}"
+        );
+        // Re-enabling only what existed: a first install has nothing to enable.
+        assert!(
+            reenable_on_failure_catch().contains(
+                "if ($task) { Enable-ScheduledTask -TaskName 'DevRoundsExecutor' -ErrorAction SilentlyContinue | Out-Null }\nthrow"
+            ),
+            "{}",
+            reenable_on_failure_catch()
+        );
+    }
+
     #[test]
     fn the_process_running_the_script_is_never_stopped() {
         let script = stop_processes_script(&target());
@@ -329,7 +391,7 @@ mod tests {
     /// Remove-Item cannot delete a running binary and is told to be silent,
     /// so uninstall checks the copy is gone itself.
     #[test]
-    fn a_copy_left_after_uninstall_answers_dr550() -> io::Result<()> {
+    fn a_copy_left_after_uninstall_answers_dr552() -> io::Result<()> {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
         std::fs::create_dir_all(&parent)?;
         let temp = tempfile::tempdir_in(&parent)?;
@@ -338,7 +400,7 @@ mod tests {
         assert!(check_removed(&target).is_ok());
         std::fs::write(&target.exe, "x")?;
         let error = check_removed(&target).expect_err("the copy is still there");
-        assert_eq!(error.code, "DR550");
+        assert_eq!(error.code, "DR552");
         assert_eq!(error.data["path"], target.exe.to_string_lossy().as_ref());
         Ok(())
     }
@@ -406,7 +468,11 @@ mod tests {
             .position(|line| line.contains("Stop-Process"))
             .expect("stops the processes");
         let before = &lines[..stop];
-        let opened = before.iter().filter(|line| line.ends_with('{')).count();
+        // The `try` around it is not a condition.
+        let opened = before
+            .iter()
+            .filter(|line| line.ends_with('{') && **line != "try {")
+            .count();
         let closed = before.iter().filter(|line| **line == "}").count();
         assert_eq!(opened, closed, "{script}");
         assert!(

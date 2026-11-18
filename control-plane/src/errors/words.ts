@@ -166,4 +166,10 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 500,
     keys: ['reason'],
   },
+  DR552: {
+    text: 'The installed executor copy {path} is still there after `service uninstall`.',
+    hint: 'A process still holds {path}: the installed executor itself when `service uninstall` ran from it, or another program such as an antivirus scan. Run `service uninstall` again from another copy (executor\\target\\release\\devrounds-executor.exe), or once that process is done.',
+    httpStatus: 500,
+    keys: ['path'],
+  },
 }
