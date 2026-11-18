@@ -408,7 +408,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   available_memory, commit_total, commit_limit, cpu_percent, memory_pressure, running: u32, executor_private_bytes }`,
   `LogChunk { run, stream, text }` (live only, no seq), `Event { seq: u64, at: String /* RFC 3339 UTC */, event:
   RunEvent }`; `RunEvent` tagged `kind`: `Admitted { run }`, `Delayed { run, reason, position, need, available }`,
-  `RunStarted { run, pid, start_time, boot_id }`, `StepStarted { run, step: u32, name }`, `StepFinished { run, step,
+  `RunStarted { run, pid, start_time /* FILETIME as a decimal string: > 2^53 */, boot_id }`, `StepStarted { run, step: u32, name }`, `StepFinished { run, step,
   outcome: "finished"|"failed" }`, `LogSegment { run, first_seq, last_seq, records, zstd_base64 }`, `RunFinished { run,
   reason: "exited"|"stopped"|"timeout"|"spawn_failed"|"infra", exit_code: Option<i64>, peak, p95, p50, cpu_seconds,
   swept: u32, visible_windows: u32, tail: Vec<String>, summary: Option<String> }`, `Orphans { runs: [{ run, alive }] }`.
