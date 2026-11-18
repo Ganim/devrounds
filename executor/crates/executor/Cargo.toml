@@ -10,9 +10,16 @@ publish.workspace = true
 [dependencies]
 devrounds-core = { path = "../core" }
 devrounds-metrics = { path = "../metrics" }
+devrounds-protocol = { path = "../protocol" }
 devrounds-start-gate = { path = "../start-gate" }
+futures-util.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -20,6 +27,7 @@ async-trait.workspace = true
 [target.'cfg(windows)'.dependencies]
 devrounds-metrics-windows = { path = "../metrics-windows" }
 devrounds-runner-windows = { path = "../runner-windows" }
+devrounds-sys-windows = { path = "../sys-windows" }
 
 [target.'cfg(windows)'.dev-dependencies]
 devrounds-test-fixtures = { path = "../test-fixtures" }

@@ -79,6 +79,11 @@ export async function revokeToken(adminDb: Kysely<Database>, id: string): Promis
   if (result.numUpdatedRows === 0n) fail('DR201', { kind: 'token', key: id })
 }
 
+/** The token of an `Authorization: Bearer <token>` header, member and machine tokens alike. */
+export function bearer(authorization: string | undefined): string | undefined {
+  return /^Bearer (\S+)$/.exec(authorization ?? '')?.[1]
+}
+
 // Missing, malformed, unknown and revoked tokens all answer the same DR401, so a caller learns nothing from the
 // difference. The lookup is by hash inside resolve_token, which reads across tenants before the tenant is known.
 export async function resolveToken(appDb: Kysely<Database>, token: string | undefined): Promise<TokenOwner> {

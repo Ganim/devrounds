@@ -1,6 +1,7 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts (0002 only adds indexes). pg returns int8 and numeric as strings, so those stay strings here.
+// Mirrors migrations/0001_core.ts and 0004_machines.ts (0002 and 0003 add no columns). pg returns int8 and numeric
+// as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -123,6 +124,35 @@ export interface IdempotencyKeysTable {
   created_at: Timestamp
 }
 
+export type MachineLifecycle = 'persistent' | 'ephemeral'
+
+export interface MachinesTable {
+  id: Generated<string>
+  tenant_id: string
+  name: string
+  compute_provider: Generated<string>
+  lifecycle: Generated<MachineLifecycle>
+  token_hash: Buffer
+  os: string
+  executor_version: string
+  paired_at: Timestamp
+  revoked_at: NullableTimestamp
+  last_seen_at: NullableTimestamp
+  last_report: ColumnType<unknown, string | null | undefined, string | null>
+  last_seq: ColumnType<string, string | number | bigint | undefined, string | number | bigint>
+}
+
+export interface PairingCodesTable {
+  id: Generated<string>
+  tenant_id: string
+  code_hash: Buffer
+  machine_name: string
+  created_by: string
+  created_at: Timestamp
+  expires_at: Timestamp
+  used_at: NullableTimestamp
+}
+
 export interface Database {
   tenants: TenantsTable
   members: MembersTable
@@ -136,6 +166,8 @@ export interface Database {
   links: LinksTable
   plan_events: PlanEventsTable
   idempotency_keys: IdempotencyKeysTable
+  machines: MachinesTable
+  pairing_codes: PairingCodesTable
 }
 
 export type Member = Selectable<MembersTable>

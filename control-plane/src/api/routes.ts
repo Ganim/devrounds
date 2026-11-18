@@ -2,7 +2,6 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
 import { type Static, type TSchema, Type } from '@sinclair/typebox'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Kysely } from 'kysely'
-import { resolveToken } from '../auth/tokens.ts'
 import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { getBalance } from '../planning/balance.ts'
@@ -29,7 +28,8 @@ import {
   transition,
 } from '../planning/service.ts'
 import { getPlan, listEvents } from '../planning/view.ts'
-import { fingerprintOf, runIdempotent } from './idempotency.ts'
+import { mutateIdempotent } from './idempotency.ts'
+import { authenticateMembers, memberCtx } from './members.ts'
 
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Text = Type.String({ minLength: 1 })
@@ -75,35 +75,11 @@ function instant(value: string | undefined, path: string): Date | undefined {
 // Event ids are bigint; a longer cursor would make Postgres fail the cast, which is a 500.
 const BIGINT_MAX = 9_223_372_036_854_775_807n
 
-function bearer(request: FastifyRequest): string | undefined {
-  const match = /^Bearer (\S+)$/.exec(request.headers.authorization ?? '')
-  return match?.[1]
-}
-
 export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = async (app, { db }) => {
-  // onRequest runs before body parsing and validation, so an anonymous caller gets DR401, never a DR101.
-  app.addHook('onRequest', async (request) => {
-    request.owner = await resolveToken(db, bearer(request))
-  })
-
-  const ctxOf = (request: FastifyRequest): Ctx => {
-    const owner = request.owner ?? fail('DR401')
-    return { db, tenantId: owner.tenantId, actor: owner.member }
-  }
-
-  // Every mutation goes through here: without an Idempotency-Key it just runs; with one, the response is stored
-  // with the mutation (see idempotency.ts) and replayed for the same key.
-  const mutate = async (request: FastifyRequest, reply: FastifyReply, run: (ctx: Ctx) => Promise<unknown>) => {
-    const ctx = ctxOf(request)
-    const key = request.headers['idempotency-key']
-    if (typeof key !== 'string') return run(ctx)
-    const fingerprint = fingerprintOf(request.method, request.url, request.body)
-    const stored = await runIdempotent(db, ctx.tenantId, key, fingerprint, async (trx) => ({
-      status: 200,
-      body: await run({ ...ctx, trx }),
-    }))
-    return reply.code(stored.status).send(stored.body)
-  }
+  authenticateMembers(app, db)
+  const ctxOf = (request: FastifyRequest) => memberCtx(db, request)
+  const mutate = (request: FastifyRequest, reply: FastifyReply, run: (ctx: Ctx) => Promise<unknown>) =>
+    mutateIdempotent(db, request, reply, run)
 
   // Reads.
 

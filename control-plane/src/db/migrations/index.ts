@@ -2,6 +2,7 @@ import type { Migration } from 'kysely/migration'
 import { core } from './0001_core.ts'
 import { criteriaPosition } from './0002_criteria_position.ts'
 import { planEventsAppendOnly } from './0003_plan_events_append_only.ts'
+import { machines } from './0004_machines.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -12,5 +13,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0001_core': core(options),
     '0002_criteria_position': criteriaPosition,
     '0003_plan_events_append_only': planEventsAppendOnly(options),
+    '0004_machines': machines(options),
   }
 }

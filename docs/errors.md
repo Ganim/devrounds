@@ -114,6 +114,14 @@ Task {task} is {state}, which does not allow this change.
 
 A done or cancelled task accepts no new open criteria: reopen {task} first with `devrounds task reopen {task} --reason <text>`.
 
+## DR352
+
+Another executor is running for {home} (pid {pid}).
+
+### Fix
+
+Stop the executor with pid {pid}, or give this one another home with DEVROUNDS_EXECUTOR_HOME.
+
 ## DR401
 
 Missing or invalid API token.
@@ -121,6 +129,38 @@ Missing or invalid API token.
 ### Fix
 
 Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.
+
+## DR450
+
+Pairing code is invalid, expired or already used.
+
+### Fix
+
+Ask a human member for a new code (`devrounds machine pair-code --name <machine>`) and pair within 10 minutes.
+
+## DR451
+
+Pairing is locked for {minutes} minutes after repeated failures.
+
+### Fix
+
+Wait {minutes} minutes, then pair with a fresh code; check that the code is typed exactly as printed.
+
+## DR452
+
+Machine token is missing, invalid or revoked.
+
+### Fix
+
+Pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.
+
+## DR453
+
+Only a human member can {action}.
+
+### Fix
+
+Ask a human member to {action}, or run the command with a human member token.
 
 ## DR501
 
@@ -137,3 +177,19 @@ Control plane configuration is invalid: {reason}.
 ### Fix
 
 Fix ~/.devrounds/server.json or the DEVROUNDS_* environment variables, then start again.
+
+## DR550
+
+Executor state at {path} is unusable: {reason}.
+
+### Fix
+
+Make {path} usable only by the account running the executor (or move it away to start fresh), then try again.
+
+## DR551
+
+Executor configuration is invalid: {reason}.
+
+### Fix
+
+Fix the URL passed to `devrounds-executor pair` or config.json in the executor home, then start again.

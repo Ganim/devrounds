@@ -34,6 +34,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
   `truncated; more: <exact command with --cursor N>`; last line `next: <command>`.
 - Keys: project `devrounds`; phases `P0`..`P7`; tasks `P<phase>-T<two digits>`, unique per project.
 - Accept `Idempotency-Key` on mutating API routes (same key and tenant within 24 h returns the stored response).
+- Pair an executor with `devrounds machine pair-code --name <machine>` (human members only), then run the printed
+  `devrounds-executor pair` on that machine. Machine tokens and pairing codes are stored only as SHA-256.
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.

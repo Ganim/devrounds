@@ -88,11 +88,41 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['task', 'state'],
   },
+  DR352: {
+    text: 'Another executor is running for {home} (pid {pid}).',
+    hint: 'Stop the executor with pid {pid}, or give this one another home with DEVROUNDS_EXECUTOR_HOME.',
+    httpStatus: 409,
+    keys: ['home', 'pid'],
+  },
   DR401: {
     text: 'Missing or invalid API token.',
     hint: 'Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.',
     httpStatus: 401,
     keys: [],
+  },
+  DR450: {
+    text: 'Pairing code is invalid, expired or already used.',
+    hint: 'Ask a human member for a new code (`devrounds machine pair-code --name <machine>`) and pair within 10 minutes.',
+    httpStatus: 401,
+    keys: [],
+  },
+  DR451: {
+    text: 'Pairing is locked for {minutes} minutes after repeated failures.',
+    hint: 'Wait {minutes} minutes, then pair with a fresh code; check that the code is typed exactly as printed.',
+    httpStatus: 429,
+    keys: ['minutes'],
+  },
+  DR452: {
+    text: 'Machine token is missing, invalid or revoked.',
+    hint: 'Pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.',
+    httpStatus: 401,
+    keys: [],
+  },
+  DR453: {
+    text: 'Only a human member can {action}.',
+    hint: 'Ask a human member to {action}, or run the command with a human member token.',
+    httpStatus: 403,
+    keys: ['action'],
   },
   DR501: {
     text: 'Internal error.',
@@ -103,6 +133,18 @@ export const WORDS: Record<ErrorCode, Words> = {
   DR502: {
     text: 'Control plane configuration is invalid: {reason}.',
     hint: 'Fix ~/.devrounds/server.json or the DEVROUNDS_* environment variables, then start again.',
+    httpStatus: 500,
+    keys: ['reason'],
+  },
+  DR550: {
+    text: 'Executor state at {path} is unusable: {reason}.',
+    hint: 'Make {path} usable only by the account running the executor (or move it away to start fresh), then try again.',
+    httpStatus: 500,
+    keys: ['path', 'reason'],
+  },
+  DR551: {
+    text: 'Executor configuration is invalid: {reason}.',
+    hint: 'Fix the URL passed to `devrounds-executor pair` or config.json in the executor home, then start again.',
     httpStatus: 500,
     keys: ['reason'],
   },

@@ -159,7 +159,8 @@ const TENANT_TABLES = [
   'idempotency_keys',
 ]
 
-function isolate(table: string, column: string): string[] {
+// Shared with later migrations: every tenant table gets exactly this.
+export function isolate(table: string, column: string): string[] {
   return [
     `alter table ${table} enable row level security`,
     // Why FORCE: without it the table owner skips the policy.

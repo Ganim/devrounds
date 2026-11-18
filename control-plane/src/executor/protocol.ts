@@ -99,7 +99,9 @@ export const EXECUTOR_MESSAGES = {
     available_memory: U64,
     commit_total: U64,
     commit_limit: U64,
-    cpu_percent: Type.Number({ minimum: 0, maximum: 100 }),
+    // Busy share of all CPUs, nominally 0-100. No maximum: Rust sends any f64, and a reading that rounds just past 100
+    // must not reject the whole report.
+    cpu_percent: Type.Number({ minimum: 0 }),
     memory_pressure: OneOf('normal', 'warn', 'critical'),
     running: U32,
     executor_private_bytes: U64,
@@ -138,13 +140,10 @@ export const CONTROL_PLANE_MESSAGES = {
 }
 
 export type Hello = Static<typeof EXECUTOR_MESSAGES.Hello>
+export type MachineReport = Static<typeof EXECUTOR_MESSAGES.MachineReport>
 type UnknownEvent = { kind: 'Unknown' }
 export type EventMessage = Static<typeof EventEnvelope> & { event: RunEvent | UnknownEvent }
-export type ExecutorMessage =
-  | Hello
-  | Static<typeof EXECUTOR_MESSAGES.MachineReport>
-  | Static<typeof EXECUTOR_MESSAGES.LogChunk>
-  | EventMessage
+export type ExecutorMessage = Hello | MachineReport | Static<typeof EXECUTOR_MESSAGES.LogChunk> | EventMessage
 export type ControlPlaneMessage = {
   [K in keyof typeof CONTROL_PLANE_MESSAGES]: Static<(typeof CONTROL_PLANE_MESSAGES)[K]>
 }[keyof typeof CONTROL_PLANE_MESSAGES]

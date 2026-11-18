@@ -184,3 +184,18 @@ test('login writes the config through a restricted temp file and leaves nothing 
   assert.deepEqual(await readdir(join(dir, '.devrounds')), ['config.json'])
   assert.equal(JSON.parse(await readFile(configPath, 'utf8')).token, 'drt_secret')
 })
+
+test('machine pair-code prints the code and the executor pair command as next', async () => {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
+  const env = { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: 'alpha' }
+
+  const res = await runCli(['machine', 'pair-code', '--name', 'build-01'], { env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  const [first, expires, next] = res.stdout.trimEnd().split('\n')
+  const code = /^pairing code for machine build-01: ([0-9A-Z]{8})$/.exec(first)?.[1]
+  assert.ok(code, first)
+  assert.match(expires, /^expires at \d{4}-\d{2}-\d{2}T/)
+  assert.equal(next, `next: devrounds-executor pair --url ${url} --code ${code}`)
+})

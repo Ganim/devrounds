@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto'
+import type { FastifyReply, FastifyRequest } from 'fastify'
 import { type Kysely, sql, type Transaction } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
+import type { Ctx } from '../planning/service.ts'
 import { withTenant } from '../tenancy/scope.ts'
+import { memberCtx } from './members.ts'
 
 export type StoredResponse = { status: number; body: unknown }
 
@@ -74,4 +77,23 @@ export async function runIdempotent(
       .execute()
     return response
   })
+}
+
+// Every member mutation goes through here: without an Idempotency-Key it just runs; with one, the response is stored
+// with the mutation (runIdempotent) and replayed for the same key.
+export async function mutateIdempotent(
+  db: Kysely<Database>,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  run: (ctx: Ctx) => Promise<unknown>,
+): Promise<unknown> {
+  const ctx = memberCtx(db, request)
+  const key = request.headers['idempotency-key']
+  if (typeof key !== 'string') return run(ctx)
+  const fingerprint = fingerprintOf(request.method, request.url, request.body)
+  const stored = await runIdempotent(db, ctx.tenantId, key, fingerprint, async (trx) => ({
+    status: 200,
+    body: await run({ ...ctx, trx }),
+  }))
+  return reply.code(stored.status).send(stored.body)
 }

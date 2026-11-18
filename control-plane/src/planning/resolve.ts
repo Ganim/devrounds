@@ -8,12 +8,15 @@ export type Actor = { id: string; kind: MemberKind }
 // With `trx` set every call joins that transaction (import wraps many calls in one); otherwise each call opens its own.
 export type Ctx = { db: Kysely<Database>; tenantId: string; actor: Actor; trx?: Transaction<Database> }
 
+export type TenantCtx = Omit<Ctx, 'actor'>
+
 export type Trx = Transaction<Database>
 
 // Criteria and links belong to exactly one task or phase.
 export type Target = { projectKey: string; taskKey?: string; phaseKey?: string }
 
-export function run<T>(ctx: Ctx, fn: (trx: Trx) => Promise<T>): Promise<T> {
+// Takes no actor, so tenant work done for a machine (the executor gateway) shares it too.
+export function run<T>(ctx: TenantCtx, fn: (trx: Trx) => Promise<T>): Promise<T> {
   return ctx.trx ? fn(ctx.trx) : withTenant(ctx.db, ctx.tenantId, fn)
 }
 

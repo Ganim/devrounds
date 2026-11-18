@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import fastifyStatic from '@fastify/static'
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox'
+import fastifyWebsocket from '@fastify/websocket'
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 import type { Kysely } from 'kysely'
 import pkg from '../../package.json' with { type: 'json' }
@@ -9,11 +10,14 @@ import type { TokenOwner } from '../auth/tokens.ts'
 import { toDevRoundsError } from '../convert-error.ts'
 import type { Database } from '../db/schema.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
+import { executorRoutes, MAX_PAYLOAD, Sessions } from '../executor/gateway.ts'
+import { PairingLimiter } from '../machines/pairing.ts'
+import { machineRoutes } from './machine-routes.ts'
 import { projectRoutes } from './routes.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
-    // Set by the auth hook on every /api/projects route; null elsewhere.
+    // Set by the member auth hook on every /api/projects and /api/machines route; null elsewhere.
     owner: TokenOwner | null
   }
 }
@@ -23,6 +27,10 @@ export type ServerOptions = {
   logger?: FastifyServerOptions['logger']
   // Built by Task 10; served at `/` only when the directory exists.
   webDir?: string
+  // One per process, shared by the gateway and the routes that reach executors; tests pass their own.
+  sessions?: Sessions
+  // Tests pass one on a manual clock.
+  pairingLimiter?: PairingLimiter
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -76,7 +84,12 @@ export function buildServer(opts: ServerOptions) {
 
   app.get('/api/health', async () => ({ ok: true, version: pkg.version }))
 
+  const sessions = opts.sessions ?? new Sessions()
+  const limiter = opts.pairingLimiter ?? new PairingLimiter()
+  app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD } })
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
+  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter })
 
   const webDir = opts.webDir ?? DEFAULT_WEB_DIR
   app.register(async (instance) => {

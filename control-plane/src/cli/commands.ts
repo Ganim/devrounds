@@ -87,10 +87,14 @@ type Api = {
   getText(path: string): Promise<string>
   // Every mutation sends a random Idempotency-Key, one per invocation: running the command again is a new request.
   send<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<T>
+  // The control plane URL, for next steps run elsewhere (the executor's pair command).
+  url: string
+  // The same client on paths under `/api/machines` instead of the configured project.
+  machines(): Api
 }
 
-function apiFor(config: CliConfig, timeoutMs: number): Api {
-  const base = `${config.url}/api/projects/${encodeURIComponent(config.project)}`
+function apiFor(config: CliConfig, timeoutMs: number, scope?: string): Api {
+  const base = `${config.url}/api${scope ?? `/projects/${encodeURIComponent(config.project)}`}`
   const call = async (path: string, init: RequestInit & { headers?: Record<string, string> }): Promise<Response> => {
     let res: Response
     try {
@@ -144,6 +148,8 @@ function apiFor(config: CliConfig, timeoutMs: number): Api {
       const payload = body === undefined || typeof body === 'string' ? body : JSON.stringify(body)
       return (await call(path, { method, headers, body: payload })).json()
     },
+    url: config.url,
+    machines: () => apiFor(config, timeoutMs, '/machines'),
   }
 }
 
@@ -622,7 +628,59 @@ export const COMMANDS: Spec[] = [
       return { failures: [], body, next: 'devrounds plan show' }
     },
   },
+  {
+    path: ['machine', 'pair-code'],
+    usage: 'machine pair-code --name <machine>   human members only; the code works once, within 10 minutes',
+    args: 0,
+    options: { name: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const name = text(inv, 'name') ?? fail('DR101', { path: '--name', reason: 'is required' })
+      const r = await api.machines().send<PairingCode>('POST', '/pairing-codes', { name })
+      return {
+        failures: [],
+        body: [`pairing code for machine ${r.machineName}: ${r.code}`, `expires at ${r.expiresAt}`],
+        next: `devrounds-executor pair --url ${shellArg(api.url)} --code ${r.code}`,
+      }
+    },
+  },
+  {
+    path: ['machine', 'list'],
+    usage: 'machine list [--cursor <n>]',
+    args: 0,
+    pages: true,
+    options: {},
+    run: async (_inv, connect) => {
+      const api = await connect()
+      const machines = await api.machines().get<MachineView[]>('/')
+      const body = machines.map(
+        (m) =>
+          `${m.name}  ${m.connected ? 'connected' : 'offline'} · ${m.os} · executor ${m.executorVersion} · ` +
+          `last seen ${m.lastSeenAt ?? 'never'}`,
+      )
+      return {
+        failures: [],
+        body: body.length > 0 ? body : ['no machines'],
+        next: body.length > 0 ? 'devrounds plan show' : 'devrounds machine pair-code --name <machine>',
+      }
+    },
+  },
+  {
+    path: ['machine', 'revoke'],
+    usage: 'machine revoke <name>   human members only; closes its live session',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const name = arg(inv, 0, '<name>')
+      await api.machines().send('POST', path(name, 'revoke'))
+      return { failures: [], body: [`revoked machine ${name}`], next: 'devrounds machine list' }
+    },
+  },
 ]
+
+type PairingCode = { code: string; expiresAt: string; machineName: string }
+type MachineView = { name: string; os: string; executorVersion: string; lastSeenAt: string | null; connected: boolean }
 
 export function usage(): string {
   const lines = COMMANDS.map((c) => `  devrounds ${c.usage}`)
@@ -631,7 +689,7 @@ export function usage(): string {
     '',
     ...lines,
     '',
-    'Reads (plan show, events, balance) take --cursor <n> to continue an output cut at 16384 bytes.',
+    'Reads (plan show, events, balance, machine list) take --cursor <n> to continue an output cut at 16384 bytes.',
     'Config: ~/.devrounds/config.json from `devrounds login`, or DEVROUNDS_URL, DEVROUNDS_TOKEN, DEVROUNDS_PROJECT.',
     'Exit codes: 0 ok, 1 state conflict, 2 input/usage, 3 not found, 4 control plane unreachable, 5 auth, 6 internal.',
   ].join('\n')
