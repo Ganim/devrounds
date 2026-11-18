@@ -11,7 +11,7 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 ## Never
 
 - Never call synchronous child-process or `*Sync` fs functions in `control-plane/src` outside tests (`no-sync.test.ts`).
-- Never read or write tenant data outside `withTenant()`.
+- Never read or write tenant data outside `withTenant()`, except owner-side `devrounds-admin` commands, which read as the owner.
 - Never connect the server as the owner role; it uses `devrounds_app` (NOSUPERUSER, NOBYPASSRLS). Migrations and admin
   commands use the owner URL.
 - Never create a table without `tenant_id uuid not null` (`tenants` uses `id`), RLS enabled and forced, and the policy
@@ -48,6 +48,7 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 ## Accepted P0 exceptions
 
 - The web view uses a pasted API token instead of session login. Removed in P1 (Better Auth).
+- The local Postgres owner is the `postgres` superuser (migrations, admin, tests). Removed in P6 (cloud, managed owner role).
 - The web view polls every 10 s instead of SSE. Removed in P5.
 - `#[allow(unsafe_code)]` on the FFI modules of `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a
   SAFETY comment.
