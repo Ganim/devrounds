@@ -40,9 +40,35 @@ name = "devrounds-logs"
 upstream_path = "crates/logs"
 synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
 
+# Partial copies and derived files: upstream_path may be a single file.
+[[crate]]
+name = "devrounds-core/process-info"
+upstream_path = "crates/sys/src/lib.rs"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-logs/log-line"
+upstream_path = "crates/proto/src/lib.rs"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "workspace/cargo-toml"
+upstream_path = "Cargo.toml"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "workspace/rust-toolchain"
+upstream_path = "rust-toolchain.toml"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "workspace/rustfmt"
+upstream_path = "rustfmt.toml"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
 # Upstream commits reviewed since the sync, one per crate they touch:
 # [[reviewed]]
 # commit = "<sha>"
-# crate = "devrounds-<name>"
+# crate = "<[[crate]] name>"
 # decision = "ported" # or "not_applicable"
 # reason = "<why>"

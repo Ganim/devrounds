@@ -5,7 +5,9 @@ This workspace contains code copied from devlanes
 Version 2.0 (see LICENSE). Every copied crate was taken at commit
 e2e4f1cafda94805d6e447331980b83fcbab2e72 and renamed from devlanes-* to
 devrounds-*; upstream names of types and functions are kept so later ports stay
-mechanical. devlanes-sync.toml records the crates and the upstream commits
+mechanical. devlanes-sync.toml records the crates, the partial copies
+(ProcessInfo from crates/sys, LogLine from crates/proto), the workspace files
+(Cargo.toml, rust-toolchain.toml, rustfmt.toml) and the upstream commits
 reviewed since.
 
 Upstream READMEs and CHANGELOGs were not copied. Copied tests were kept where
@@ -70,6 +72,24 @@ devrounds-logs, from crates/logs at e2e4f1cafda94805d6e447331980b83fcbab2e72
   field and storage its unused skip helper, which only query read. Tests
   use expect instead of allowing clippy::unwrap_used; the query-based tests
   were dropped.
+
+Partial copies and derived files (tracked by devlanes-sync.toml)
+-----------------------------------------------------------------
+
+devrounds-core/process-info, from crates/sys/src/lib.rs at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  ProcessInfo only.
+
+devrounds-logs/log-line, from crates/proto/src/lib.rs at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  LogLine only, with its unit field renamed to run.
+
+workspace/cargo-toml, from Cargo.toml at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Workspace lints and layout; dependencies and members are ours.
+
+workspace/rust-toolchain, from rust-toolchain.toml at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Toolchain channel pinned to 1.99.1.
+
+workspace/rustfmt, from rustfmt.toml at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Copied as is.
 
 Not copied: devlanes-sys (only ProcessInfo was needed), devlanes-proto (only
 LogLine was needed) and devlanes-runner-pty
