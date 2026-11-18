@@ -54,10 +54,12 @@ export function listMachines(ctx: TenantCtx): Promise<MachineView[]> {
 }
 
 /**
- * Revokes the live machine `name` and closes its session. The close runs before the transaction commits; a session
- * that starts in between still sees the revocation, because recordHello's update waits on this row lock.
+ * Revokes the live machine `name` and returns its id. Its session is not closed here: the caller closes it with
+ * closeRevoked once the transaction has committed, because 4401 makes the executor stop for good and a rolled-back
+ * revoke would leave it stopped with a valid token. A session that starts before the commit still ends, because
+ * recordHello's update waits on this row lock and then finds the machine revoked.
  */
-export async function revokeMachine(ctx: Ctx, sessions: Sessions, name: string): Promise<{ name: string }> {
+export async function revokeMachine(ctx: Ctx, name: string): Promise<{ name: string; machineId: string }> {
   requireHuman(ctx, 'revoke a machine')
   return run(ctx, async (trx) => {
     const row = await trx
@@ -68,9 +70,13 @@ export async function revokeMachine(ctx: Ctx, sessions: Sessions, name: string):
       .returning('id')
       .executeTakeFirst()
     if (!row) fail('DR201', { kind: 'machine', key: name })
-    sessions.close(row.id, CLOSE_REVOKED)
-    return { name }
+    return { name, machineId: row.id }
   })
+}
+
+/** Ends the live session of a machine whose revocation has committed. */
+export function closeRevoked(sessions: Sessions, machineId: string): void {
+  sessions.close(machineId, CLOSE_REVOKED)
 }
 
 /** Marks the machine seen at Hello and returns the last event seq applied for it; null once it is revoked. */

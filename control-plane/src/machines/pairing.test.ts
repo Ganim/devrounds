@@ -101,6 +101,22 @@ test('five failed redemptions lock pairing for 10 minutes (DR451)', async () => 
   assert.equal(paired.machineName, 'build-01')
 })
 
+test('concurrent wrong codes cannot get past the pairing lock', async () => {
+  const tenant = await t.newTenant()
+  const limiter = new PairingLimiter()
+  const { code: valid } = await createPairingCode(human(tenant), 'build-01')
+  // Well-formed guesses, so each one that gets a slot reaches the database.
+  const guesses = Array.from({ length: 10 }, (_, i) => `${i}0000000`)
+  const results = await Promise.allSettled(guesses.map((guess) => redeemPairingCode(t.db, limiter, guess, EXECUTOR)))
+  const codes = results.map((result) =>
+    result.status === 'rejected' && result.reason instanceof DevRoundsError ? result.reason.code : 'paired',
+  )
+  assert.equal(codes.filter((c) => c === 'DR450').length, 5, codes.join(' '))
+  assert.equal(codes.filter((c) => c === 'DR451').length, 5, codes.join(' '))
+  // The five failures set the lock: even the valid code is refused now.
+  await assert.rejects(redeemPairingCode(t.db, limiter, valid, EXECUTOR), code('DR451'))
+})
+
 test('an agent token cannot create a pairing code (DR453)', async () => {
   const tenant = await t.newTenant()
   const agent = await createToken(t.admin, tenant.tenantId, 'agent', 'agent')

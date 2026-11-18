@@ -138,11 +138,22 @@ function serveSession(
     // Events and log chunks are handled from Task 12 on; unknown types are ignored by design.
   }
 
+  // A server fault (the database, usually): logged here, never sent to the client, and the executor reconnects
+  // after its backoff.
+  const internal = (err: unknown, message: string) => {
+    log.error({ err, machineId: machine?.machineId }, message)
+    end(CLOSE_INTERNAL, new DevRoundsError('DR501'))
+  }
+
   let chain = resolveMachineToken(db, bearer(authorization)).then(
     (found) => {
       machine = found
     },
-    (err) => end(CLOSE_REVOKED, toDevRoundsError(err)),
+    (err) => {
+      // Only a token the control plane rejected closes 4401: the executor stops for good and needs a new pairing.
+      if (err instanceof DevRoundsError && err.code === 'DR452') return end(CLOSE_REVOKED, err)
+      internal(err, 'machine token lookup failed')
+    },
   )
   socket.on('message', (data) => {
     const text = data.toString()
@@ -151,9 +162,7 @@ function serveSession(
       .catch((err) => {
         const error = toDevRoundsError(err)
         if (error.code !== 'DR501') return end(CLOSE_PROTOCOL, error)
-        // A server fault (the database, usually): logged here, and the executor reconnects after its backoff.
-        log.error({ err, machineId: machine?.machineId }, 'executor message failed')
-        end(CLOSE_INTERNAL, new DevRoundsError('DR501'))
+        internal(err, 'executor message failed')
       })
   })
   socket.on('close', () => {

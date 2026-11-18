@@ -167,6 +167,7 @@ fn closed(frame: Option<&CloseFrame>, acked: bool) -> Ended {
     match code {
         Some(CLOSE_TOKEN) => Ended::Revoked,
         Some(CLOSE_REPLACED) => Ended::Replaced,
+        // 1011 (a control plane fault, a failed token lookup included) and anything else: reconnect after the backoff.
         _ => Ended::Dropped { acked },
     }
 }

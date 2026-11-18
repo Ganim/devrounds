@@ -4,7 +4,7 @@ import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import { createPairingCode, MACHINE_NAME } from '../machines/pairing.ts'
-import { listMachines, revokeMachine } from '../machines/service.ts'
+import { closeRevoked, listMachines, revokeMachine } from '../machines/service.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -23,22 +23,30 @@ export const machineRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; se
     return machines.map((machine) => ({ ...machine, connected: sessions.get(machine.id) !== undefined }))
   })
 
-  // The code's plaintext is in this response once. With an Idempotency-Key it is also stored with the replayed
-  // response for 24 h, which outlives the code itself (10 min, single use).
+  // Exempt from Idempotency-Key: a stored replay would keep the code's plaintext for 24 h, and codes are stored only
+  // as SHA-256. A retry mints a new code.
   app.post(
     '/pairing-codes',
-    { schema: { headers: Headers, body: Type.Object({ name: Name }, { additionalProperties: false }) } },
-    (request, reply) =>
-      mutateIdempotent(db, request, reply, async (ctx) => {
-        const { code, expiresAt } = await createPairingCode(ctx, request.body.name)
-        return { code, expiresAt, machineName: request.body.name }
-      }),
+    { schema: { body: Type.Object({ name: Name }, { additionalProperties: false }) } },
+    async (request) => {
+      const { code, expiresAt } = await createPairingCode(memberCtx(db, request), request.body.name)
+      return { code, expiresAt, machineName: request.body.name }
+    },
   )
 
   app.post(
     '/:name/revoke',
     { schema: { headers: Headers, params: Type.Object({ name: Type.String({ minLength: 1, maxLength: 200 }) }) } },
-    (request, reply) =>
-      mutateIdempotent(db, request, reply, (ctx) => revokeMachine(ctx, sessions, request.params.name)),
+    async (request, reply) => {
+      let revoked: string | undefined
+      const sent = await mutateIdempotent(db, request, reply, async (ctx) => {
+        const { name, machineId } = await revokeMachine(ctx, request.params.name)
+        revoked = machineId
+        return { name }
+      })
+      // mutateIdempotent has committed by now; a replayed key revokes nothing and closes nothing.
+      if (revoked) closeRevoked(sessions, revoked)
+      return sent
+    },
   )
 }

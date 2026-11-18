@@ -39,17 +39,35 @@ export class PairingLimiter {
   #clock: () => number
   #failures: number[] = []
   #lockedUntil = 0
+  #inFlight = 0
 
   constructor(clock: () => number = Date.now) {
     this.#clock = clock
   }
 
-  check(): void {
-    const left = this.#lockedUntil - this.#clock()
+  /**
+   * Takes a slot before the redemption awaits, so a burst of concurrent guesses cannot all pass before the first
+   * failure lands: DR451 while locked, or while recent failures plus attempts in flight already reach the limit.
+   * Call the returned function once, with whether the attempt counts as a failure.
+   */
+  reserve(): (failure: boolean) => void {
+    const now = this.#clock()
+    const left = this.#lockedUntil - now
     if (left > 0) fail('DR451', { minutes: Math.ceil(left / 60_000) })
+    this.#failures = this.#failures.filter((at) => now - at < FAILURE_WINDOW_MS)
+    // Not locked yet, but the attempts in flight would lock it if they fail: answer as the lock would.
+    if (this.#failures.length + this.#inFlight >= MAX_FAILURES) fail('DR451', { minutes: LOCK_MS / 60_000 })
+    this.#inFlight++
+    let settled = false
+    return (failure) => {
+      if (settled) return
+      settled = true
+      this.#inFlight--
+      if (failure) this.#failed()
+    }
   }
 
-  failed(): void {
+  #failed(): void {
     const now = this.#clock()
     this.#failures = [...this.#failures.filter((at) => now - at < FAILURE_WINDOW_MS), now]
     if (this.#failures.length >= MAX_FAILURES) {
@@ -99,29 +117,37 @@ export async function redeemPairingCode(
   code: string,
   executor: { os: string; version: string },
 ): Promise<{ machineId: string; machineName: string; token: string }> {
-  limiter.check()
-  const normalized = code.trim().toUpperCase()
-  const token = `drm_${randomBytes(32).toString('base64url')}`
-  let rows: { tenant_id: string; machine_id: string; machine_name: string }[] = []
-  if (CODE.test(normalized)) {
-    try {
-      const result = await sql<{ tenant_id: string; machine_id: string; machine_name: string }>`
-        select tenant_id, machine_id, machine_name
-        from redeem_pairing_code(${sha256(normalized)}, ${sha256(token)}, ${executor.os}, ${executor.version})`.execute(
-        db,
-      )
-      rows = result.rows
-    } catch (err) {
-      // The name was paired by another code since this one was made: the code stays unused, and is unusable.
-      if ((err as { code?: unknown } | null)?.code !== '23505') throw err
+  const settle = limiter.reserve()
+  let failure = true
+  try {
+    const normalized = code.trim().toUpperCase()
+    const token = `drm_${randomBytes(32).toString('base64url')}`
+    let rows: { tenant_id: string; machine_id: string; machine_name: string }[] = []
+    if (CODE.test(normalized)) {
+      try {
+        const result = await sql<{ tenant_id: string; machine_id: string; machine_name: string }>`
+          select tenant_id, machine_id, machine_name
+          from redeem_pairing_code(${sha256(normalized)}, ${sha256(token)}, ${executor.os}, ${executor.version})`.execute(
+          db,
+        )
+        rows = result.rows
+      } catch (err) {
+        if ((err as { code?: unknown } | null)?.code !== '23505') throw err
+        // The name was paired by another code since this one was made. A right code, so not a guess: the code stays
+        // unused and works again once that machine is revoked, within its 10 minutes.
+        failure = false
+        fail('DR101', {
+          path: '/code',
+          reason: "this code's machine name is already paired; revoke that machine first",
+        })
+      }
     }
+    const row = rows[0] ?? fail('DR450')
+    failure = false
+    return { machineId: row.machine_id, machineName: row.machine_name, token }
+  } finally {
+    settle(failure)
   }
-  const row = rows[0]
-  if (!row) {
-    limiter.failed()
-    return fail('DR450')
-  }
-  return { machineId: row.machine_id, machineName: row.machine_name, token }
 }
 
 /** The machine of a live token. Missing, malformed, unknown and revoked tokens all answer DR452. */

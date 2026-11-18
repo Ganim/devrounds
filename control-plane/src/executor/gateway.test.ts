@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { after, before, test } from 'node:test'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
+import { createDb } from '../db/connection.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { FEATURES } from './protocol.ts'
@@ -47,10 +48,10 @@ async function paired(name = 'build-01') {
 type Closed = { code: number; reason: string }
 
 // The executor's side of a session, over Node's global WebSocket.
-function dial(token?: string) {
+function dial(token?: string, host = base) {
   const headers = token === undefined ? {} : { authorization: `Bearer ${token}` }
   // Node's WebSocket (undici) takes `{ headers }`; the DOM lib's type, which wins here, only knows protocols.
-  const ws = new WebSocket(`ws://${base}/api/executor/connect`, { headers } as unknown as string[])
+  const ws = new WebSocket(`ws://${host}/api/executor/connect`, { headers } as unknown as string[])
   const inbox: unknown[] = []
   let wake: (() => void) | undefined
   ws.addEventListener('message', (event) => {
@@ -90,6 +91,22 @@ test('connect without a valid machine token closes with 4401 and DR452', async (
     const closed = await session.closed
     assert.equal(closed.code, 4401, String(token))
     assert.equal(closed.reason, 'DR452 {}')
+  }
+})
+
+test('a failing token lookup closes 1011 with a bare DR501, not 4401', async () => {
+  // Nothing listens on port 1: every query fails with a connection error the client must not see.
+  const down = createDb('postgres://nobody:nothing@127.0.0.1:1/nothing')
+  const broken = buildServer({ db: down, logger: false })
+  try {
+    await broken.listen({ port: 0, host: '127.0.0.1' })
+    const port = (broken.server.address() as AddressInfo).port
+    const session = dial(`drm_${'A'.repeat(43)}`, `127.0.0.1:${port}`)
+    await session.send(HELLO)
+    assert.deepEqual(await session.closed, { code: 1011, reason: 'DR501 {}' })
+  } finally {
+    await broken.close()
+    await down.destroy()
   }
 })
 
