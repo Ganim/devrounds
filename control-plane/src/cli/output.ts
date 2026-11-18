@@ -27,6 +27,12 @@ export function oneLine(text: string): string {
   return out
 }
 
+// Template tag for every line built from server fields: a field the server left out prints as "-", never as the
+// word "undefined" (or "null"). Already-formatted strings pass through untouched.
+export function fmt(parts: TemplateStringsArray, ...values: unknown[]): string {
+  return parts.reduce((out, part, i) => out + part + (i < values.length ? String(values[i] ?? '-') : ''), '')
+}
+
 // Index one past the last body line that fits the budget from `cursor`. The first line always fits, even past the
 // budget, so paging with --cursor always moves forward.
 export function fitBody(body: string[], opts: { budget: number; cursor: number }): number {

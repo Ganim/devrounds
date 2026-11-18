@@ -10,7 +10,7 @@ import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
 import type { RunView } from '../runs/view.ts'
-import { type AgentOutput, BODY_BUDGET, fitBody, planShow, renderAgent, shellArg } from './output.ts'
+import { type AgentOutput, BODY_BUDGET, fitBody, fmt, planShow, renderAgent, shellArg } from './output.ts'
 
 // `devrounds`: the agent CLI. It talks only to the control plane's HTTP API (imports here are types and pure
 // modules, never the DB layer), and prints every result in agent output mode (see output.ts).
@@ -47,7 +47,7 @@ async function loadCliConfig(env: NodeJS.ProcessEnv, path: string): Promise<CliC
     }
     // `null`, a list or a bare value parse fine but hold no fields to read.
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      throw new LoginNeeded('DR502', { reason: `${path} must hold a JSON object; run devrounds login again` })
+      throw new LoginNeeded('DR502', { reason: `${path} must hold a JSON object` })
     }
     file = parsed as Partial<CliConfig>
   }
@@ -224,7 +224,7 @@ const orNull = (value: string | undefined) => (value === 'none' ? null : value)
 type Mutation = { eventId: string; delivered?: string | null; openCriteria?: number }
 
 function done(summary: string, result: Mutation, next = 'devrounds plan show'): Result {
-  const body = [typeof result.eventId === 'string' ? `${summary} (event ${result.eventId})` : summary]
+  const body = [fmt`${summary} (event ${result.eventId})`]
   if (result.delivered) body.push(`phase ${result.delivered} delivered`)
   return { failures: [], body, next }
 }
@@ -298,37 +298,37 @@ const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
 const RUN_WAIT_S = 25
 
-const mib = (bytes: number | null) => (bytes === null ? '-' : `${(bytes / 1048576).toFixed(1)} MiB`)
-const ms = (value: number | null) => (value === null ? '-' : `${value} ms`)
+const mib = (bytes: number | null) => (bytes == null ? '-' : `${(bytes / 1048576).toFixed(1)} MiB`)
+const ms = (value: number | null) => (value == null ? '-' : `${value} ms`)
 
 // Failures first (state, class, summary), then timeline, durations, resources, steps and delays.
 function runShow(r: RunJson): Result {
   const failed = r.state === 'failed' || r.state === 'stopped' || r.state === 'orphaned'
-  const exit = r.outcome.exitCode === null ? '' : ` (exit ${r.outcome.exitCode})`
+  const exit = r.outcome.exitCode == null ? '' : fmt` (exit ${r.outcome.exitCode})`
   const failures = failed
     ? [
-        `run ${r.id} ${r.state}${r.outcome.failureClass ? `: ${r.outcome.failureClass}` : ''}${exit}`,
-        ...(r.outcome.failureSummary ? [`summary: ${r.outcome.failureSummary}`] : []),
+        fmt`run ${r.id} ${r.state}${r.outcome.failureClass ? `: ${r.outcome.failureClass}` : ''}${exit}`,
+        ...(r.outcome.failureSummary ? [fmt`summary: ${r.outcome.failureSummary}`] : []),
       ]
     : []
   const t = r.timeline
   const res = r.resources
   const body = [
-    `run ${r.id} ${r.state}${failed ? '' : exit} · ${r.jobType} on ${r.machine} · attempt ${r.attempt}${r.task ? ` · task ${r.task}` : ''}`,
-    `timeline: queued ${t.queuedAt} · offered ${t.offeredAt ?? '-'} · admitted ${t.admittedAt ?? '-'} · started ${t.startedAt ?? '-'} · finished ${t.finishedAt ?? '-'}`,
-    `durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
-    `resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds ?? '-'} s · swept ${res.swept ?? '-'} · visible windows ${res.visibleWindows ?? '-'}`,
+    fmt`run ${r.id} ${r.state}${failed ? '' : exit} · ${r.jobType} on ${r.machine} · attempt ${r.attempt}${r.task ? ` · task ${r.task}` : ''}`,
+    fmt`timeline: queued ${t.queuedAt} · offered ${t.offeredAt} · admitted ${t.admittedAt} · started ${t.startedAt} · finished ${t.finishedAt}`,
+    fmt`durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
+    fmt`resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds} s · swept ${res.swept} · visible windows ${res.visibleWindows}`,
   ]
   if (r.steps.length > 0) {
     body.push('steps:')
     for (const s of r.steps)
-      body.push(`  ${s.step} ${s.name} ${s.outcome ?? 'open'} · ${s.startedAt} → ${s.finishedAt ?? '-'}`)
+      body.push(fmt`  ${s.step} ${s.name} ${s.outcome ?? 'open'} · ${s.startedAt} → ${s.finishedAt}`)
   }
   if (r.delays.length > 0) {
     body.push('delays:')
     for (const d of r.delays) {
       body.push(
-        `  ${d.at} ${d.reason} · position ${d.position} · need ${mib(d.needBytes)} · available ${mib(d.availableBytes)}`,
+        fmt`  ${d.at} ${d.reason} · position ${d.position} · need ${mib(d.needBytes)} · available ${mib(d.availableBytes)}`,
       )
     }
   }
@@ -369,7 +369,7 @@ export const COMMANDS: Spec[] = [
       return {
         failures: [],
         body: [
-          `logged in to ${config.url}, project ${plan.project.key} (${plan.project.name})`,
+          fmt`logged in to ${config.url}, project ${plan.project.key} (${plan.project.name})`,
           `wrote ${deps.configPath}`,
         ],
         next: 'devrounds plan show',
@@ -660,7 +660,7 @@ export const COMMANDS: Spec[] = [
       const body = events.map((e) => {
         const subject = e.taskKey ?? e.phaseKey ?? ''
         const reason = e.reason ? `  reason: ${e.reason}` : ''
-        return `${e.id} ${e.at} ${e.actor} ${e.kind} ${subject}${reason}`.replace(/ +$/, '')
+        return fmt`${e.id} ${e.at} ${e.actor} ${e.kind} ${subject}${reason}`.replace(/ +$/, '')
       })
       // Continue after the last event actually printed: when the body is cut, the later events of this page are
       // still unread and must not be skipped.
@@ -696,8 +696,8 @@ export const COMMANDS: Spec[] = [
       const rows = await api.get<Row[]>('/balance', { period: week ? 'week' : 'day' })
       const body = rows.map(
         (r) =>
-          `${r.periodStart}  done ${r.done} · opened ${r.opened} · cancelled ${r.cancelled} · ` +
-          `in progress ${r.hoursInProgress} h · avg cycle ${r.avgCycleHours === null ? '-' : `${r.avgCycleHours} h`}`,
+          fmt`${r.periodStart}  done ${r.done} · opened ${r.opened} · cancelled ${r.cancelled} · ` +
+          fmt`in progress ${r.hoursInProgress} h · avg cycle ${r.avgCycleHours == null ? '-' : `${r.avgCycleHours} h`}`,
       )
       return { failures: [], body, next: 'devrounds plan show' }
     },
@@ -713,7 +713,7 @@ export const COMMANDS: Spec[] = [
       const r = await api.machines().send<PairingCode>('POST', '/pairing-codes', { name })
       return {
         failures: [],
-        body: [`pairing code for machine ${r.machineName}: ${r.code}`, `expires at ${r.expiresAt}`],
+        body: [fmt`pairing code for machine ${r.machineName}: ${r.code}`, fmt`expires at ${r.expiresAt}`],
         next: `devrounds-executor pair --url ${shellArg(api.url)} --code ${r.code}`,
       }
     },
@@ -729,7 +729,7 @@ export const COMMANDS: Spec[] = [
       const machines = await api.machines().get<MachineView[]>('/')
       const body = machines.map(
         (m) =>
-          `${m.name}  ${m.connected ? 'connected' : 'offline'} · ${m.os} · executor ${m.executorVersion} · ` +
+          fmt`${m.name}  ${m.connected ? 'connected' : 'offline'} · ${m.os} · executor ${m.executorVersion} · ` +
           `last seen ${m.lastSeenAt ?? 'never'}`,
       )
       return {
@@ -785,7 +785,7 @@ export const COMMANDS: Spec[] = [
       const r = await api.send<RunJson>('POST', '/runs', body)
       return {
         failures: [],
-        body: [`run ${r.id} ${r.state} · ${r.jobType} on ${r.machine}`],
+        body: [fmt`run ${r.id} ${r.state} · ${r.jobType} on ${r.machine}`],
         next: `devrounds run show ${shellArg(r.id)} --wait`,
       }
     },

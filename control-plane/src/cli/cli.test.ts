@@ -311,6 +311,42 @@ test('a mutation answer without an event id never prints undefined', async (t) =
   assert.ok(!res.stdout.includes('undefined'), res.stdout)
 })
 
+test('fields the server leaves out print as "-" in every formatter, never as undefined', async (t) => {
+  const run = {
+    id: 'r1',
+    state: 'finished',
+    outcome: {},
+    timeline: {},
+    durations: {},
+    resources: {},
+    steps: [{ step: 1, name: 'build' }],
+    delays: [{ position: 1 }],
+  }
+  const fake = await fakeServer((req, res) => {
+    if (req.url?.includes('/runs/')) return json(res, run)
+    if (req.url?.includes('/machines')) return json(res, [{ name: 'm1', connected: true }])
+    if (req.url?.includes('/events')) return json(res, [{ id: '1', kind: 'transition' }])
+    if (req.url?.includes('/balance')) return json(res, [{ periodStart: '2026-11-17' }])
+    json(res, { project: { key: 'alpha' }, phases: [], unphased: [] })
+  })
+  t.after(fake.close)
+  const dir = await mkdtemp(join(tmpdir(), 'devrounds-missing-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  const commands = [
+    ['run', 'show', 'r1'],
+    ['machine', 'list'],
+    ['events'],
+    ['balance'],
+    ['login', '--url', fake.env.DEVROUNDS_URL, '--token', 'drt_x', '--project', 'alpha'],
+  ]
+  for (const argv of commands) {
+    const res = await runCli(argv, { env: fake.env, configPath: join(dir, 'config.json') })
+    assert.equal(res.exitCode, 0, `${argv.join(' ')}: ${res.stderr}`)
+    assert.ok(!res.stdout.includes('undefined'), `${argv.join(' ')}: ${res.stdout}`)
+  }
+})
+
 test('a config file that is not a JSON object answers DR502', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-config-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
