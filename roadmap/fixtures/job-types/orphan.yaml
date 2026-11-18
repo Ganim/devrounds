@@ -1,0 +1,10 @@
+# The orphan case of pnpm e2e: the leader runs for 60 s with 3 children that linger 60 s more, long enough to kill
+# the executor under it. An orphan is alive only while its leader is, so the synthetic job (leader exits at once)
+# cannot be used.
+key: orphan
+command:
+  program: tree-fixture
+  args: [--children, "3", --run-ms, "60000", --linger-ms, "60000"]
+env: [PATH, PATHEXT, SystemRoot]
+timeout_s: 300
+orphan_policy: kill

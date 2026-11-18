@@ -13,6 +13,8 @@
     "typecheck": "tsc -p control-plane && tsc -p web",
     "lint": "biome check --error-on-warnings .",
     "devlanes-sync": "node scripts/devlanes-sync.ts",
+    "e2e": "node scripts/e2e/executor.e2e.ts",
+    "footprint": "node scripts/footprint.ts",
     "gen:errors": "node scripts/gen-error-docs.ts",
     "db:up": "docker compose up -d"
   },

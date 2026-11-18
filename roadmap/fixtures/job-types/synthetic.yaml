@@ -1,0 +1,9 @@
+# The synthetic job of pnpm e2e (scripts/e2e/executor.e2e.ts): a leader that prints 1000 lines and two steps, then
+# exits while 3 children linger for 60 s, so the executor has a tree to sweep. tree-fixture is found on the PATH the
+# executor runs with (executor/target/release in the e2e).
+key: synthetic
+command:
+  program: tree-fixture
+  args: [--children, "3", --linger-ms, "60000", --print, "1000", --steps, "build,test", --exit, "0"]
+env: [PATH, PATHEXT, SystemRoot]
+timeout_s: 120

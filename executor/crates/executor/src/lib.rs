@@ -17,7 +17,11 @@ pub mod pair;
 pub mod runs;
 #[cfg(windows)]
 mod sampler;
+#[cfg(windows)]
+pub mod service;
 pub mod steps;
+#[cfg(windows)]
+pub mod supervise;
 pub mod telemetry;
 
 #[cfg(windows)]

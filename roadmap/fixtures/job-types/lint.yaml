@@ -1,0 +1,11 @@
+# pnpm lint of this repo as a job (run it with --cwd <repo root>): a real cmd wrapper (pnpm.cmd) with node and biome
+# below it, every one hidden. The env list is what pnpm needs to find node, its store and a temp directory.
+key: lint
+command:
+  program: pnpm
+  args: [lint]
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP]
+timeout_s: 600
+classify:
+  - class: check_red
+    exit_codes: [1]

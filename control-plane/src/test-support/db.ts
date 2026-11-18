@@ -4,16 +4,11 @@ import type { Kysely } from 'kysely'
 import { createDb } from '../db/connection.ts'
 import { migrateToLatest } from '../db/migrate.ts'
 import type { Database, Member } from '../db/schema.ts'
+import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL } from './test-db-urls.ts'
 
-// Tests run as their own role, not devrounds_app: roles are cluster-wide and the server sets a different password.
-export const TEST_APP_ROLE = 'devrounds_test_app'
-export const TEST_APP_PASSWORD = 'devrounds'
+export { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL }
+
 const APP_PASSWORD = TEST_APP_PASSWORD
-export const TEST_DATABASE_URL =
-  process.env.DEVROUNDS_TEST_DATABASE_URL ??
-  `postgres://${TEST_APP_ROLE}:${APP_PASSWORD}@127.0.0.1:15433/devrounds_test`
-export const TEST_ADMIN_URL =
-  process.env.DEVROUNDS_TEST_ADMIN_DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:15433/devrounds_test'
 
 export type TestTenant = { tenantId: string; human: Member; agent: Member }
 

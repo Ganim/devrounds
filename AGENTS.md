@@ -36,6 +36,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 - Accept `Idempotency-Key` on mutating API routes (same key and tenant within 24 h returns the stored response).
 - Pair an executor with `devrounds machine pair-code --name <machine>` (human members only), then run the printed
   `devrounds-executor pair` on that machine. Machine tokens and pairing codes are stored only as SHA-256.
+- Run the executor as the `DevRoundsExecutor` scheduled task (`devrounds-executor service install`, after pairing).
+  Check the idle budgets with `pnpm footprint` and the executor end to end with `pnpm e2e`.
 - Run a job with `devrounds run start <jobType> --machine <name> --cwd <path>`, then read its outcome with
   `devrounds run show <id> --wait` (failures first: state, class, summary).
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.

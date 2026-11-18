@@ -1,5 +1,4 @@
-//! `devrounds-executor`: runs DevRounds jobs on this machine. Later tasks add
-//! `supervise` and `service`.
+//! `devrounds-executor`: runs DevRounds jobs on this machine.
 
 #[cfg(windows)]
 use std::ffi::OsString;
@@ -8,7 +7,8 @@ use std::process::ExitCode;
 #[cfg(windows)]
 mod serve;
 
-const USAGE: &str = "usage: devrounds-executor pair --url <url> --code <code> | run | version";
+const USAGE: &str = "usage: devrounds-executor pair --url <url> --code <code> | run | supervise \
+                     | service install|uninstall | version";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -36,12 +36,112 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("pair") => pair(args.collect()),
         #[cfg(windows)]
-        Some("run") if args.next().is_none() => run(),
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
-        }
+        Some("run") => match (args.next(), args.next()) {
+            (None, _) => run(),
+            (Some(flag), None) if flag == devrounds_executor::supervise::SUPERVISED_ARG => {
+                devrounds_executor::supervise::exit_with_supervisor();
+                run()
+            }
+            _ => usage(),
+        },
+        #[cfg(windows)]
+        Some("supervise") if args.next().is_none() => supervise(),
+        #[cfg(windows)]
+        Some("service") => match (args.next(), args.next()) {
+            (Some(verb), None) if verb == "install" => service(true),
+            (Some(verb), None) if verb == "uninstall" => service(false),
+            _ => usage(),
+        },
+        _ => usage(),
     }
+}
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
+}
+
+/// `supervise`: keeps `run --supervised` going and logs to `<home>/logs`.
+#[cfg(windows)]
+fn supervise() -> ExitCode {
+    let prepared = devrounds_executor::config::executor_home().and_then(|home| {
+        runtime()?.block_on(devrounds_executor::config::prepare_home(&home))?;
+        Ok(home)
+    });
+    let home = match prepared {
+        Ok(home) => home,
+        Err(error) => return fail(&error),
+    };
+    let supervised = std::env::current_exe()
+        .and_then(|exe| devrounds_executor::supervise::supervise(&exe, &home.join("logs")));
+    match supervised {
+        Err(error) => fail(&devrounds_core::DrError::new(
+            "DR501",
+            serde_json::json!({ "reason": format!("supervise: {error}") }),
+        )),
+    }
+}
+
+/// `service install` registers and starts the `DevRoundsExecutor` task for
+/// a paired home; `service uninstall` stops and removes it.
+#[cfg(windows)]
+fn service(install: bool) -> ExitCode {
+    use devrounds_executor::service::{
+        TASK_NAME, current_target, register_script, run_powershell, unregister_script,
+    };
+    let done = devrounds_executor::config::executor_home().and_then(|home| {
+        if install {
+            // A task without a pairing would restart a failing `run` forever.
+            runtime()?.block_on(devrounds_executor::config::load_pairing(&home))?;
+        }
+        let target = current_target(&home).map_err(|error| {
+            devrounds_core::DrError::new(
+                "DR501",
+                serde_json::json!({ "reason": format!("current executable: {error}") }),
+            )
+        })?;
+        let script = if install {
+            register_script(&target)
+        } else {
+            unregister_script(&target)
+        };
+        run_powershell(&script)?;
+        Ok(target)
+    });
+    match done {
+        Ok(target) if install => {
+            println!(
+                "scheduled task {TASK_NAME} registered and started\nexe: {}\nlogs: {}",
+                target.exe.display(),
+                target.home.join("logs").display()
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(_) => {
+            println!("scheduled task {TASK_NAME} removed");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error),
+    }
+}
+
+#[cfg(windows)]
+fn runtime() -> Result<tokio::runtime::Runtime, devrounds_core::DrError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            devrounds_core::DrError::new(
+                "DR501",
+                serde_json::json!({ "reason": format!("tokio runtime: {error}") }),
+            )
+        })
+}
+
+#[cfg(windows)]
+fn fail(error: &devrounds_core::DrError) -> ExitCode {
+    eprintln!("{error}\nsee docs/errors.md");
+    ExitCode::from(exit_code(error.code))
 }
 
 /// `pair --url <url> --code <code>`: pairs this machine into the tenant that
