@@ -287,8 +287,11 @@ export async function applyOrphans(
   })
 }
 
+// Orphaned is terminal, so unbounded this re-sends forever; the executor's RUN_DIR_RETENTION, and a restart re-reports a live orphan anyway.
+const ORPHAN_STOP_WINDOW = '7 days'
+
 /**
- * The Stop of every run of `machineId` orphaned to be killed, for the gateway to send again after each HelloAck,
+ * The Stop of every run of `machineId` orphaned to be killed within ORPHAN_STOP_WINDOW, for the gateway to send again after each HelloAck,
  * before any Ack of the session. The executor takes an Ack of its Orphans event with no Stop before it as let_finish,
  * so a Stop lost with a session that dropped after the commit would otherwise leave the orphan running. The
  * executor ignores a Stop of a run it no longer follows.
@@ -301,6 +304,7 @@ export function pendingOrphanStops(ctx: TenantCtx, machineId: string): Promise<S
       .where('machine_id', '=', machineId)
       .where('state', '=', 'orphaned')
       .where('orphan_action', '=', 'killed')
+      .where('orphaned_at', '>=', sql<Date>`now() - ${ORPHAN_STOP_WINDOW}::interval`)
       .execute()
     return rows.map((row) => ({ type: 'Stop', run: row.id, reason: 'orphan_policy' }) as const)
   })
@@ -323,8 +327,12 @@ async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: bo
     })
     return false
   }
-  // The executor restarted again before it acted on the Stop: it still owes the kill.
-  if (row.state === 'orphaned' && row.orphan_action === 'killed') return true
+  // The executor restarted again before it acted on the Stop: it still owes the kill. The new report restarts the
+  // window in which pendingOrphanStops sends the Stop again.
+  if (row.state === 'orphaned' && row.orphan_action === 'killed') {
+    await update({ orphaned_at: stamp, clock_skew_ms })
+    return true
+  }
   const next = nextRunState(row.state, 'orphan', runId)
   const { orphan_policy } = await trx
     .selectFrom('job_types')
@@ -334,6 +342,7 @@ async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: bo
   const kill = orphan_policy === 'kill'
   await update({
     state: next.state,
+    orphaned_at: stamp,
     clock_skew_ms,
     failure_class: 'infra',
     orphan_action: kill ? 'killed' : 'let_finish',

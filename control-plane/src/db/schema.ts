@@ -1,7 +1,7 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts and 0006_log_segments.ts (0002 and 0003 add no columns). pg returns int8 and numeric
-// as strings, so those stay strings here.
+// Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts and 0008_runs_orphaned_at.ts
+// (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -221,6 +221,7 @@ export interface RunsTable {
   swept_processes: number | null
   visible_windows: number | null
   orphan_action: 'killed' | 'let_finish' | null
+  orphaned_at: NullableTimestamp
   clock_skew_ms: Generated<number>
   trace_id: string | null
 }

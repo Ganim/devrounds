@@ -7,7 +7,7 @@ import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { testDb } from '../test-support/db.ts'
-import { applyOrphans, applyRunEvent, createRun, markOffered } from './record.ts'
+import { applyOrphans, applyRunEvent, createRun, markOffered, pendingOrphanStops } from './record.ts'
 
 const projectKey = 'devrounds'
 const AT = new Date('2026-11-18T12:00:00Z')
@@ -63,7 +63,14 @@ async function setup() {
       .select(['state', 'failure_class', 'failure_summary', 'orphan_action', 'finished_at'])
       .where('id', '=', runId)
       .executeTakeFirstOrThrow()
-  return { ctx, machineId, runOf, row }
+  // Moves when `runId` became orphaned back by `days`.
+  const orphanedDaysAgo = (runId: string, days: number) =>
+    t.admin
+      .updateTable('runs')
+      .set({ orphaned_at: new Date(Date.now() - days * 24 * 60 * 60 * 1000) })
+      .where('id', '=', runId)
+      .execute()
+  return { ctx, machineId, runOf, row, orphanedDaysAgo }
 }
 
 const orphans = (...runs: [string, boolean][]): OrphansEvent => ({
@@ -99,6 +106,20 @@ test('an alive repeat of an orphan already killed answers its Stop again', async
   assert.deepEqual(replies, [{ type: 'Stop', run: runId, reason: 'orphan_policy' }])
   assert.deepEqual(warned, [])
   assert.equal((await row(runId)).state, 'orphaned')
+})
+
+// Orphaned is terminal: without a window, every HelloAck would stop every run the machine ever had killed.
+test('after HelloAck, only runs orphaned to be killed within the window get their Stop again', async () => {
+  const { ctx, machineId, runOf, orphanedDaysAgo } = await setup()
+  const old = await runOf('check', 'running')
+  const recent = await runOf('check', 'running')
+  const now = await runOf('check', 'running')
+  await applyOrphans(ctx, machineId, orphans([old, true], [recent, true], [now, true]), new Date())
+  await orphanedDaysAgo(old, 8)
+  await orphanedDaysAgo(recent, 6)
+
+  const stopped = (await pendingOrphanStops(ctx, machineId)).map((stop) => stop.run)
+  assert.deepEqual(stopped.sort(), [recent, now].sort())
 })
 
 // A crash between storing the leader and appending RunStarted: the control plane last saw the run admitted.
