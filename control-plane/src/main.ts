@@ -25,6 +25,9 @@ async function serve(): Promise<void> {
   const pruning = setInterval(prune, PRUNE_EVERY_MS)
   const stop = async () => {
     clearInterval(pruning)
+    // The 'disconnect' listener below keeps the IPC channel, and so this process, alive until it is closed.
+    process.off('disconnect', stop)
+    if (process.connected) process.disconnect()
     await app.close()
     await db.destroy()
     await telemetry?.shutdown()
@@ -34,7 +37,14 @@ async function serve(): Promise<void> {
   // Only under the supervisor (it spawns serve with an IPC channel): when the supervisor dies, the channel closes and
   // serve stops too, so the next supervisor finds the port free instead of an orphan holding it.
   process.once('disconnect', stop)
-  await app.listen({ host: '127.0.0.1', port: config.port })
+  try {
+    await app.listen({ host: '127.0.0.1', port: config.port })
+  } catch (err) {
+    // Release the prune timer and the IPC channel, or a serve that cannot listen (port taken) prints the error and
+    // then stays up forever, and the supervisor waiting for its exit never restarts it.
+    await stop()
+    throw err
+  }
   await prune()
 }
 
