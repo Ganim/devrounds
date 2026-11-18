@@ -32,12 +32,16 @@ const findTask = `$task = Get-ScheduledTask | Where-Object TaskName -eq ${ps(TAS
 // Stopping the task ends only conhost; the supervisor under it keeps running. It is stopped by its command line, and
 // serve follows it (see main.ts), so a reinstall or uninstall never leaves an old pair holding the port.
 function stopRunning(t: ServiceTarget): string[] {
+  return [`Stop-ScheduledTask -TaskName ${ps(TASK_NAME)}`, stopSupervisorScript(t)]
+}
+
+// Separate from the task so uninstall can run it when the task is already gone: the supervisor outlives its task.
+export function stopSupervisorScript(t: ServiceTarget): string {
   return [
-    `Stop-ScheduledTask -TaskName ${ps(TASK_NAME)}`,
     `Get-CimInstance Win32_Process -Filter "name='node.exe'" |`,
     `  Where-Object { $_.CommandLine -and $_.CommandLine.Contains(${ps(t.supervisor)}) } |`,
     '  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
-  ]
+  ].join('\n')
 }
 
 // At logon, plus a repeating trigger every 5 minutes as a safety net: with IgnoreNew it starts the supervisor only
@@ -67,8 +71,9 @@ export function registerScript(t: ServiceTarget): string {
 export function unregisterScript(t: ServiceTarget): string {
   return [
     findTask,
+    `if ($task) { Stop-ScheduledTask -TaskName ${ps(TASK_NAME)} }`,
+    stopSupervisorScript(t),
     'if ($task) {',
-    ...stopRunning(t),
     `Unregister-ScheduledTask -TaskName ${ps(TASK_NAME)} -Confirm:$false`,
     '}',
   ].join('\n')
