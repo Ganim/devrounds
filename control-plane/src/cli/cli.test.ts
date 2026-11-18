@@ -242,6 +242,29 @@ test('-h is a plain value after an option that takes one', async (t) => {
   assert.equal(bodies.length, 1, 'help must not call the control plane')
 })
 
+test('<command> --help prints that command usage from the same text as the full list', async () => {
+  const all = (await runCli(['--help'], { env: {}, configPath: NO_CONFIG })).stdout
+  for (const argv of [
+    ['task', 'start'],
+    ['criterion', 'check'],
+    ['plan', 'show'],
+    ['phase', 'dep', 'add'],
+  ]) {
+    for (const flag of ['--help', '-h']) {
+      const res = await runCli([...argv, flag], { env: {}, configPath: NO_CONFIG })
+      assert.equal(res.exitCode, 0, res.stderr)
+      const lines = res.stdout.trimEnd().split('\n')
+      assert.ok(lines[0].startsWith(`usage: devrounds ${argv.join(' ')} `), res.stdout)
+      assert.ok(lines.length < 6, res.stdout)
+      // One source: the line shown for the command is the line the full list carries.
+      assert.ok(all.includes(lines[0].replace('usage: ', '  ')), res.stdout)
+    }
+  }
+  // A word path that is not a command (only a prefix) keeps the full list.
+  const prefix = await runCli(['task', '--help'], { env: {}, configPath: NO_CONFIG })
+  assert.equal(prefix.stdout, all)
+})
+
 test('a closed stdout ends the CLI quietly, without a stack', async (t) => {
   const events = Array.from({ length: 2000 }, (_, i) => ({
     id: String(i + 1),

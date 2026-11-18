@@ -854,8 +854,10 @@ export const COMMANDS: Spec[] = [
 type PairingCode = { code: string; expiresAt: string; machineName: string }
 type MachineView = { name: string; os: string; executorVersion: string; lastSeenAt: string | null; connected: boolean }
 
+const usageLine = (c: Spec) => `devrounds ${c.usage}`
+
 export function usage(): string {
-  const lines = COMMANDS.map((c) => `  devrounds ${c.usage}`)
+  const lines = COMMANDS.map((c) => `  ${usageLine(c)}`)
   return [
     'usage: devrounds <command> [options]',
     '',
@@ -983,7 +985,9 @@ export async function runCli(
   deps: Deps,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (argv.length === 0 || wantsHelp(argv)) {
-    const text = `${usage()}\n`
+    // A full command path gets its own line; anything else (no command, a prefix like `task`) gets the list.
+    const spec = findSpec(argv)
+    const text = `${spec ? `usage: ${usageLine(spec)}` : usage()}\n`
     return argv.length === 0 ? { exitCode: 2, stdout: '', stderr: text } : { exitCode: 0, stdout: text, stderr: '' }
   }
   try {
