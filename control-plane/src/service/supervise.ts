@@ -39,7 +39,7 @@ async function runServe(): Promise<number> {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   })
-  const pipe = (chunk: Buffer) => void serveLog.write(chunk).catch(() => {})
+  const pipe = (chunk: Buffer) => serveLog.enqueue(chunk)
   child.stdout?.on('data', pipe)
   child.stderr?.on('data', pipe)
   await log(`serve started (pid ${child.pid})`)

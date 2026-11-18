@@ -21,28 +21,26 @@ test('uninstall stops the supervisor whether or not the scheduled task exists', 
   assert.equal(open, closed, 'kill sits outside any if block')
 })
 
-test(
-  'stopSupervisorScript kills a node process running the supervisor path and leaves others',
-  { skip: process.platform !== 'win32' },
-  async () => {
-    const supervisor = `devrounds-test-${process.pid}-supervise.ts`
-    const idle = ['-e', 'setInterval(() => {}, 1000)']
-    const orphan = spawn(process.execPath, [...idle, supervisor], { stdio: 'ignore', windowsHide: true })
-    const bystander = spawn(process.execPath, [...idle, 'unrelated'], { stdio: 'ignore', windowsHide: true })
-    try {
-      await Promise.all([once(orphan, 'spawn'), once(bystander, 'spawn')])
-      const orphanExit = once(orphan, 'exit')
-      const script = `$ErrorActionPreference = 'Stop'\n${stopSupervisorScript(target(supervisor))}`
-      const powershell = run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        windowsHide: true,
-      })
-      powershell.child.stdin?.end()
-      await powershell
-      await orphanExit
-      assert.equal(bystander.exitCode, null)
-    } finally {
-      orphan.kill()
-      bystander.kill()
-    }
-  },
-)
+test('stopSupervisorScript kills a node process running the supervisor path and leaves others', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const supervisor = `devrounds-test-${process.pid}-supervise.ts`
+  const idle = ['-e', 'setInterval(() => {}, 1000)']
+  const orphan = spawn(process.execPath, [...idle, supervisor], { stdio: 'ignore', windowsHide: true })
+  const bystander = spawn(process.execPath, [...idle, 'unrelated'], { stdio: 'ignore', windowsHide: true })
+  try {
+    await Promise.all([once(orphan, 'spawn'), once(bystander, 'spawn')])
+    const orphanExit = once(orphan, 'exit')
+    const script = `$ErrorActionPreference = 'Stop'\n${stopSupervisorScript(target(supervisor))}`
+    const powershell = run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
+    })
+    powershell.child.stdin?.end()
+    await powershell
+    await orphanExit
+    assert.equal(bystander.exitCode, null)
+  } finally {
+    orphan.kill()
+    bystander.kill()
+  }
+})
