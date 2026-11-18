@@ -18,9 +18,11 @@ pub struct LaunchSpec {
 }
 
 /// Files the run writes its output to, normally `<run dir>/stdout.raw` and
-/// `<run dir>/stderr.raw`. The runner opens them for appending, hands the
-/// handles to the leader and closes its own copies, so output never waits on
-/// the executor and survives it. The same path twice gives one shared file.
+/// `<run dir>/stderr.raw`. The runner creates or opens them, positions the
+/// handles at the end (write handles, not append-only ones: MSYS programs
+/// refuse those; see runner-windows' `open_output`), hands them to the
+/// leader and closes its own copies, so output never waits on the executor
+/// and survives it. The same path twice gives one shared file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
     pub stdout: PathBuf,

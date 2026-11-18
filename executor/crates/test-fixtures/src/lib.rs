@@ -31,6 +31,10 @@ fn build() -> PathBuf {
         .args([
             "build",
             "--quiet",
+            // Never rewrite Cargo.lock or reach the network from a test run;
+            // the outer build already fetched every dependency.
+            "--locked",
+            "--offline",
             "-p",
             env!("CARGO_PKG_NAME"),
             "--bin",

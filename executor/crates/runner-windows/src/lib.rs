@@ -112,6 +112,13 @@ impl WindowsRunner {
         self.exit_grace
     }
 
+    /// Sets [`WindowsRunner::exit_grace`]. For tests that would otherwise
+    /// wait out the 10 s default; runs keep the default.
+    pub fn with_exit_grace(mut self, grace: Duration) -> Self {
+        self.exit_grace = grace;
+        self
+    }
+
     /// Runs `/bin/sh` programs as `shell`, Git for Windows' `usr\bin\sh.exe`.
     /// Without one, such units fail with [`SpawnError::ShellMissing`].
     pub fn with_shell(mut self, shell: Option<PathBuf>) -> Self {

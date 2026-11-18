@@ -129,13 +129,18 @@ pub(crate) struct Launched {
 /// writes them; nobody else may write or delete them meanwhile.
 const FILE_SHARE_READ: u32 = 0x1;
 
-/// Opens one run output file for appending, creating it when missing.
+/// Opens one run output file for writing at its end, creating it when
+/// missing.
 ///
 /// Not an append-only handle (`FILE_APPEND_DATA` without `FILE_WRITE_DATA`):
 /// MSYS programs, Git's `sh.exe` among them, write nothing to one and exit
-/// with 1. A write handle positioned at the end appends just as well: the
+/// with 1, and every `run:` string goes through `sh.exe`. A write handle
+/// positioned at the end appends just as well for well-behaved writers: the
 /// leader and every descendant inherit this one handle, so they share its
-/// file position, and Windows serialises their writes on it.
+/// file position, and Windows serialises their writes on it. The trade: a
+/// member can now seek or truncate the shared handle and overwrite earlier
+/// output, which append-only would have refused. Share-read still keeps any
+/// other writer out.
 fn open_output(path: &Path) -> io::Result<File> {
     let mut file = OpenOptions::new()
         .write(true)

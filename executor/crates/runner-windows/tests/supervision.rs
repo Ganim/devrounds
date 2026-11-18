@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -75,24 +75,39 @@ fn stdout(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("stdout.raw")).expect("stdout.raw")
 }
 
-/// Ends the run's job when the test is done, passed or failed.
-struct Cleanup(Arc<WindowsUnit>);
+/// Ends the run's job when the test is done, passed or failed, then removes
+/// its run directory once the job's processes are gone.
+struct Cleanup(Arc<WindowsUnit>, PathBuf);
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
         self.0.terminate();
+        remove_when_released(&self.1);
     }
 }
 
 /// Ends recorded processes when the test is done, for runs whose handles the
-/// test dropped on purpose.
-struct KillOnDrop(Vec<ProcessIdentity>);
+/// test dropped on purpose, then removes the run directory.
+struct KillOnDrop(Vec<ProcessIdentity>, PathBuf);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         for p in &self.0 {
             let _ = proc::terminate_verified(p.pid, p.start_time, 1);
         }
+        remove_when_released(&self.1);
+    }
+}
+
+/// Removes `dir`, retrying for up to 5 s. Every process of a run holds its
+/// output files until it has exited, so this waits (bounded) for the
+/// terminated tree to end; the `TempDir` would otherwise fail to delete it
+/// silently and leave it under `CARGO_TARGET_TMPDIR`. Blocks the thread: the
+/// processes end in the kernel without the runner's help.
+fn remove_when_released(dir: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::remove_dir_all(dir).is_err() && dir.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -107,8 +122,11 @@ fn accept_ctrl_c() {
     devrounds_sys_windows::console::set_ctrl_c_ignored(false).expect("accept Ctrl-C");
 }
 
-/// Runs `body` with the test's time limit.
+/// Runs `body` with the test's time limit. The fixture is resolved first, so
+/// a cold `cargo build` of it is not charged to the limit (`body` is lazy and
+/// only calls [`fixture`] once polled).
 async fn bounded(body: impl Future<Output = ()>) {
+    devrounds_test_fixtures::tree_fixture_path();
     tokio::time::timeout(LIMIT, body).await.expect("bounded");
 }
 
@@ -132,7 +150,7 @@ async fn every_descendant_is_a_job_member() {
             ],
         );
         let unit = runner().spawn_unit(spec).await.expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         let started = Instant::now();
         let mut members = Vec::new();
         while started.elapsed() < Duration::from_secs(3) {
@@ -157,7 +175,7 @@ async fn breakaway_is_refused() {
             .spawn_unit(fixture(dir.path(), &["--breakaway"]))
             .await
             .expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         let report = unit.wait_report().await.expect("report");
         assert_eq!(report.outcome.code, Some(0));
         let out = stdout(dir.path());
@@ -177,7 +195,7 @@ async fn graceful_stop_lets_ctrl_c_handlers_run() {
             .spawn_unit(fixture(dir.path(), &["--ctrl-c", "bye"]))
             .await
             .expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         // Let the fixture install its handler.
         tokio::time::sleep(Duration::from_millis(500)).await;
         let report = unit
@@ -206,7 +224,7 @@ async fn stop_ends_the_tree_within_grace() {
             ))
             .await
             .expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         let mut members = Vec::new();
         for _ in 0..50 {
             members = unit.job_members().await.expect("members");
@@ -241,7 +259,7 @@ async fn dropping_the_handles_leaves_the_run_running() {
             .await
             .expect("spawn");
         let leader = unit.run_identity().leader;
-        let _kill = KillOnDrop(vec![leader]);
+        let _kill = KillOnDrop(vec![leader], dir.path().to_path_buf());
         drop(unit);
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(alive(&leader));
@@ -249,21 +267,31 @@ async fn dropping_the_handles_leaves_the_run_running() {
     .await;
 }
 
-/// Once the leader exits, members still alive get the 10 s grace, are then
-/// terminated and are listed as swept; the leader's code is the run's.
+/// Once the leader exits, members still alive get the exit grace (10 s by
+/// default, 2 s here to keep the test short), are then terminated and are
+/// listed as swept; the leader's code is the run's.
 #[tokio::test]
 async fn leader_exit_sweeps_lingering_members() {
     bounded(async {
         let dir = run_dir();
+        assert_eq!(runner().exit_grace(), Duration::from_secs(10));
+        let grace = Duration::from_secs(2);
+        let started = Instant::now();
         let unit = runner()
+            .with_exit_grace(grace)
             .spawn_unit(fixture(
                 dir.path(),
                 &["--children", "2", "--linger-ms", "60000", "--exit", "3"],
             ))
             .await
             .expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         let report = unit.wait_report().await.expect("report");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= grace && elapsed < Duration::from_secs(10),
+            "{elapsed:?}"
+        );
         assert_eq!(report.outcome.code, Some(3));
         assert_eq!(report.swept.len(), 2, "{report:?}");
         assert!(report.escaped.is_empty(), "{report:?}");
@@ -283,7 +311,7 @@ async fn output_goes_to_run_owned_files() {
             .await
             .expect("spawn");
         let leader = unit.run_identity().leader;
-        let _kill = KillOnDrop(vec![leader]);
+        let _kill = KillOnDrop(vec![leader], dir.path().to_path_buf());
         drop(unit);
         assert!(
             alive(&leader),
@@ -312,7 +340,7 @@ async fn identity_carries_boot_id() {
             .spawn_unit(fixture(dir.path(), &["--run-ms", "5000"]))
             .await
             .expect("spawn");
-        let _cleanup = Cleanup(unit.clone());
+        let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
         let identity = unit.run_identity();
         assert_eq!(identity.boot_id, proc::boot_id().expect("boot id"));
         assert_eq!(identity.leader, unit.identity());
