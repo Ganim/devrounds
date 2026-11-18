@@ -22,6 +22,18 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 400,
     keys: ['from', 'to'],
   },
+  DR150: {
+    text: 'Protocol message {type} is invalid at {path}: {reason}.',
+    hint: 'The executor and the control plane disagree on the message shape: update the older side so both run the same release.',
+    httpStatus: 400,
+    keys: ['type', 'path', 'reason'],
+  },
+  DR151: {
+    text: 'Executor protocol {got} is not supported; this control plane speaks {supported}.',
+    hint: 'Update the older of the executor and the control plane so both speak protocol {supported}.',
+    httpStatus: 400,
+    keys: ['got', 'supported'],
+  },
   DR201: {
     text: 'No {kind} {key} found.',
     hint: 'Check the {kind} key with `devrounds plan show`; keys are case-sensitive.',

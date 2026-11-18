@@ -1,0 +1,13 @@
+{
+  "type": "Event",
+  "seq": 6,
+  "at": "2026-11-18T12:00:31Z",
+  "event": {
+    "kind": "LogSegment",
+    "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c",
+    "first_seq": 0,
+    "last_seq": 41,
+    "records": 42,
+    "zstd_base64": "KLUv/QBYAQAAaGk="
+  }
+}

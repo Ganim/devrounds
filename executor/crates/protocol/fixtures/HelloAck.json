@@ -1,0 +1,7 @@
+{
+  "type": "HelloAck",
+  "protocol": 1,
+  "features": ["seq", "steps"],
+  "machine_id": "7d1e4b2a-9c3f-4a5e-8b6d-1f2a3c4e5d6f",
+  "last_seq": 7
+}

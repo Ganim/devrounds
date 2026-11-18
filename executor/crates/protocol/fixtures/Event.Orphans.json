@@ -1,0 +1,6 @@
+{
+  "type": "Event",
+  "seq": 8,
+  "at": "2026-11-18T12:01:00Z",
+  "event": { "kind": "Orphans", "runs": [{ "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c", "alive": true }] }
+}

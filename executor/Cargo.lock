@@ -126,6 +126,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "devrounds-protocol"
+version = "0.1.0"
+dependencies = [
+ "devrounds-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "devrounds-runner-windows"
 version = "0.1.0"
 dependencies = [

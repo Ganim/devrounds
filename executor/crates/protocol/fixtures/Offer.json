@@ -1,0 +1,14 @@
+{
+  "type": "Offer",
+  "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c",
+  "job": {
+    "job_type": "build",
+    "program": "cargo",
+    "args": ["build", "--release"],
+    "cwd": "C:\\work\\repo",
+    "env_allow": ["PATH"],
+    "timeout_s": 600
+  },
+  "memory_need": 536870912,
+  "trace_parent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+}

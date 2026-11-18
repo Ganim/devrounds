@@ -1,0 +1,13 @@
+{
+  "type": "Event",
+  "seq": 2,
+  "at": "2026-11-18T12:00:00Z",
+  "event": {
+    "kind": "Delayed",
+    "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c",
+    "reason": "memory_critical",
+    "position": 1,
+    "need": 536870912,
+    "available": 268435456
+  }
+}

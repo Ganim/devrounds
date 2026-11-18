@@ -1,0 +1,11 @@
+{
+  "type": "MachineReport",
+  "total_memory": 34359738368,
+  "available_memory": 17179869184,
+  "commit_total": 21474836480,
+  "commit_limit": 68719476736,
+  "cpu_percent": 12.5,
+  "memory_pressure": "warn",
+  "running": 2,
+  "executor_private_bytes": 18000000
+}

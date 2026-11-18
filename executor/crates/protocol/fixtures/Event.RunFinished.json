@@ -1,0 +1,19 @@
+{
+  "type": "Event",
+  "seq": 7,
+  "at": "2026-11-18T12:00:32Z",
+  "event": {
+    "kind": "RunFinished",
+    "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c",
+    "reason": "exited",
+    "exit_code": -1073741510,
+    "peak": 734003200,
+    "p95": 700000000,
+    "p50": 512000000,
+    "cpu_seconds": 41.25,
+    "swept": 1,
+    "visible_windows": 0,
+    "tail": ["error: build failed"],
+    "summary": null
+  }
+}

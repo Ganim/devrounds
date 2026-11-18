@@ -26,6 +26,22 @@ A reason is required to move a task from {from} to {to}.
 
 Send a non-empty reason with the request and try again.
 
+## DR150
+
+Protocol message {type} is invalid at {path}: {reason}.
+
+### Fix
+
+The executor and the control plane disagree on the message shape: update the older side so both run the same release.
+
+## DR151
+
+Executor protocol {got} is not supported; this control plane speaks {supported}.
+
+### Fix
+
+Update the older of the executor and the control plane so both speak protocol {supported}.
+
 ## DR201
 
 No {kind} {key} found.
