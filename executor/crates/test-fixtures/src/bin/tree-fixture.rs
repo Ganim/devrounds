@@ -31,8 +31,8 @@
 //! - `--ctrl-c ignore`: every process ignores Ctrl-C. `--ctrl-c bye`: every
 //!   process prints `bye` on Ctrl-C and exits 0.
 //! - `--ready`: every process prints `ready` once its Ctrl-C handler (with
-//!   `--ctrl-c`) is installed, so a test can wait for the whole tree instead
-//!   of sleeping.
+//!   `--ctrl-c`) is installed and its `--alloc-mb` memory is committed, so a
+//!   test can wait for the whole tree instead of sleeping.
 //! - `--breakaway`: the leader starts a child with `CREATE_BREAKAWAY_FROM_JOB`
 //!   and prints `breakaway: denied` when Windows refuses it,
 //!   `breakaway: allowed` when it starts.
@@ -183,12 +183,14 @@ async fn run(args: Args) -> io::Result<u8> {
         Some(_) => Some(tokio::signal::windows::ctrl_c()?),
         None => None,
     };
+    let memory = allocate(args.alloc_mb, args.touch);
+    // After the allocation, so a test reading the footprint at `ready` sees
+    // the memory committed.
     if args.ready {
         let mut out = io::stdout().lock();
         writeln!(out, "ready")?;
         out.flush()?;
     }
-    let memory = allocate(args.alloc_mb, args.touch);
     let held = match args.alloc_hold_ms {
         Some(hold) => {
             tokio::spawn(async move {

@@ -163,6 +163,28 @@ impl Job {
         Ok(info.ActiveProcesses)
     }
 
+    /// The most memory the job's processes ever committed at once
+    /// (`PeakJobMemoryUsed`), counted by the kernel on every allocation, so a
+    /// spike between two samples is not missed. Readable after the members
+    /// exited, for as long as the job is open.
+    pub fn peak_memory(&self) -> io::Result<u64> {
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: the job is open; `limits` matches the class and size.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.raw(),
+                JobObjectExtendedLimitInformation,
+                (&raw mut limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(limits.PeakJobMemoryUsed as u64)
+    }
+
     /// Ends every process in the job with `exit_code`.
     pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
         // SAFETY: the job handle is open with full access.

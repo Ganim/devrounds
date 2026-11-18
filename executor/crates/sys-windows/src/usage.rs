@@ -7,6 +7,7 @@ use std::os::windows::io::OwnedHandle;
 use std::ptr;
 use std::sync::OnceLock;
 
+use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Memory::{
     CreateMemoryResourceNotification, LowMemoryResourceNotification,
     QueryMemoryResourceNotification,
@@ -15,7 +16,7 @@ use windows_sys::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
 };
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows_sys::Win32::System::Threading::GetSystemTimes;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetSystemTimes};
 
 use crate::proc::{cpu_time, open_query_verified};
 use crate::util::{owned, raw};
@@ -30,6 +31,10 @@ pub struct ProcessUsage {
     /// Private working set: resident pages no other process shares, what Task
     /// Manager's Memory column shows.
     pub private_working_set: u64,
+    /// Private bytes: memory the process committed that no other process
+    /// shares, resident or not. A run's footprint, because commit is what
+    /// the system can run out of (spec §16.5).
+    pub private_bytes: u64,
 }
 
 /// Machine-wide CPU times since boot, in 100 ns units summed over all CPUs.
@@ -61,12 +66,21 @@ pub fn process_usage(pid: u32, start_time: u64) -> io::Result<Option<ProcessUsag
     let Some(handle) = open_query_verified(pid, start_time)? else {
         return Ok(None);
     };
-    let (working_set, private_working_set) = memory_counters(&handle)?;
+    let counters = memory_counters(raw(&handle))?;
     Ok(Some(ProcessUsage {
         cpu_time: cpu_time(&handle)?,
-        working_set,
-        private_working_set,
+        working_set: counters.WorkingSetSize as u64,
+        private_working_set: counters.PrivateWorkingSetSize as u64,
+        private_bytes: counters.PrivateUsage as u64,
     }))
+}
+
+/// Private bytes of the calling process, the number the executor's idle
+/// budget is checked against.
+pub fn self_private_bytes() -> io::Result<u64> {
+    // SAFETY: plain call; the pseudo handle needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    Ok(memory_counters(process)?.PrivateUsage as u64)
 }
 
 /// Idle, kernel and user time of all CPUs since boot.
@@ -125,9 +139,9 @@ pub fn low_memory() -> io::Result<bool> {
     Ok(state != 0)
 }
 
-/// Working set and private working set of an open process, from
-/// `PROCESS_MEMORY_COUNTERS_EX2`.
-fn memory_counters(handle: &OwnedHandle) -> io::Result<(u64, u64)> {
+/// The memory counters of an open process (`handle` with query rights, or
+/// the current-process pseudo handle).
+fn memory_counters(handle: HANDLE) -> io::Result<PROCESS_MEMORY_COUNTERS_EX2> {
     let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
         cb: size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
         ..Default::default()
@@ -137,7 +151,7 @@ fn memory_counters(handle: &OwnedHandle) -> io::Result<(u64, u64)> {
     // documented way to pass it.
     let ok = unsafe {
         GetProcessMemoryInfo(
-            raw(handle),
+            handle,
             (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
             counters.cb,
         )
@@ -145,8 +159,5 @@ fn memory_counters(handle: &OwnedHandle) -> io::Result<(u64, u64)> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((
-        counters.WorkingSetSize as u64,
-        counters.PrivateWorkingSetSize as u64,
-    ))
+    Ok(counters)
 }

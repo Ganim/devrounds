@@ -21,7 +21,9 @@ pub struct CpuSummary {
 }
 
 /// Resource profile of one run, computed from its run-total samples.
-/// Percentiles are sketch estimates within 1%; peaks are exact.
+/// Percentiles are sketch estimates within 1%. The footprint peak is the
+/// larger of the sampled peak and the job's own peak, which the kernel keeps
+/// exactly; the CPU and RSS peaks are sampled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSummary {
     pub run: String,
@@ -31,6 +33,9 @@ pub struct RunSummary {
     pub footprint: ByteSummary,
     pub cpu: CpuSummary,
     pub rss_peak: u64,
+    /// CPU time the run used, in seconds: each sample's share of a core over
+    /// the time since the previous sample (or the start).
+    pub cpu_seconds: f64,
 }
 
 impl RunSummary {
@@ -47,11 +52,13 @@ struct ActiveRun {
     footprint: QuantileSketch,
     cpu: QuantileSketch,
     rss_peak: u64,
+    cpu_seconds: f64,
 }
 
 impl ActiveRun {
-    /// Builds the summary as of `ended_ms`.
-    fn summary(&self, run: String, ended_ms: u64) -> RunSummary {
+    /// Builds the summary as of `ended_ms`, with `job_peak` (0 when unknown)
+    /// raising the footprint peak.
+    fn summary(&self, run: String, ended_ms: u64, job_peak: u64) -> RunSummary {
         let bytes = |q: f64| self.footprint.quantile(q).map_or(0, |v| v.round() as u64);
         let cpu = |q: f64| self.cpu.quantile(q).unwrap_or(0.0);
         RunSummary {
@@ -62,7 +69,7 @@ impl ActiveRun {
             footprint: ByteSummary {
                 p50: bytes(0.5),
                 p95: bytes(0.95),
-                peak: self.footprint.max().map_or(0, |v| v as u64),
+                peak: self.footprint.max().map_or(0, |v| v as u64).max(job_peak),
             },
             cpu: CpuSummary {
                 p50: cpu(0.5),
@@ -70,6 +77,7 @@ impl ActiveRun {
                 peak: self.cpu.max().unwrap_or(0.0),
             },
             rss_peak: self.rss_peak,
+            cpu_seconds: self.cpu_seconds,
         }
     }
 }
@@ -91,6 +99,7 @@ impl RunTracker {
                 footprint: QuantileSketch::default(),
                 cpu: QuantileSketch::default(),
                 rss_peak: 0,
+                cpu_seconds: 0.0,
             },
         );
     }
@@ -108,6 +117,10 @@ impl RunTracker {
             active.footprint.add(sample.footprint_bytes as f64);
             active.cpu.add(sample.cpu_percent);
             active.rss_peak = active.rss_peak.max(sample.rss_bytes);
+            // Collectors report CPU as the share since their previous reading,
+            // so share times the gap since the previous sample is CPU time.
+            let gap_ms = sample.ts_ms.saturating_sub(active.last_ms);
+            active.cpu_seconds += sample.cpu_percent.max(0.0) / 100.0 * gap_ms as f64 / 1000.0;
             active.last_ms = active.last_ms.max(sample.ts_ms);
         }
     }
@@ -121,14 +134,17 @@ impl RunTracker {
     pub fn current(&self, run: &str) -> Option<RunSummary> {
         self.runs
             .get(run)
-            .map(|active| active.summary(run.to_owned(), active.last_ms))
+            .map(|active| active.summary(run.to_owned(), active.last_ms, 0))
     }
 
     /// Stops tracking a run and returns its final summary for persistence.
-    pub fn finish(&mut self, run: &str, ended_ms: u64) -> Option<RunSummary> {
+    /// `job_peak` is the most memory the run's job ever committed at once
+    /// (0 when unknown); the footprint peak is the larger of it and the
+    /// sampled peak, so a spike between samples still counts.
+    pub fn finish(&mut self, run: &str, ended_ms: u64, job_peak: u64) -> Option<RunSummary> {
         self.runs
             .remove(run)
-            .map(|active| active.summary(run.to_owned(), ended_ms.max(active.started_ms)))
+            .map(|active| active.summary(run.to_owned(), ended_ms.max(active.started_ms), job_peak))
     }
 }
 

@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use devrounds_core::ProcessIdentity;
 use devrounds_metrics::{
-    Error, MetricsSource, Sample, SampleRequest, Subject, UnitTarget, unix_ms,
+    Error, MetricsSource, RunSample, Sample, SampleRequest, Subject, UnitTarget, unix_ms,
 };
 use devrounds_sys_windows::{
     proc,
@@ -55,6 +55,33 @@ impl WindowsSource {
         // replaced on every call anyway.
         let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
         collect(&mut previous, units, daemon)
+    }
+
+    /// Samples one run synchronously: the private bytes, CPU and working set
+    /// of `members` (its job's members), summed. Each PID counts once;
+    /// stale, exited and unreadable members are skipped. CPU is against this
+    /// source's previous call and the cache keeps only these members, so
+    /// give each run a source of its own. Blocks: async callers use
+    /// `spawn_blocking`.
+    pub fn sample_run(&self, members: &[ProcessIdentity]) -> RunSample {
+        let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        let mut seen = HashSet::new();
+        let mut readings = HashMap::new();
+        let mut total = RunSample::default();
+        for identity in members {
+            if !seen.insert(identity.pid) {
+                continue;
+            }
+            let Some((cpu_percent, usage)) = read(&previous, &mut readings, identity, now) else {
+                continue;
+            };
+            total.footprint_bytes += usage.private_bytes;
+            total.cpu_percent += cpu_percent;
+            total.rss_bytes += usage.working_set;
+        }
+        *previous = readings;
+        total
     }
 }
 
@@ -126,7 +153,7 @@ fn collect(
                     start_time: identity.start_time,
                 },
                 cpu_percent,
-                footprint_bytes: usage.private_working_set,
+                footprint_bytes: usage.private_bytes,
                 rss_bytes: usage.working_set,
                 ts_ms,
             });
@@ -138,7 +165,7 @@ fn collect(
         samples.push(Sample {
             subject: Subject::Daemon,
             cpu_percent,
-            footprint_bytes: usage.private_working_set,
+            footprint_bytes: usage.private_bytes,
             rss_bytes: usage.working_set,
             ts_ms,
         });

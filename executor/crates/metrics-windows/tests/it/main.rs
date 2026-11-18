@@ -181,8 +181,9 @@ mod windows {
         assert_eq!(samples.len(), 1, "{samples:?}");
         let sample = sample_for(&samples, identity.pid).expect("own process sampled");
         assert!(sample.footprint_bytes > 0, "{sample:?}");
-        // The working set holds the private pages plus shared ones.
-        assert!(sample.rss_bytes >= sample.footprint_bytes, "{sample:?}");
+        // The footprint is commit and the RSS the working set; neither bounds
+        // the other, since committed pages need not be resident.
+        assert!(sample.rss_bytes > 0, "{sample:?}");
         assert!(sample.ts_ms > 0);
         assert_eq!(source.name(), "windows");
     }

@@ -635,6 +635,14 @@ impl WindowsUnit {
         blocking(move || inner.visible_windows_blocking()).await?
     }
 
+    /// The most memory the run's processes ever committed at once, read from
+    /// its job; exact where samples can miss a short spike, and still
+    /// readable after the run exited.
+    pub async fn peak_memory(&self) -> Result<u64, Error> {
+        let inner = Arc::clone(&self.inner);
+        Ok(blocking(move || inner.job.peak_memory()).await??)
+    }
+
     /// Ends every process of the unit at once by terminating its job, without
     /// waiting; the supervisor then reports the exit as usual.
     pub fn terminate(&self) {

@@ -8,6 +8,18 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+devrounds-core = { path = "../core" }
+devrounds-metrics = { path = "../metrics" }
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+devrounds-metrics-windows = { path = "../metrics-windows" }
+devrounds-runner-windows = { path = "../runner-windows" }
+
+[target.'cfg(windows)'.dev-dependencies]
+devrounds-test-fixtures = { path = "../test-fixtures" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

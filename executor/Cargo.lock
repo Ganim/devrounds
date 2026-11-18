@@ -63,6 +63,16 @@ dependencies = [
 [[package]]
 name = "devrounds-executor"
 version = "0.1.0"
+dependencies = [
+ "devrounds-core",
+ "devrounds-metrics",
+ "devrounds-metrics-windows",
+ "devrounds-runner-windows",
+ "devrounds-test-fixtures",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "devrounds-executor-bin"
@@ -105,7 +115,10 @@ dependencies = [
  "async-trait",
  "devrounds-core",
  "devrounds-metrics",
+ "devrounds-runner-windows",
  "devrounds-sys-windows",
+ "devrounds-test-fixtures",
+ "tempfile",
  "tokio",
  "tracing",
 ]

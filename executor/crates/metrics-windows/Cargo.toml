@@ -18,3 +18,8 @@ tracing.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+devrounds-runner-windows = { path = "../runner-windows" }
+devrounds-test-fixtures = { path = "../test-fixtures" }
+tempfile.workspace = true

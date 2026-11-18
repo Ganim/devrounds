@@ -20,8 +20,9 @@
 //!     rss_bytes: 1 << 19,
 //!     ts_ms: 2_000,
 //! });
-//! let summary = tracker.finish("run-1", 3_000).expect("tracked");
-//! assert_eq!(summary.footprint.peak, 1 << 20);
+//! // The job committed 2 MiB at once between samples.
+//! let summary = tracker.finish("run-1", 3_000, 2 << 20).expect("tracked");
+//! assert_eq!(summary.footprint.peak, 2 << 20);
 //! ```
 
 mod ring;
@@ -80,6 +81,17 @@ pub struct Sample {
     pub rss_bytes: u64,
     /// Unix time in milliseconds when the collector read the value.
     pub ts_ms: u64,
+}
+
+/// One reading of a run's whole process tree: the sums over its members.
+/// `footprint_bytes` is their private bytes (commit), never working set.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct RunSample {
+    pub footprint_bytes: u64,
+    /// Percent of one core, as in [`Sample`].
+    pub cpu_percent: f64,
+    /// Summed working sets, for detail views only.
+    pub rss_bytes: u64,
 }
 
 /// Processes the executor attributes to one run. The executor owns membership
