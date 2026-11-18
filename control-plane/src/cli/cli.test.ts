@@ -9,7 +9,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
-import { createProject } from '../planning/service.ts'
+import { addTask, createProject } from '../planning/service.ts'
 import { testDb } from '../test-support/db.ts'
 import { moreCommandFor, runCli } from './commands.ts'
 
@@ -159,6 +159,23 @@ test('a mutation that times out is exit 4 with an unknown outcome and next: devr
     /^control plane at http:\/\/127\.0\.0\.1:\d+ did not answer \(no answer in 200 ms\); outcome unknown\n/,
   )
   assert.ok(res.stderr.endsWith('\nnext: devrounds events\n'), res.stderr)
+})
+
+test('task start points to criterion check while the task has open criteria', async () => {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(ctx, { key: 'alpha', name: 'Alpha' })
+  await addTask(ctx, { projectKey: 'alpha', key: 'P0-T01', title: 'A', criteria: ['tests pass'] })
+  await addTask(ctx, { projectKey: 'alpha', key: 'P0-T02', title: 'B' })
+  const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
+  const env = { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: 'alpha' }
+
+  const open = await runCli(['task', 'start', 'P0-T01'], { env, configPath: NO_CONFIG })
+  const none = await runCli(['task', 'start', 'P0-T02'], { env, configPath: NO_CONFIG })
+
+  assert.equal(open.stdout.trimEnd().split('\n').at(-1), 'next: devrounds criterion check P0-T01 --evidence <evidence>')
+  assert.equal(none.stdout.trimEnd().split('\n').at(-1), 'next: devrounds task done P0-T02')
 })
 
 test('missing config points to devrounds login', async () => {

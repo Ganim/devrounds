@@ -84,7 +84,11 @@ test('next when nothing is startable', () => {
       }),
     ]),
   ])
-  assert.equal(planShow(view, {}).next, 'nothing startable: 2 blocked — devrounds plan show --phase P1')
+  // The in-progress task still has an open criterion: checking it is the next step.
+  assert.equal(planShow(view, {}).next, 'devrounds criterion check P1-T03 --evidence <evidence>')
+  view.phases[1].tasks[2].state = 'blocked'
+  assert.equal(planShow(view, {}).next, 'nothing startable: 3 blocked — devrounds plan show --phase P1')
+  view.phases[1].tasks[2].state = 'in_progress'
 
   // Once the in-progress task has every criterion checked, finishing it is the next step.
   const checked = { position: 1, text: 'RLS on', checked: true, checkedAt: null, checkedBy: null, evidence: 'note:x' }
@@ -94,6 +98,12 @@ test('next when nothing is startable', () => {
   // A startable task wins over finishing one.
   view.phases[1].tasks.push(task('P1-T04', 'todo', { blockedBy: ['P0-T01'] }))
   assert.equal(planShow(view, {}).next, 'devrounds task start P1-T04')
+})
+
+test('next checks the open phase criteria once every task of the phase is closed', () => {
+  const open = { position: 1, text: 'demo given', checked: false, checkedAt: null, checkedBy: null, evidence: null }
+  const view = plan([phase('P0', 1, [task('P0-T01', 'done'), task('P0-T02', 'cancelled')], { criteria: [open] })])
+  assert.equal(planShow(view, {}).next, 'devrounds criterion check P0 --evidence <evidence>')
 })
 
 test('server text with newlines and escape sequences stays on one line and cannot forge next', () => {

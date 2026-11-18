@@ -547,10 +547,11 @@ export function removeDependency(ctx: Ctx, i: TaskDependency): Promise<Mutation>
   })
 }
 
+// `openCriteria` counts the task's unchecked criteria, so the CLI can point a start to `criterion check`.
 export function transition(
   ctx: Ctx,
   i: { projectKey: string; taskKey: string; to: TaskState; reason?: string },
-): Promise<DeliveringMutation> {
+): Promise<DeliveringMutation & { openCriteria: number }> {
   return run(ctx, async (trx) => {
     const project = await findProject(trx, i.projectKey)
     // Row lock: of two concurrent moves the second waits, then sees the new state and fails DR301.
@@ -618,7 +619,7 @@ export function transition(
       data: { ...i, from, to: i.to },
     })
     const delivered = await deliverIfClosable(trx, ctx, i.projectKey, project.id, task.phase_id)
-    return { eventId, delivered }
+    return { eventId, delivered, openCriteria: Number(openCriteria.count) }
   })
 }
 

@@ -208,7 +208,7 @@ function hours(value: string | undefined): number | null | undefined {
 // `none` clears an optional field on edit; the API takes null for that.
 const orNull = (value: string | undefined) => (value === 'none' ? null : value)
 
-type Mutation = { eventId: string; delivered?: string | null }
+type Mutation = { eventId: string; delivered?: string | null; openCriteria?: number }
 
 function done(summary: string, result: Mutation, next = 'devrounds plan show'): Result {
   const body = [`${summary} (event ${result.eventId})`]
@@ -227,7 +227,7 @@ async function target(
   return { plan, body: plan.phases.some((p) => p.key === key) ? { phaseKey: key } : { taskKey: key } }
 }
 
-function taskTransition(verb: string, to: string, next?: (key: string) => string): Spec {
+function taskTransition(verb: string, to: string, next?: (key: string, result: Mutation) => string): Spec {
   return {
     path: ['task', verb],
     usage: `task ${verb} <task> [--reason <text>]`,
@@ -240,7 +240,7 @@ function taskTransition(verb: string, to: string, next?: (key: string) => string
         to,
         reason: text(inv, 'reason'),
       })
-      return done(`${key} ${to}`, result, next?.(shellArg(key)))
+      return done(`${key} ${to}`, result, next?.(shellArg(key), result))
     },
   }
 }
@@ -543,7 +543,9 @@ export const COMMANDS: Spec[] = [
       return done(`edited task ${key}`, result)
     },
   },
-  taskTransition('start', 'in_progress', (key) => `devrounds task done ${key}`),
+  taskTransition('start', 'in_progress', (key, r) =>
+    r.openCriteria ? `devrounds criterion check ${key} --evidence <evidence>` : `devrounds task done ${key}`,
+  ),
   taskTransition('done', 'done'),
   taskTransition('block', 'blocked'),
   taskTransition('cancel', 'cancelled'),

@@ -115,6 +115,14 @@ export function planShow(plan: PlanView, opts: { phase?: string }): { body: stri
   if (toStart) return { body, next: `devrounds task start ${shellArg(toStart.key)}` }
   const toFinish = current.tasks.find((t) => t.state === 'in_progress' && allChecked(t))
   if (toFinish) return { body, next: `devrounds task done ${shellArg(toFinish.key)}` }
+  // An in-progress task left here still has open criteria; a phase with every task closed waits only on its own.
+  const checkNext = (key: string) => ({
+    body,
+    next: `devrounds criterion check ${shellArg(key)} --evidence <evidence>`,
+  })
+  const doing = current.tasks.find((t) => t.state === 'in_progress')
+  if (doing) return checkNext(doing.key)
+  if (openPhaseCriteria.length > 0 && !current.tasks.some((t) => isBlockerOpen(t.state))) return checkNext(current.key)
   const blocked = current.tasks.filter((t) => t.state === 'blocked' || (t.state === 'todo' && !startable(t))).length
   return { body, next: `nothing startable: ${blocked} blocked — devrounds plan show --phase ${shellArg(current.key)}` }
 }
