@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { sql } from 'kysely'
 import { migrateToLatest } from '../db/migrate.ts'
-import { TEST_ADMIN_URL, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
+import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import { withTenant } from './scope.ts'
 
 function hashOf(token: Buffer): Buffer {
@@ -180,4 +180,16 @@ test('migrateToLatest refuses the admin role as the app role', async () => {
     code: 'DR502',
     message: /must differ from the admin role/,
   })
+})
+
+// Roles are cluster-wide while the migration lock is per database, so test runs on two databases of one cluster
+// raced on `alter role`. A role that already matches must not be written at all: an update makes a new row version.
+test('migrateToLatest does not rewrite an app role whose attributes and password already match', async () => {
+  const { admin } = await testDb()
+  const version = async () =>
+    (await sql<{ xmin: string }>`select xmin::text from pg_authid where rolname = ${TEST_APP_ROLE}`.execute(admin))
+      .rows[0]?.xmin
+  const before = await version()
+  await migrateToLatest(TEST_ADMIN_URL, { appRole: TEST_APP_ROLE, appPassword: TEST_APP_PASSWORD })
+  assert.equal(await version(), before)
 })

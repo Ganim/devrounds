@@ -7,7 +7,8 @@ import type { Database, Member } from '../db/schema.ts'
 
 // Tests run as their own role, not devrounds_app: roles are cluster-wide and the server sets a different password.
 export const TEST_APP_ROLE = 'devrounds_test_app'
-const APP_PASSWORD = 'devrounds'
+export const TEST_APP_PASSWORD = 'devrounds'
+const APP_PASSWORD = TEST_APP_PASSWORD
 export const TEST_DATABASE_URL =
   process.env.DEVROUNDS_TEST_DATABASE_URL ??
   `postgres://${TEST_APP_ROLE}:${APP_PASSWORD}@127.0.0.1:15433/devrounds_test`
