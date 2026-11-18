@@ -1,7 +1,6 @@
 import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
-import { isCollection, LineCounter, type Node, parseDocument } from 'yaml'
-import { fail } from '../errors/error.ts'
+import { type Issue, parseYamlFile } from '../yaml-file.ts'
 import { EVIDENCE } from './service.ts'
 
 // The seed/plan file: position = order in the file. A criterion given as {text, evidence} is checked on import.
@@ -65,8 +64,6 @@ export type PlanFile = Static<typeof PlanFileSchema>
 export type PlanFileTask = Static<typeof PlanFileTask>
 export type PlanFileCriterion = Static<typeof Criterion>
 
-export type Issue = { path: string; reason: string }
-
 // Schema first, then what a schema cannot say: keys are unique across the file.
 export function findIssue(value: unknown): Issue | null {
   const first = Value.Errors(PlanFileSchema, value).First()
@@ -84,32 +81,6 @@ export function findIssue(value: unknown): Issue | null {
   return null
 }
 
-// The deepest node that exists on the path: a missing property points at the object that should hold it.
-function nodeAt(contents: unknown, path: string): Node | null {
-  let node = (contents as Node | null) ?? null
-  for (const raw of path.split('/').slice(1)) {
-    if (!isCollection(node)) break
-    const next = node.get(raw.replace(/~1/g, '/').replace(/~0/g, '~'), true) as Node | undefined
-    if (!next) break
-    node = next
-  }
-  return node
-}
-
-// DR101's words show {path} and {reason}; line and column ride along in the data for the CLI and API, and in the
-// reason so the rendered text points at the spot too.
-function failAt(path: string, reason: string, lineCounter: LineCounter, offset: number): never {
-  const { line, col } = lineCounter.linePos(offset)
-  return fail('DR101', { path, reason: `${reason} (line ${line}, column ${col})`, line, column: col })
-}
-
 export function parsePlanFile(text: string): PlanFile {
-  const lineCounter = new LineCounter()
-  const doc = parseDocument(text, { lineCounter, prettyErrors: false })
-  const syntax = doc.errors[0]
-  if (syntax) failAt('/', syntax.message.split('\n')[0], lineCounter, syntax.pos[0])
-  const value = doc.toJS()
-  const issue = findIssue(value)
-  if (issue) failAt(issue.path, issue.reason, lineCounter, nodeAt(doc.contents, issue.path)?.range?.[0] ?? 0)
-  return value as PlanFile
+  return parseYamlFile<PlanFile>(text, findIssue)
 }

@@ -88,6 +88,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['task', 'state'],
   },
+  DR351: {
+    text: 'Run {run} is {state}, which does not allow this change.',
+    hint: 'Read the state of run {run} again: a finished, failed, stopped or orphaned run takes no more events and is the only kind that can be retried.',
+    httpStatus: 409,
+    keys: ['run', 'state'],
+  },
   DR352: {
     text: 'Another executor is running for {home} (pid {pid}).',
     hint: 'Stop the executor with pid {pid}, or give this one another home with DEVROUNDS_EXECUTOR_HOME.',

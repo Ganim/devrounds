@@ -1,6 +1,6 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts and 0004_machines.ts (0002 and 0003 add no columns). pg returns int8 and numeric
+// Mirrors migrations/0001_core.ts, 0004_machines.ts and 0005_runs.ts (0002 and 0003 add no columns). pg returns int8 and numeric
 // as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
@@ -153,6 +153,100 @@ export interface PairingCodesTable {
   used_at: NullableTimestamp
 }
 
+// int8 read as a decimal string; written from any integer form.
+type Int8 = ColumnType<string, string | number | bigint, string | number | bigint>
+type NullableInt8 = ColumnType<
+  string | null,
+  string | number | bigint | null | undefined,
+  string | number | bigint | null
+>
+
+export type OrphanPolicy = 'kill' | 'let_finish'
+export type RunState = 'queued' | 'offered' | 'admitted' | 'running' | 'finished' | 'failed' | 'stopped' | 'orphaned'
+export type FailureClass = 'check_red' | 'environment' | 'timeout' | 'memory' | 'infra' | 'cancelled' | 'unclassified'
+export type DelayReason = 'memory' | 'concurrency' | 'memory_critical'
+export type StepOutcome = 'finished' | 'failed'
+
+export interface JobTypesTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  key: string
+  program: string
+  args: Json
+  env_allow: ColumnType<string[], string[] | undefined, string[]>
+  timeout_s: Generated<number>
+  orphan_policy: Generated<OrphanPolicy>
+  classify: Json
+  updated_at: Timestamp
+}
+
+export interface JobsTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  job_type_id: string
+  task_id: string | null
+  cwd: string
+  machine_id: string
+  created_by: string
+  created_at: Timestamp
+}
+
+export interface RunsTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  job_id: string
+  job_type_id: string
+  machine_id: string
+  attempt: Generated<number>
+  state: Generated<RunState>
+  queued_at: Timestamp
+  offered_at: NullableTimestamp
+  admitted_at: NullableTimestamp
+  started_at: NullableTimestamp
+  finished_at: NullableTimestamp
+  exit_code: NullableInt8
+  failure_class: FailureClass | null
+  failure_summary: string | null
+  log_cursor: NullableInt8
+  pid: number | null
+  process_start_time: NullableInt8
+  boot_id: string | null
+  peak_private_bytes: NullableInt8
+  p95_private_bytes: NullableInt8
+  p50_private_bytes: NullableInt8
+  cpu_seconds: number | null
+  swept_processes: number | null
+  visible_windows: number | null
+  orphan_action: 'killed' | 'let_finish' | null
+  clock_skew_ms: Generated<number>
+  trace_id: string | null
+}
+
+export interface RunStepsTable {
+  id: Generated<string>
+  tenant_id: string
+  run_id: string
+  step: number
+  name: string
+  started_at: Timestamp
+  finished_at: NullableTimestamp
+  outcome: StepOutcome | null
+}
+
+export interface RunDelaysTable {
+  id: Generated<string>
+  tenant_id: string
+  run_id: string
+  at: Timestamp
+  reason: DelayReason
+  need_bytes: Int8
+  available_bytes: NullableInt8
+  position: number
+}
+
 export interface Database {
   tenants: TenantsTable
   members: MembersTable
@@ -168,6 +262,11 @@ export interface Database {
   idempotency_keys: IdempotencyKeysTable
   machines: MachinesTable
   pairing_codes: PairingCodesTable
+  job_types: JobTypesTable
+  jobs: JobsTable
+  runs: RunsTable
+  run_steps: RunStepsTable
+  run_delays: RunDelaysTable
 }
 
 export type Member = Selectable<MembersTable>

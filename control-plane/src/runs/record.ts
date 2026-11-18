@@ -1,0 +1,206 @@
+import { sql, type Updateable } from 'kysely'
+import type { RunsTable } from '../db/schema.ts'
+import { fail } from '../errors/error.ts'
+import type { RunEvent } from '../executor/protocol.ts'
+import { findJobType } from '../job-types/service.ts'
+import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import { type ClassifyRule, classifyRun } from './classify.ts'
+import { nextRunState, type RunTransition, TERMINAL } from './states.ts'
+import { loadRunView, type RunView, requireRunId } from './view.ts'
+
+const INT_MAX = 2147483647
+
+/** Records a job and its first run, queued. The machine is the live machine named `machineName`. */
+export function createRun(
+  ctx: Ctx,
+  i: { projectKey: string; jobTypeKey: string; machineName: string; cwd: string; taskKey?: string },
+): Promise<RunView> {
+  return run(ctx, async (trx) => {
+    const project = await findProject(trx, i.projectKey)
+    const jobType = await findJobType(trx, project.id, i.jobTypeKey)
+    const machine = await trx
+      .selectFrom('machines')
+      .select('id')
+      .where('name', '=', i.machineName)
+      .where('revoked_at', 'is', null)
+      .executeTakeFirst()
+    if (!machine) fail('DR201', { kind: 'machine', key: i.machineName })
+    const task = i.taskKey === undefined ? null : await findTask(trx, project.id, i.taskKey)
+    const job = await trx
+      .insertInto('jobs')
+      .values({
+        tenant_id: ctx.tenantId,
+        project_id: project.id,
+        job_type_id: jobType.id,
+        task_id: task?.id ?? null,
+        cwd: i.cwd,
+        machine_id: machine.id,
+        created_by: ctx.actor.id,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    return insertRun(trx, ctx.tenantId, job.id, 1)
+  })
+}
+
+/** A new run of the same job (same job type, machine, cwd and task), attempt + 1. Only an ended run is retried. */
+export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
+  requireRunId(runId)
+  return run(ctx, async (trx) => {
+    const previous = await trx.selectFrom('runs').select(['job_id', 'state']).where('id', '=', runId).executeTakeFirst()
+    if (!previous) fail('DR201', { kind: 'run', key: runId })
+    if (!TERMINAL.includes(previous.state)) fail('DR351', { run: runId, state: previous.state })
+    // Serializes retries of one job, so two at once cannot pick the same attempt number.
+    await trx.selectFrom('jobs').select('id').where('id', '=', previous.job_id).forNoKeyUpdate().execute()
+    const { last } = await trx
+      .selectFrom('runs')
+      .select((eb) => eb.fn.max('attempt').as('last'))
+      .where('job_id', '=', previous.job_id)
+      .executeTakeFirstOrThrow()
+    return insertRun(trx, ctx.tenantId, previous.job_id, last + 1)
+  })
+}
+
+async function insertRun(trx: Trx, tenantId: string, jobId: string, attempt: number): Promise<RunView> {
+  const job = await trx
+    .selectFrom('jobs')
+    .select(['project_id', 'job_type_id', 'machine_id'])
+    .where('id', '=', jobId)
+    .executeTakeFirstOrThrow()
+  const { id } = await trx
+    .insertInto('runs')
+    .values({ tenant_id: tenantId, job_id: jobId, attempt, ...job })
+    .returning('id')
+    .executeTakeFirstOrThrow()
+  return loadRunView(trx, id)
+}
+
+/** queued → offered, stamped with the control plane clock when the Offer goes out. */
+export async function markOffered(ctx: TenantCtx, runId: string): Promise<void> {
+  requireRunId(runId)
+  return run(ctx, async (trx) => {
+    const row = await trx.selectFrom('runs').select('state').where('id', '=', runId).forNoKeyUpdate().executeTakeFirst()
+    if (!row) fail('DR201', { kind: 'run', key: runId })
+    const next = nextRunState(row.state, 'offer', runId)
+    await trx
+      .updateTable('runs')
+      .set({ state: next.state, offered_at: sql<Date>`now()` })
+      .where('id', '=', runId)
+      .execute()
+  })
+}
+
+const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
+  finished: 'finish',
+  failed: 'fail',
+  stopped: 'stop',
+}
+
+/**
+ * Applies one executor event of machine `machineId` to its run, in one transaction. `at` is the event's executor
+ * timestamp. The executor clock may be behind the control plane's: a time earlier than offered_at (which the control
+ * plane stamped) is clamped to it, and clock_skew_ms keeps the largest gap seen, so durations are never negative.
+ * LogSegment and Orphans are not run record events: Tasks 14 and 15 handle them, and here they change nothing.
+ */
+export async function applyRunEvent(ctx: TenantCtx, machineId: string, event: RunEvent, at: Date): Promise<void> {
+  if (event.kind === 'LogSegment' || event.kind === 'Orphans') return
+  requireRunId(event.run)
+  const runId = event.run
+  await run(ctx, async (trx) => {
+    const row = await trx
+      .selectFrom('runs')
+      .select(['state', 'offered_at', 'clock_skew_ms', 'job_type_id'])
+      .where('id', '=', runId)
+      .where('machine_id', '=', machineId)
+      .forNoKeyUpdate()
+      .executeTakeFirst()
+    if (!row) fail('DR201', { kind: 'run', key: runId })
+    const behind = row.offered_at ? row.offered_at.getTime() - at.getTime() : 0
+    const stamp = behind > 0 ? (row.offered_at as Date) : at
+    const clock_skew_ms = Math.min(INT_MAX, Math.max(row.clock_skew_ms, behind))
+    const move = (transition: RunTransition): Updateable<RunsTable> => {
+      const next = nextRunState(row.state, transition, runId)
+      const set: Updateable<RunsTable> = { state: next.state, clock_skew_ms }
+      if (next.stamp) set[next.stamp] = stamp
+      return set
+    }
+    const update = (set: Updateable<RunsTable>) => trx.updateTable('runs').set(set).where('id', '=', runId).execute()
+    const requireRunning = () => {
+      if (row.state !== 'running') fail('DR351', { run: runId, state: row.state })
+    }
+
+    switch (event.kind) {
+      case 'Admitted':
+        await update(move('admit'))
+        return
+      case 'Delayed':
+        await update(move('delay'))
+        await trx
+          .insertInto('run_delays')
+          .values({
+            tenant_id: ctx.tenantId,
+            run_id: runId,
+            at: stamp,
+            reason: event.reason,
+            need_bytes: event.need,
+            available_bytes: event.available,
+            position: event.position,
+          })
+          .execute()
+        return
+      case 'RunStarted':
+        await update({
+          ...move('start'),
+          pid: event.pid,
+          // FILETIME passes 2^53, so it stays a decimal string from the wire to the int8 column.
+          process_start_time: BigInt(event.start_time).toString(),
+          boot_id: event.boot_id,
+        })
+        return
+      case 'StepStarted':
+        requireRunning()
+        await update({ clock_skew_ms })
+        await trx
+          .insertInto('run_steps')
+          .values({ tenant_id: ctx.tenantId, run_id: runId, step: event.step, name: event.name, started_at: stamp })
+          .execute()
+        return
+      case 'StepFinished': {
+        requireRunning()
+        await update({ clock_skew_ms })
+        const step = await trx
+          .updateTable('run_steps')
+          .set({ finished_at: stamp, outcome: event.outcome })
+          .where('run_id', '=', runId)
+          .where('step', '=', event.step)
+          .executeTakeFirst()
+        if (step.numUpdatedRows === 0n) fail('DR201', { kind: 'step', key: `${runId}#${event.step}` })
+        return
+      }
+      case 'RunFinished': {
+        const jobType = await trx
+          .selectFrom('job_types')
+          .select('classify')
+          .where('id', '=', row.job_type_id)
+          .executeTakeFirstOrThrow()
+        const result = classifyRun(
+          { reason: event.reason, exitCode: event.exit_code, tail: event.tail, summary: event.summary },
+          jobType.classify as ClassifyRule[],
+        )
+        await update({
+          ...move(END[result.state]),
+          exit_code: event.exit_code,
+          failure_class: result.failureClass,
+          failure_summary: result.failureSummary,
+          peak_private_bytes: event.peak,
+          p95_private_bytes: event.p95,
+          p50_private_bytes: event.p50,
+          cpu_seconds: event.cpu_seconds,
+          swept_processes: event.swept,
+          visible_windows: event.visible_windows,
+        })
+        return
+      }
+    }
+  })
+}
