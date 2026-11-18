@@ -431,7 +431,7 @@ export const COMMANDS: Spec[] = [
         body: [
           ...keys('created', r.created),
           ...keys('updated', r.updated),
-          `unchanged: ${r.unchanged}`,
+          fmt`unchanged: ${r.unchanged}`,
           ...keys('only in DevRounds (missing from the file)', r.onlyInDb),
         ],
         next: 'devrounds plan show',
