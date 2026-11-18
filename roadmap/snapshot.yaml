@@ -166,51 +166,89 @@ phases:
     tasks:
       - key: P1-T01
         title: Confirm spec §11 decisions and the P1 design
+        criteria:
+          - text: "Spec §11 confirmed and P1 design written (Guilherme: implement without waiting for approval, 17/11)"
+            evidence: commit:6b386d475d7fbdc3917731a7d27b25b0a867d139
+        state: done
       - key: P1-T02
-        title: Build-vs-adopt spike (spec §14)
+        title: Build-vs-adopt spike (queue/scheduler, Better Auth)
         blocked_by:
           - P1-T01
+        criteria:
+          - Spike doc records license, measured idle private bytes and fit for Hatchet, pg-boss, Graphile Worker, DBOS and an own scheduler
+          - Better Auth fit with tenants, members and RLS is recorded with its idle cost
+          - The recommendation is recorded as the controller call (Guilherme pre-approved stage decisions 17/11)
       - key: P1-T03
-        title: Rust executor skeleton with core traits
+        title: Executor workspace from copied devlanes crates
         blocked_by:
-          - P1-T02
+          - P1-T01
+        criteria:
+          - NOTICE names every copied crate with its upstream path and commit e2e4f1ca
+          - Rust code allows lints only in the accepted list
+          - cargo test, clippy -D warnings and fmt --check pass on the executor workspace
       - key: P1-T04
-        title: Job Object supervision
+        title: Job Object supervision with run-owned output
         blocked_by:
           - P1-T03
+        criteria:
+          - Every descendant is a job member and breakaway is refused
+          - A stop ends the whole tree within the 10 s grace; dropping the executor's handles leaves the run running
+          - Output goes to files owned by the run
       - key: P1-T05
-        title: Every spawn hidden (no console window, ConPTY/PTY)
+        title: Every spawn hidden
         blocked_by:
-          - P1-T03
+          - P1-T04
+        criteria:
+          - No job member owns a visible window, including cmd wrappers and the console-ctrl helper
+          - A cmd wrapper gets arguments with spaces and & exactly
+          - The executor starts processes only through sys-windows spawn
       - key: P1-T06
-        title: Memory start-gate and AIMD
+        title: Start-gate admission with AIMD
         blocked_by:
-          - P1-T03
+          - P1-T17
+        criteria:
+          - A memory hold reports Delayed(memory) and admits once memory fits; admission never refuses
+          - The AIMD window halves on high CPU and grows by one under headroom
       - key: P1-T07
         title: Protocol Hello, features and seq
         blocked_by:
           - P1-T03
+        criteria:
+          - Every message fixture round-trips in Rust and validates in TypeBox
+          - Unknown message types and event kinds are ignored; a bad known message answers DR150
       - key: P1-T08
-        title: Queues, jobs, runs and learned_needs keyed by (project, job type, machine)
+        title: Queues and placement (stage 2, after the spike)
         blocked_by:
           - P1-T02
       - key: P1-T09
         title: Log segments
         blocked_by:
-          - P1-T08
+          - P1-T39
+        criteria:
+          - Segments ship through the outbox, are stored and indexed by run and seq, and read back by cursor
+          - Segments older than the retention are pruned with their files
       - key: P1-T10
-        title: Machine pairing
+        title: Machine pairing and executor session
         blocked_by:
           - P1-T07
+        criteria:
+          - A pairing code works once, expires after 10 minutes, and five failures lock pairing for 10 minutes
+          - The machine token is stored only as its SHA-256 and revoke closes the live session
+          - A second session for the same machine replaces the first
       - key: P1-T11
         title: Orphans
         blocked_by:
-          - P1-T04
-          - P1-T08
+          - P1-T39
+        criteria:
+          - After an executor restart a surviving run is reported orphaned and never re-adopted
+          - The kill policy ends the orphan's tree
       - key: P1-T12
         title: isolation/none
         blocked_by:
-          - P1-T03
+          - P1-T04
+        criteria:
+          - Only allowlisted variables reach the child
+          - A missing or relative cwd is an environment failure
       - key: P1-T13
         title: Idempotency and outbox
         blocked_by:
@@ -218,9 +256,12 @@ phases:
         criteria:
           - The CLI retries a timed-out mutation once with the same Idempotency-Key
       - key: P1-T14
-        title: OpenTelemetry
+        title: OpenTelemetry exporter, off by default
         blocked_by:
-          - P1-T03
+          - P1-T39
+        criteria:
+          - Without an endpoint no exporter is loaded or built
+          - With an endpoint, control plane and executor spans of one run share a trace id
       - key: P1-T15
         title: Minimal operational view (jobs, runs, logs, machines)
         blocked_by:
@@ -234,7 +275,10 @@ phases:
       - key: P1-T17
         title: Footprint by private bytes
         blocked_by:
-          - P1-T03
+          - P1-T04
+        criteria:
+          - Footprint counts commit, not working set, summed over the run tree
+          - The reported peak is exact even between samples
       - key: P1-T18
         title: Resource and queue-time indicators (spec §13)
         blocked_by:
@@ -312,6 +356,53 @@ phases:
         title: "AGENTS.md: local superuser exception and owner-side admin reads"
         criteria:
           - AGENTS.md lists the local postgres superuser as an accepted exception with its removal phase, and exempts admin owner-side commands from withTenant (with Guilherme's approval)
+      - key: P1-T37
+        title: devlanes-sync check
+        blocked_by:
+          - P1-T03
+        criteria:
+          - pnpm devlanes-sync lists every upstream devlanes commit touching a copied crate since its recorded sync point and fails while any is unreviewed
+          - Lists upstream commits since synced_commit that touch a mapped path, and ignores reviewed ones
+          - The check passes in the test suite against the cached fetch
+      - key: P1-T38
+        title: Run record (job types, jobs, runs, steps, delays, failure classes)
+        blocked_by:
+          - P1-T10
+        criteria:
+          - A run records each timeline stamp; derived durations are never negative under clock skew
+          - Failure class follows the job type rules and built-in memory codes; unknown failures are unclassified
+          - A retry is a new run of the same job with the next attempt number
+      - key: P1-T39
+        title: Direct dispatch and the executor run loop
+        blocked_by:
+          - P1-T05
+          - P1-T06
+          - P1-T12
+          - P1-T38
+          - P1-T40
+        criteria:
+          - Dispatch to an offline machine answers DR350 and writes nothing
+          - An offer reports Admitted, RunStarted and RunFinished in seq order, hidden
+          - Stop while the run waits in the start-gate never spawns it
+      - key: P1-T40
+        title: Executor store and outbox replay
+        blocked_by:
+          - P1-T10
+          - P1-T38
+        criteria:
+          - Events survive an executor restart and are replayed in order after reconnect, applied once
+          - Env values never reach the executor store
+      - key: P1-T42
+        title: Executor login service, end-to-end proof and footprint budgets
+        blocked_by:
+          - P1-T09
+          - P1-T11
+          - P1-T14
+          - P1-T37
+        criteria:
+          - The executor runs as the DevRoundsExecutor scheduled task under its supervisor
+          - pnpm e2e passes for the synthetic job and pnpm lint, hidden and supervised
+          - pnpm footprint passes on the installed services after 60 s idle
   - key: P2
     title: Gates on DevRounds
     goal: The Clickmax pre-PR gates run on DevRounds instead of cx-env.
@@ -354,10 +445,15 @@ phases:
         title: Learned needs for heavy checks
         blocked_by:
           - P2-T01
+        criteria:
+          - "Concurrent heavy builds are limited by learned need + start-gate (study: 4 builds hit VirtualAlloc failed), with no fixed count and no out-of-memory build"
       - key: P2-T09
         title: Shared package store and build cache
         blocked_by:
           - P2-T01
+        criteria:
+          - Every worktree on a machine shares one pnpm store and one turbo local cache (TURBO_CACHE_DIR) seeded by a warm base checkout of trunk; a new worktree's build-deps on unchanged trunk comes 170/170 from cache
+          - Installs on one machine are serialized by a per-machine concurrency cap, so N new worktrees never pay the ~550 s concurrent install
       - key: P2-T10
         title: Success and failure-class indicators
         blocked_by:
@@ -370,6 +466,26 @@ phases:
         title: Plan files carry links and unphased tasks
         criteria:
           - Export and import round-trip links and unphased tasks, and plan show lists unphased tasks
+      - key: P2-T13
+        title: Daily improvement report
+        criteria:
+          - A daily DevRounds job compares the last day with the previous seven (slowest steps, growing steps, top failure classes, retries, unclassified share) and opens one deduplicated roadmap task per finding with evidence
+      - key: P2-T14
+        title: devlanes upstream sync runs daily
+        criteria:
+          - A daily DevRounds job runs devlanes-sync and opens one roadmap task per pending upstream change
+      - key: P2-T15
+        title: Checkout preparation for Clickmax worktrees
+        blocked_by:
+          - P2-T01
+        criteria:
+          - A prepared worktree has real sdk/*/openapi.yaml files under core.symlinks=false, runs scripts with verify-deps-before-run=false and empty stdin, and never hangs on a prompt
+      - key: P2-T16
+        title: pnpm global virtual store for Clickmax
+        blocked_by:
+          - P2-T09
+        criteria:
+          - Every undeclared type dependency in the monorepo is declared (packageExtensions or package.json), enableGlobalVirtualStore builds green, and install per worktree is at or under 50 s
   - key: P3
     title: Project conventions
     goal: DevRounds reads a codebase, records its conventions with evidence and checks them as a gate.
@@ -450,6 +566,10 @@ phases:
         title: environments/devlanes
       - key: P4-T13
         title: Executor hand-over on upgrade
+      - key: P4-T14
+        title: Automatic correction loop with measured revert
+        criteria:
+          - Each improvement finding is worked by an agent as a task; the indicator is re-measured afterwards and a change that did not improve it is reverted, all in plan history
   - key: P5
     title: Interface
     goal: The web UI shows operations live and edits visual flows.
