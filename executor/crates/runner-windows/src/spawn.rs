@@ -220,14 +220,13 @@ pub(crate) fn launch(
         },
         inherit: &[],
         job: Some(&job),
-        // Hidden: a console without a window, which descendants share. The
-        // leader heads a process group of its own (its PID is the group ID
-        // Ctrl-Break can target); Windows starts a new group ignoring Ctrl-C,
-        // which `accept_ctrl_c` undoes, or Ctrl-C stops would never arrive.
+        // Hidden: a console without a window, which descendants share. No
+        // process group of its own: Windows starts a new group ignoring
+        // Ctrl-C, and the console is the run's alone anyway. The leader
+        // inherits this process's ignore-Ctrl-C flag, which
+        // `prepare_executor_process` clears at startup.
         flags: CreationFlags {
             no_window: true,
-            new_process_group: true,
-            accept_ctrl_c: true,
             ..CreationFlags::default()
         },
     })?;

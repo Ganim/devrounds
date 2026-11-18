@@ -90,13 +90,13 @@ async fn breakaway_is_refused() {
 
 /// SIGTERM goes out as Ctrl-C first, and a run whose tree handles it exits on
 /// its own within the grace, without escalation and with nothing left to
-/// sweep. Runs lead a new process group, which Windows starts with Ctrl-C
-/// ignored; the runner clears that for the leader, and descendants inherit
-/// it. This test process ignores Ctrl-C on purpose, as one started from a
-/// shell or service that set the flag does, so nothing here helps the run.
+/// sweep. Runs inherit the executor's ignore-Ctrl-C flag: this test sets it,
+/// as a shell or service host may have for the executor, then takes the
+/// executor's real startup path, which must clear it.
 #[tokio::test]
 async fn graceful_stop_lets_ctrl_c_handlers_run() {
     console::set_ctrl_c_ignored(true).expect("ignore Ctrl-C");
+    devrounds_runner_windows::prepare_executor_process().expect("prepare");
     bounded(async {
         let dir = run_dir();
         let unit = runner()

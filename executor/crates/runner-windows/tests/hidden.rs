@@ -107,6 +107,8 @@ async fn cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
 /// console; neither it nor the run shows a window meanwhile.
 #[tokio::test]
 async fn console_ctrl_helper_is_hidden() {
+    // The executor's startup path, so the run accepts the Ctrl-C.
+    devrounds_runner_windows::prepare_executor_process().expect("prepare");
     bounded(async {
         let dir = run_dir();
         let unit = runner()

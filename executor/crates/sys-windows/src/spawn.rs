@@ -16,15 +16,14 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PEB, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, RTL_USER_PROCESS_PARAMETERS, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    TerminateProcess,
 };
 
 use crate::job::Job;
@@ -104,12 +103,6 @@ pub struct CreationFlags {
     /// `CREATE_BREAKAWAY_FROM_JOB`: leave this process's job. Fails with
     /// access denied when that job does not allow breakaway.
     pub breakaway_from_job: bool,
-    /// The child starts accepting Ctrl-C: its ignore-Ctrl-C flag, which
-    /// [`CreationFlags::new_process_group`] sets and which is otherwise
-    /// inherited from this process, is cleared before its first instruction,
-    /// so its descendants accept Ctrl-C too unless they change it. The child
-    /// is created suspended for that and resumed after.
-    pub accept_ctrl_c: bool,
 }
 
 impl CreationFlags {
@@ -121,7 +114,6 @@ impl CreationFlags {
             (self.detached_process, DETACHED_PROCESS),
             (self.new_process_group, CREATE_NEW_PROCESS_GROUP),
             (self.breakaway_from_job, CREATE_BREAKAWAY_FROM_JOB),
-            (self.accept_ctrl_c, CREATE_SUSPENDED),
         ] {
             if set {
                 bits |= flag;
@@ -168,9 +160,8 @@ pub struct Spawn<'a> {
 /// every spawn in the process. Handles are never inherited without a handle
 /// list.
 ///
-/// If the child's creation time cannot be read, or a child started with
-/// [`CreationFlags::accept_ctrl_c`] cannot be changed and resumed, the child
-/// is terminated, since it could not be tracked or stopped safely.
+/// If the child's creation time cannot be read, the child is terminated,
+/// since it could not be tracked or stopped safely.
 pub fn spawn(spec: &Spawn<'_>) -> io::Result<Child> {
     let program = wide(spec.program.as_os_str())?;
     // CreateProcessW may write into the command line, so it gets its own buffer.
@@ -288,22 +279,10 @@ pub fn spawn(spec: &Spawn<'_>) -> io::Result<Child> {
     if let Some(error) = error {
         return Err(error);
     }
-    // The primary thread's handle is only needed to resume a suspended child;
-    // the process handle is kept.
-    let thread = owned(process.hThread);
+    // The primary thread's handle is not needed; the process handle is kept.
+    drop(owned(process.hThread));
     let handle = owned(process.hProcess)?;
-    let started = creation_time(&handle).and_then(|start_time| {
-        if spec.flags.accept_ctrl_c {
-            clear_ignore_ctrl_c(&handle)?;
-            match &thread {
-                Ok(thread) => resume(thread)?,
-                Err(_) => return Err(io::Error::other("no handle to the child's thread")),
-            }
-        }
-        Ok(start_time)
-    });
-    drop(thread);
-    let start_time = match started {
+    let start_time = match creation_time(&handle) {
         Ok(start_time) => start_time,
         Err(error) => {
             // SAFETY: `handle` is the new process's handle, with all access.
@@ -316,99 +295,6 @@ pub fn spawn(spec: &Spawn<'_>) -> io::Result<Child> {
         pid: process.dwProcessId,
         start_time,
     })
-}
-
-/// Bit 0 of `RTL_USER_PROCESS_PARAMETERS.ConsoleFlags`, the process's
-/// ignore-Ctrl-C flag: what `SetConsoleCtrlHandler(NULL, TRUE)` sets, what
-/// `CreateProcessW` sets for `CREATE_NEW_PROCESS_GROUP` or copies from the
-/// parent otherwise, and what the console's Ctrl-C delivery checks before
-/// calling any handler.
-const IGNORE_CTRL_C: u32 = 1;
-
-/// Where `ConsoleFlags` sits in `RTL_USER_PROCESS_PARAMETERS`: right after
-/// `ConsoleHandle`, the first pointer-sized field (`Reserved2[0]` in the
-/// public definition). Not documented, and unchanged since Windows NT.
-const CONSOLE_FLAGS: usize =
-    std::mem::offset_of!(RTL_USER_PROCESS_PARAMETERS, Reserved2) + size_of::<*mut c_void>();
-
-/// Clears the ignore-Ctrl-C flag of a child created suspended, before it
-/// runs. No API sets another process's flag, and a process created with
-/// `CREATE_NEW_PROCESS_GROUP` always gets it set, so this writes the field
-/// `SetConsoleCtrlHandler(NULL, FALSE)` would have written in the child.
-/// The parameters block is the one `CreateProcessW` copied into the child,
-/// writable and not read before the child runs.
-fn clear_ignore_ctrl_c(process: &OwnedHandle) -> io::Result<()> {
-    let info = crate::proc::basic_information(process)
-        .ok_or_else(|| io::Error::other("reading the child's process information failed"))?;
-    let parameters: usize = read_remote(
-        process,
-        info.PebBaseAddress as usize + std::mem::offset_of!(PEB, ProcessParameters),
-    )?;
-    if parameters == 0 {
-        return Err(io::Error::other("the child has no process parameters"));
-    }
-    let at = parameters + CONSOLE_FLAGS;
-    let flags: u32 = read_remote(process, at)?;
-    if flags & IGNORE_CTRL_C != 0 {
-        write_remote(process, at, flags & !IGNORE_CTRL_C)?;
-    }
-    Ok(())
-}
-
-/// Reads a `T` at `address` in `process`.
-fn read_remote<T: Copy + Default>(process: &OwnedHandle, address: usize) -> io::Result<T> {
-    let mut value = T::default();
-    let mut done = 0;
-    // SAFETY: `value` is a writable `T`; the call reads at most its size and
-    // reports how much it read.
-    let ok = unsafe {
-        ReadProcessMemory(
-            raw(process),
-            address as *const c_void,
-            (&raw mut value).cast(),
-            size_of::<T>(),
-            &raw mut done,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if done != size_of::<T>() {
-        return Err(io::Error::other("short read of the child's memory"));
-    }
-    Ok(value)
-}
-
-/// Writes `value` at `address` in `process`.
-fn write_remote<T: Copy>(process: &OwnedHandle, address: usize, value: T) -> io::Result<()> {
-    let mut done = 0;
-    // SAFETY: `value` is a readable `T`; the call writes its bytes into the
-    // other process only.
-    let ok = unsafe {
-        WriteProcessMemory(
-            raw(process),
-            address as *const c_void,
-            (&raw const value).cast(),
-            size_of::<T>(),
-            &raw mut done,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if done != size_of::<T>() {
-        return Err(io::Error::other("short write to the child's memory"));
-    }
-    Ok(())
-}
-
-/// Resumes a thread created suspended.
-fn resume(thread: &OwnedHandle) -> io::Result<()> {
-    // SAFETY: `thread` is the handle CreateProcessW returned, with all access.
-    if unsafe { ResumeThread(raw(thread)) } == u32::MAX {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 /// A started process. Holding it keeps the PID from being reused, the role an

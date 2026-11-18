@@ -1,5 +1,7 @@
 //! `devrounds-executor`: runs DevRounds jobs on this machine. Later tasks add
-//! `pair`, `run`, `supervise` and `service`.
+//! `pair`, `run`, `supervise` and `service`. Their startup path, before the
+//! first run spawn, must call
+//! `devrounds_runner_windows::prepare_executor_process()` on Windows.
 
 use std::process::ExitCode;
 

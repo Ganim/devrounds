@@ -406,12 +406,6 @@ pub(crate) fn wait_handle(
 
 /// The parent PID an open process recorded at creation.
 fn parent_of(handle: &OwnedHandle) -> Option<u32> {
-    u32::try_from(basic_information(handle)?.InheritedFromUniqueProcessId).ok()
-}
-
-/// `ProcessBasicInformation` of an open process: its parent and where its
-/// PEB is. `None` when the query fails.
-pub(crate) fn basic_information(handle: &OwnedHandle) -> Option<PROCESS_BASIC_INFORMATION> {
     let mut info = PROCESS_BASIC_INFORMATION {
         ExitStatus: 0,
         PebBaseAddress: ptr::null_mut(),
@@ -431,7 +425,10 @@ pub(crate) fn basic_information(handle: &OwnedHandle) -> Option<PROCESS_BASIC_IN
         )
     };
     // NT_SUCCESS: success and informational statuses are not negative.
-    (status >= 0).then_some(info)
+    if status < 0 {
+        return None;
+    }
+    u32::try_from(info.InheritedFromUniqueProcessId).ok()
 }
 
 /// The executable's file name, like the snapshot's `szExeFile`.

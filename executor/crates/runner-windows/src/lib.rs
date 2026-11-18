@@ -3,13 +3,13 @@
 //! Every unit starts inside its own job object, which its processes cannot
 //! leave, so the job's member list is the unit's process tree; no process
 //! snapshots are taken. The leader runs with a hidden console of its own
-//! (`CREATE_NO_WINDOW`), which its console descendants share, heads a process
-//! group of its own that still accepts Ctrl-C, gets `NUL` as stdin and the
-//! run's own output files ([`devrounds_core::RunOutput`]) as stdout and
-//! stderr, and is waited on through its process handle. The run ends when its
-//! leader exits; members still running then get
+//! (`CREATE_NO_WINDOW`), which its console descendants share, gets `NUL` as
+//! stdin and the run's own output files ([`devrounds_core::RunOutput`]) as
+//! stdout and stderr, and is waited on through its process handle. The run
+//! ends when its leader exits; members still running then get
 //! [`WindowsRunner::exit_grace`] before the job is terminated. All Win32
-//! calls go through `devrounds-sys-windows`.
+//! calls go through `devrounds-sys-windows`. The executor calls
+//! [`prepare_executor_process`] once at startup.
 //!
 //! A `/bin/sh` program runs as Git for Windows' `sh.exe`, given with
 //! [`WindowsRunner::with_shell`].
@@ -72,6 +72,21 @@ pub use orphan::{OrphanStop, stop_orphan};
 pub use runtime::Runtimes;
 pub use spawn::SpawnError;
 pub use unit::{ExitReport, StopOutcome, WindowsUnit};
+
+/// Prepares the executor process for running units; call it once at startup,
+/// before the first spawn (`devrounds-executor`'s `main` will, once it has a
+/// startup path).
+///
+/// Clears this process's ignore-Ctrl-C flag. Windows passes that flag to
+/// every process started from one that has it, and a shell, service host or
+/// `CREATE_NEW_PROCESS_GROUP` parent may have set it for the executor. Units
+/// inherit it from the executor at spawn, so with it set every graceful
+/// SIGINT/SIGTERM stop (a Ctrl-C event) would be ignored and escalate to
+/// terminating the job after the grace.
+pub fn prepare_executor_process() -> Result<(), Error> {
+    devrounds_sys_windows::console::set_ctrl_c_ignored(false)?;
+    Ok(())
+}
 
 /// `STATUS_CONTROL_C_EXIT`: the exit code of a process that Ctrl-C or
 /// Ctrl-Break ended.
