@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
 use devrounds_core::{DrError, JobSpec, ProcessIdentity};
-use devrounds_protocol::{ClientMessage, Event, RunEvent, encode_client};
+use devrounds_protocol::{ClientMessage, Event, RunEvent, decode_client, encode_client};
 use rusqlite::{Connection, Row, params};
 use serde_json::json;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -160,6 +160,58 @@ impl Store {
             higher
         });
         Ok(seq)
+    }
+
+    /// Moves this store's seqs past `last_seq`, the control plane's last
+    /// applied seq, when it has never appended that far: the store file was
+    /// replaced or deleted while the machine kept its pairing. Otherwise the
+    /// control plane would take every new event up to `last_seq` for a
+    /// duplicate and drop it. Kept events were never applied, so they are
+    /// renumbered after `last_seq` in their order. True when it moved.
+    pub async fn raise_floor(&self, last_seq: u64) -> Result<bool, DrError> {
+        self.call(move |connection| {
+            let trx = connection.transaction()?;
+            let highest: u64 = trx.query_row(
+                "select coalesce((select seq from sqlite_sequence where name = 'outbox'), 0)",
+                [],
+                |row| row.get(0),
+            )?;
+            if last_seq <= highest {
+                return Ok(false);
+            }
+            let kept: Vec<String> = {
+                let mut statement = trx.prepare("select message from outbox order by seq")?;
+                let rows = statement.query_map([], |row| row.get(0))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            trx.execute("delete from outbox", [])?;
+            let mut next = last_seq;
+            for frame in kept {
+                let ClientMessage::Event(mut event) = decode_client(&frame)? else {
+                    return Err("the outbox holds a frame that is not an Event".into());
+                };
+                next += 1;
+                event.seq = next;
+                trx.execute(
+                    "insert into outbox (seq, message) values (?1, ?2)",
+                    params![next, encode_client(&ClientMessage::Event(event))?],
+                )?;
+            }
+            // With nothing kept, nothing above moved the sequence.
+            let moved = trx.execute(
+                "update sqlite_sequence set seq = ?1 where name = 'outbox'",
+                params![next],
+            )?;
+            if moved == 0 {
+                trx.execute(
+                    "insert into sqlite_sequence (name, seq) values ('outbox', ?1)",
+                    params![next],
+                )?;
+            }
+            trx.commit()?;
+            Ok(true)
+        })
+        .await
     }
 
     /// Drops every event up to and including `seq`: the control plane has applied them.

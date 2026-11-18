@@ -134,6 +134,37 @@ fn expected(seqs: &[u64]) -> Vec<(u64, String)> {
 }
 
 #[tokio::test]
+async fn a_fresh_store_continues_after_the_control_planes_last_seq() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("store");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let config = ExecutorConfig {
+        url: format!("http://{}", listener.local_addr().expect("addr")),
+        machine_id: "m-1".to_owned(),
+    };
+    let connection = Connection::new(store.clone());
+    let mut connected = connection.connected();
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut Quiet).await });
+
+    bounded(async {
+        // The control plane applied seqs up to 7 from this machine's previous store.
+        let mut socket = accept(&listener, 7).await;
+        connected.wait_for(|up| *up).await.expect("connected");
+        let seq = store.append_event(admitted("r8")).await.expect("append");
+        assert_eq!(seq, 8);
+        assert_eq!(events(&mut socket, 1).await, expected(&[8]));
+        send(&mut socket, ServerMessage::Ack(Ack { seq: 8 })).await;
+        while !store.pending_after(0).await.expect("pending").is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    client.abort();
+}
+
+#[tokio::test]
 async fn reconnect_replays_unacked_events_in_order() {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
     let store = Store::open(&dir.path().join("executor.db"))

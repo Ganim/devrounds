@@ -187,6 +187,13 @@ async fn session<H: Handler>(
                                 acked = true;
                                 // The first report goes right after the ack.
                                 reports.reset_immediately();
+                                if store.raise_floor(*last_seq).await? {
+                                    tracing::warn!(
+                                        last_seq,
+                                        "the control plane applied more events than this store holds; \
+                                         the store was replaced, so new events continue after its last seq"
+                                    );
+                                }
                                 store.ack_through(*last_seq).await?;
                                 sent = *last_seq;
                                 appended.mark_unchanged();

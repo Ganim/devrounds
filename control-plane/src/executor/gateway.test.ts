@@ -170,8 +170,8 @@ test('a second session for the same machine replaces the first (close 4409)', as
   second.close()
 })
 
-// A run offered to the paired machine `build-01`, ready for its executor's events.
-async function offeredRun(tenant: Awaited<ReturnType<typeof paired>>['tenant']) {
+// One run offered to each named paired machine, ready for its executor's events.
+async function offeredRuns(tenant: Awaited<ReturnType<typeof paired>>['tenant'], ...machineNames: string[]) {
   const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
   await createProject(ctx, { key: 'devrounds', name: 'DevRounds' })
   await putJobType(ctx, 'devrounds', {
@@ -182,14 +182,29 @@ async function offeredRun(tenant: Awaited<ReturnType<typeof paired>>['tenant']) 
     orphan_policy: 'kill',
     classify: [],
   })
-  const run = await createRun(ctx, {
-    projectKey: 'devrounds',
-    jobTypeKey: 'check',
-    machineName: 'build-01',
-    cwd: 'C:\\w',
-  })
-  await markOffered(ctx, run.id)
-  return run.id
+  const runs: string[] = []
+  for (const machineName of machineNames) {
+    const run = await createRun(ctx, { projectKey: 'devrounds', jobTypeKey: 'check', machineName, cwd: 'C:\\w' })
+    await markOffered(ctx, run.id)
+    runs.push(run.id)
+  }
+  return runs
+}
+
+const delayedEvent = (seq: number, run: string) => ({
+  type: 'Event',
+  seq,
+  at: AT,
+  event: { kind: 'Delayed', run, reason: 'memory', position: 1, need: 1024, available: 512 },
+})
+
+function delayCount(run: string) {
+  return t.admin
+    .selectFrom('run_delays')
+    .select('id')
+    .where('run_id', '=', run)
+    .execute()
+    .then((rows) => rows.length)
 }
 
 const AT = '2026-11-18T12:00:00Z'
@@ -208,13 +223,8 @@ function lastSeq(machineId: string) {
 
 test('an event with seq <= last_seq is acked and not applied twice', async () => {
   const { tenant, machine } = await paired()
-  const run = await offeredRun(tenant)
-  const delayed = (seq: number) => ({
-    type: 'Event',
-    seq,
-    at: AT,
-    event: { kind: 'Delayed', run, reason: 'memory', position: 1, need: 1024, available: 512 },
-  })
+  const [run] = await offeredRuns(tenant, 'build-01')
+  const delayed = (seq: number) => delayedEvent(seq, run)
   const session = await helloAcked(machine.token)
   await session.send(delayed(1))
   assert.deepEqual(await session.next(), ack(1))
@@ -231,8 +241,7 @@ test('an event with seq <= last_seq is acked and not applied twice', async () =>
   again.close()
 
   // Each apply of Delayed adds a run_delays row.
-  const delays = await t.admin.selectFrom('run_delays').select('id').where('run_id', '=', run).execute()
-  assert.equal(delays.length, 1)
+  assert.equal(await delayCount(run), 1)
   assert.equal(await lastSeq(machine.machineId), 1)
 })
 
@@ -268,13 +277,56 @@ test('with a gap open, an ahead-of-gap event does not advance the ack', async ()
 
 test('an event answering DR351 is acked and its seq counts as applied', async () => {
   const { tenant, machine } = await paired()
-  const run = await offeredRun(tenant)
+  const [run] = await offeredRuns(tenant, 'build-01')
   const admitted = (seq: number) => ({ type: 'Event', seq, at: AT, event: { kind: 'Admitted', run } })
   const session = await helloAcked(machine.token)
   await session.send(admitted(1))
   assert.deepEqual(await session.next(), ack(1))
   // admitted → admitted is illegal; a session that stopped here would get the same event forever.
   await session.send(admitted(2))
+  assert.deepEqual(await session.next(), ack(2))
+  session.close()
+  assert.equal(await lastSeq(machine.machineId), 2)
+})
+
+test('an event for a run of another machine (DR201) is logged and acked, and the next event is applied', async () => {
+  const { tenant, machine } = await paired()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  const { code } = await createPairingCode(ctx, 'build-02')
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  const [own, other] = await offeredRuns(tenant, 'build-01', 'build-02')
+  const lines: string[] = []
+  const logged = buildServer({ db: t.db, logger: { level: 'warn', stream: { write: (line) => lines.push(line) } } })
+  try {
+    await logged.listen({ port: 0, host: '127.0.0.1' })
+    const session = dial(machine.token, `127.0.0.1:${(logged.server.address() as AddressInfo).port}`)
+    await session.send(HELLO)
+    assert.equal(((await session.next()) as { type: string }).type, 'HelloAck')
+    await session.send(delayedEvent(1, other))
+    assert.deepEqual(await session.next(), ack(1))
+    await session.send(delayedEvent(2, own))
+    assert.deepEqual(await session.next(), ack(2))
+    session.close()
+    await session.closed
+  } finally {
+    await logged.close()
+  }
+  const rejected = lines.map((line) => JSON.parse(line)).filter((entry) => entry.msg?.startsWith('executor event'))
+  assert.deepEqual(
+    rejected.map(({ code, machineId, seq, run }) => ({ code, machineId, seq, run })),
+    [{ code: 'DR201', machineId: machine.machineId, seq: 1, run: other }],
+  )
+  assert.equal(await delayCount(other), 0)
+  assert.equal(await delayCount(own), 1)
+  assert.equal(await lastSeq(machine.machineId), 2)
+})
+
+test('a malformed event keeps its place in the sequence', async () => {
+  const { machine } = await paired()
+  const session = await helloAcked(machine.token)
+  await session.send({ type: 'Event', seq: 1, at: 'yesterday', event: { kind: 'Orphans', runs: [] } })
+  assert.deepEqual(await session.next(), ack(1))
+  await session.send(orphans(2))
   assert.deepEqual(await session.next(), ack(2))
   session.close()
   assert.equal(await lastSeq(machine.machineId), 2)

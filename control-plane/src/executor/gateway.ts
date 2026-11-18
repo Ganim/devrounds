@@ -84,33 +84,56 @@ export class Sessions {
 
 type GatewayOptions = { db: Kysely<Database>; sessions: Sessions; limiter: PairingLimiter }
 
+// Moves machines.last_seq to `seq`, only while it is below: the row lock and condition keep a replaced session still
+// draining frames from applying a seq the newer one already did. False when the seq was applied already.
+async function advanceLastSeq(trx: Trx, machineId: string, seq: number): Promise<boolean> {
+  const row = await trx
+    .updateTable('machines')
+    .set({ last_seq: seq })
+    .where('id', '=', machineId)
+    .where('last_seq', '<', String(seq))
+    .returning('id')
+    .executeTakeFirst()
+  return row !== undefined
+}
+
+type Rejected = { code: string; machineId: string; seq: number; run?: string }
+
+// A rejected event is deterministic: replaying it fails the same way, so its seq counts as applied (nothing else
+// changes) or it would block every later event. Only the code and identifiers are logged, never the payload.
+async function skipEvent(ctx: TenantCtx, rejected: Rejected, log: FastifyBaseLogger) {
+  log.warn(rejected, 'executor event rejected; counted as applied')
+  await withTenant(ctx.db, ctx.tenantId, (trx) => advanceLastSeq(trx, rejected.machineId, rejected.seq))
+}
+
 /**
  * Applies one new event and moves machines.last_seq to its seq in one transaction, so after a crash the executor
- * resends exactly what was not applied. The machine row is updated first, only while last_seq is below seq: that
- * row lock and condition keep a replaced session still draining frames from applying a seq the newer one already
- * did. An event the run state does not allow (DR351) is logged and its seq still counts as applied; otherwise the
- * executor would resend it forever. Unknown event kinds count the same way.
+ * resends exactly what was not applied. An event applyRunEvent rejects with a DevRounds code (DR351, DR201, an input
+ * code) rolls back and is skipped (skipEvent); any other failure throws and closes the session 1011, so the executor
+ * resends it later. Unknown event kinds advance last_seq and change nothing else.
  */
 async function applyEvent(ctx: TenantCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
-  const advance = async (trx: Trx) => {
-    const row = await trx
-      .updateTable('machines')
-      .set({ last_seq: message.seq })
-      .where('id', '=', machineId)
-      .where('last_seq', '<', String(message.seq))
-      .returning('id')
-      .executeTakeFirst()
-    return row !== undefined
-  }
   try {
     await withTenant(ctx.db, ctx.tenantId, async (trx) => {
-      if (!(await advance(trx)) || message.event.kind === 'Unknown') return
+      if (!(await advanceLastSeq(trx, machineId, message.seq)) || message.event.kind === 'Unknown') return
       await applyRunEvent({ ...ctx, trx }, machineId, message.event, new Date(message.at), log)
     })
   } catch (err) {
-    if (!(err instanceof DevRoundsError && err.code === 'DR351')) throw err
-    log.warn({ err, machineId, seq: message.seq }, 'executor event does not fit the run state; acked, not applied')
-    await withTenant(ctx.db, ctx.tenantId, advance)
+    if (!(err instanceof DevRoundsError)) throw err
+    const run = 'run' in message.event ? message.event.run : undefined
+    await skipEvent(ctx, { code: err.code, machineId, seq: message.seq, run }, log)
+  }
+}
+
+// The seq of an Event frame that failed its shape check, when the envelope still names a usable one.
+function rejectedSeq(text: string): number | undefined {
+  try {
+    const value = JSON.parse(text) as { type?: unknown; seq?: unknown } | null
+    const seq = value?.seq
+    if (value?.type !== 'Event' || typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) return undefined
+    return seq
+  } catch {
+    return undefined
   }
 }
 
@@ -151,8 +174,15 @@ function serveSession(
     } catch (err) {
       if (!session) return end(CLOSE_PROTOCOL, toDevRoundsError(err))
       // One bad frame does not end a session that runs work; the executor and control plane differ in version.
-      log.warn({ err, machineId: machine.machineId }, 'executor message rejected')
-      return
+      const seq = rejectedSeq(text)
+      if (seq === undefined || !tracker) {
+        log.warn({ err, machineId: machine.machineId }, 'executor message rejected')
+        return
+      }
+      // A malformed event still takes its place in the sequence, or the gap behind it would never close.
+      const { code } = toDevRoundsError(err)
+      const rejected = { code, machineId: machine.machineId, seq }
+      return sequenced(seq, () => skipEvent(ctx, rejected, log))
     }
     if (!session) {
       if (message.type !== 'Hello') {
@@ -178,17 +208,22 @@ function serveSession(
       return
     }
     if (message.type === 'MachineReport') await recordReport(ctx, machine.machineId, message)
-    if (message.type === 'Event') await event(message)
+    if (message.type === 'Event') {
+      const event = message
+      const { machineId } = machine
+      await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log))
+    }
     // Log chunks reach watchers from Task 14 on; unknown types are ignored by design.
   }
 
   // Ack is cumulative, so it always names tracker.lastSeq, the last applied seq, never the incoming one: acking an
   // ahead-of-gap event would let the executor drop the events still missing.
-  const event = async (message: EventMessage) => {
-    if (!machine || !tracker) return
-    const verdict = tracker.accept(message.seq)
+  // `apply` runs only for the next seq.
+  const sequenced = async (seq: number, apply: () => Promise<void>) => {
+    if (!tracker) return
+    const verdict = tracker.accept(seq)
     if (verdict === 'gap') return reply({ type: 'Resync', from_seq: Number(tracker.lastSeq + 1n) })
-    if (verdict === 'new') await applyEvent({ db, tenantId: machine.tenantId }, machine.machineId, message, log)
+    if (verdict === 'new') await apply()
     reply({ type: 'Ack', seq: Number(tracker.lastSeq) })
   }
 

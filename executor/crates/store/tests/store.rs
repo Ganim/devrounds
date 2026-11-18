@@ -64,6 +64,34 @@ async fn ack_drops_events_through_seq() {
 }
 
 #[tokio::test]
+async fn a_store_behind_the_control_plane_moves_its_events_after_last_seq() {
+    let dir = dir();
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("open");
+    for run in ["r1", "r2"] {
+        store.append_event(admitted(run)).await.expect("append");
+    }
+    assert!(store.raise_floor(7).await.expect("raise"));
+    let pending = store.pending_after(0).await.expect("pending");
+    assert_eq!(seqs(&pending), [8, 9]);
+    let ClientMessage::Event(event) = decode_client(&pending[0].1).expect("decode") else {
+        panic!("not an Event frame: {}", pending[0].1);
+    };
+    assert_eq!((event.seq, event.event), (8, admitted("r1")));
+    assert_eq!(
+        store.append_event(admitted("r3")).await.expect("append"),
+        10
+    );
+    // Already past it: nothing moves.
+    assert!(!store.raise_floor(9).await.expect("raise"));
+    assert_eq!(
+        seqs(&store.pending_after(0).await.expect("pending")),
+        [8, 9, 10]
+    );
+}
+
+#[tokio::test]
 async fn runs_in_flight_keep_their_identity_and_members_until_forgotten() {
     let dir = dir();
     let path = dir.path().join("executor.db");
