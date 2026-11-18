@@ -2,6 +2,7 @@
 //! control plane, isolation and the run loop here.
 
 pub mod admission;
+pub mod isolation;
 #[cfg(windows)]
 mod sampler;
 
