@@ -867,19 +867,62 @@ export function usage(): string {
   ].join('\n')
 }
 
+// The longest word path that matches the start of argv.
+function findSpec(argv: string[]): Spec | undefined {
+  return COMMANDS.filter((c) => c.path.every((word, i) => argv[i] === word)).sort(
+    (a, b) => b.path.length - a.path.length,
+  )[0]
+}
+
+// --cursor on every read command, so `more:` is always the same command with --cursor N. Mutations reject it.
+function optionsOf(spec: Spec): ParseArgsOptionsConfig {
+  return spec.pages ? { ...spec.options, cursor: str } : spec.options
+}
+
+// parseArgs rejects `--title -h` as ambiguous (it wants `--title=-h`). A value that starts with one dash (-h, -5) is
+// still a value after an option that takes one, so glue the pair. A `--` word stays a flag: `--title --help`
+// is a missing title plus a help request, not a title.
+function valuesWithDash(args: string[], options: ParseArgsOptionsConfig): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const name = /^--([^=]+)$/.exec(args[i])?.[1]
+    const next = args[i + 1]
+    if (name !== undefined && options[name]?.type === 'string' && /^-[^-]/.test(next ?? '')) {
+      out.push(`${args[i]}=${next}`)
+      i++
+    } else out.push(args[i])
+  }
+  return out
+}
+
+// -h and --help ask for usage only where they are a flag: `--title -h` gives the title "-h". Telling the two apart
+// needs the command's option table, so the scan reuses parseArgs instead of looking at raw words.
+function wantsHelp(argv: string[]): boolean {
+  const spec = findSpec(argv)
+  try {
+    const { tokens = [] } = parseArgs({
+      args: spec ? valuesWithDash(argv.slice(spec.path.length), optionsOf(spec)) : argv,
+      options: spec ? optionsOf(spec) : {},
+      allowPositionals: true,
+      strict: false,
+      tokens: true,
+    })
+    return tokens.some((t) => t.kind === 'option' && (t.name === 'help' || t.name === 'h'))
+  } catch {
+    return false
+  }
+}
+
 // Resolves the command (longest matching word path) and parses its flags strictly. Missing positionals and flag
 // values are reported when the command runs, so `devrounds task start` alone parses (AGENTS.md quotes it so).
 export function parseCommand(argv: string[]): { spec: Spec; inv: Invocation } {
-  const spec = COMMANDS.filter((c) => c.path.every((word, i) => argv[i] === word)).sort(
-    (a, b) => b.path.length - a.path.length,
-  )[0]
+  const spec = findSpec(argv)
   if (!spec) fail('DR101', { path: 'command', reason: `unknown command "${argv.join(' ')}"; see devrounds --help` })
-  // --cursor on every read command, so `more:` is always the same command with --cursor N. Mutations reject it.
-  const options: ParseArgsOptionsConfig = spec.pages ? { ...spec.options, cursor: str } : spec.options
+  const options = optionsOf(spec)
   let parsed: ReturnType<typeof parseArgs>
   try {
     parsed = parseArgs({
-      args: argv.slice(spec.path.length),
+      args: valuesWithDash(argv.slice(spec.path.length), options),
       options,
       allowPositionals: true,
       strict: true,
@@ -939,7 +982,7 @@ export async function runCli(
   argv: string[],
   deps: Deps,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+  if (argv.length === 0 || wantsHelp(argv)) {
     const text = `${usage()}\n`
     return argv.length === 0 ? { exitCode: 2, stdout: '', stderr: text } : { exitCode: 0, stdout: text, stderr: '' }
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -215,6 +215,58 @@ test('machine pair-code prints the code and the executor pair command as next', 
   assert.ok(code, first)
   assert.match(expires, /^expires at \d{4}-\d{2}-\d{2}T/)
   assert.equal(next, `next: devrounds-executor pair --url ${url} --code ${code}`)
+})
+
+test('-h is a plain value after an option that takes one', async (t) => {
+  const bodies: unknown[] = []
+  const fake = await fakeServer((req, res) => {
+    let raw = ''
+    req.on('data', (chunk) => {
+      raw += chunk
+    })
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw))
+      json(res, { eventId: '1' })
+    })
+  })
+  t.after(fake.close)
+
+  const res = await runCli(['task', 'add', 'P0-T09', '--title', '-h'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.ok(!res.stdout.startsWith('usage:'), res.stdout)
+  assert.equal((bodies[0] as { title: string }).title, '-h')
+
+  const flag = await runCli(['task', 'add', '-h'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(flag.exitCode, 0)
+  assert.ok(flag.stdout.startsWith('usage:'), flag.stdout)
+  assert.equal(bodies.length, 1, 'help must not call the control plane')
+})
+
+test('a closed stdout ends the CLI quietly, without a stack', async (t) => {
+  const events = Array.from({ length: 2000 }, (_, i) => ({
+    id: String(i + 1),
+    kind: 'transition',
+    actor: 'human',
+    taskKey: 'P0-T01',
+    phaseKey: null,
+    reason: 'r'.repeat(300),
+    at: '2026-11-17T12:00:00.000Z',
+  }))
+  const fake = await fakeServer((_req, res) => json(res, events))
+  t.after(fake.close)
+
+  const child = spawn(process.execPath, [MAIN, 'events'], {
+    env: { ...process.env, ...fake.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+  // `devrounds events | head -1`: the reader goes away before the CLI has anything to write.
+  child.stdout.destroy()
+  await new Promise((resolve) => child.on('close', resolve))
+  assert.ok(!/EPIPE|\n\s+at /.test(stderr), stderr)
 })
 
 test('an error body without text or hint never prints undefined', async (t) => {

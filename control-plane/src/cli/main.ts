@@ -6,6 +6,14 @@ const { exitCode, stdout, stderr } = await runCli(process.argv.slice(2), {
   env: process.env,
   configPath: defaultConfigPath(),
 })
+process.exitCode = exitCode
+// `devrounds plan show | head -1`: the reader may leave before the output is written. Nobody is left to read it, so
+// the run ends with its own exit code instead of an unhandled EPIPE and a stack trace.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit()
+    throw err
+  })
+}
 process.stdout.write(stdout)
 process.stderr.write(stderr)
-process.exitCode = exitCode
