@@ -39,11 +39,17 @@ async function loadCliConfig(env: NodeJS.ProcessEnv, path: string): Promise<CliC
       if (err.code === 'ENOENT') return '{}'
       throw err
     })
+    let parsed: unknown
     try {
-      file = JSON.parse(text) as Partial<CliConfig>
+      parsed = JSON.parse(text)
     } catch {
       throw new LoginNeeded('DR101', { path, reason: 'is not valid JSON; run devrounds login again' })
     }
+    // `null`, a list or a bare value parse fine but hold no fields to read.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new LoginNeeded('DR502', { reason: `${path} must hold a JSON object; run devrounds login again` })
+    }
+    file = parsed as Partial<CliConfig>
   }
   const pick = (field: keyof CliConfig): string => {
     const value = fromEnv[field] || file[field]
@@ -127,8 +133,15 @@ function apiFor(config: CliConfig, timeoutMs: number, scope?: string): Api {
     } catch {
       // Not the control plane answering (a proxy, another service on the port): handled below.
     }
-    if (typeof body.code === 'string')
-      throw new ApiError(body.code, String(body.text), String(body.hint), body.data ?? {})
+    // A body with a code but no words (an older or foreign server) must not print "undefined".
+    if (typeof body.code === 'string') {
+      throw new ApiError(
+        body.code,
+        typeof body.text === 'string' ? body.text : 'The control plane answered with an error and no text.',
+        typeof body.hint === 'string' ? body.hint : `Check that ${config.url} is the DevRounds control plane.`,
+        body.data ?? {},
+      )
+    }
     throw new ApiError(
       'DR501',
       `HTTP ${res.status} from ${config.url} without an error code.`,
@@ -211,7 +224,7 @@ const orNull = (value: string | undefined) => (value === 'none' ? null : value)
 type Mutation = { eventId: string; delivered?: string | null; openCriteria?: number }
 
 function done(summary: string, result: Mutation, next = 'devrounds plan show'): Result {
-  const body = [`${summary} (event ${result.eventId})`]
+  const body = [typeof result.eventId === 'string' ? `${summary} (event ${result.eventId})` : summary]
   if (result.delivered) body.push(`phase ${result.delivered} delivered`)
   return { failures: [], body, next }
 }

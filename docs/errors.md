@@ -192,7 +192,7 @@ Control plane configuration is invalid: {reason}.
 
 ### Fix
 
-Fix ~/.devrounds/server.json or the DEVROUNDS_* environment variables, then start again.
+Fix the file named in the message (~/.devrounds/server.json for the server, ~/.devrounds/config.json for the CLI) or the DEVROUNDS_* environment variables, then run it again.
 
 ## DR550
 

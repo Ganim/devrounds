@@ -216,3 +216,35 @@ test('machine pair-code prints the code and the executor pair command as next', 
   assert.match(expires, /^expires at \d{4}-\d{2}-\d{2}T/)
   assert.equal(next, `next: devrounds-executor pair --url ${url} --code ${code}`)
 })
+
+test('an error body without text or hint never prints undefined', async (t) => {
+  const fake = await fakeServer((_req, res) => {
+    res.statusCode = 409
+    json(res, { code: 'DR999' })
+  })
+  t.after(fake.close)
+  const res = await runCli(['task', 'start', 'P0-T01'], { env: fake.env, configPath: NO_CONFIG })
+  assert.ok(res.stderr.startsWith('DR999 '), res.stderr)
+  assert.ok(!res.stderr.includes('undefined'), res.stderr)
+})
+
+test('a mutation answer without an event id never prints undefined', async (t) => {
+  const fake = await fakeServer((_req, res) => json(res, {}))
+  t.after(fake.close)
+  const res = await runCli(['task', 'start', 'P0-T01'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.ok(!res.stdout.includes('undefined'), res.stdout)
+})
+
+test('a config file that is not a JSON object answers DR502', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'devrounds-config-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const configPath = join(dir, 'config.json')
+  for (const content of ['null', '[]', '"text"', '5']) {
+    await writeFile(configPath, content)
+    const res = await runCli(['plan', 'show'], { env: {}, configPath })
+    assert.equal(res.exitCode, 6, `${content}: ${res.stderr}`)
+    assert.match(res.stderr, /^DR502 .*JSON object/, content)
+    assert.ok(res.stderr.endsWith('\nnext: devrounds login --url <url> --token <token> --project <key>\n'), content)
+  }
+})
