@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/pr
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { LogWriter, pruneLogs } from './logs.ts'
+import { LogWriter, pruneLogs, safely } from './logs.ts'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 
@@ -57,6 +57,21 @@ test('LogWriter rolls to a new file when one would pass the size cap, and starts
       'serve-2026-11-18.log',
     ])
     assert.equal((await stat(join(dir, 'serve-2026-11-17.1.log'))).size, 9)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('safely swallows a log write that fails, so the supervisor keeps running', async () => {
+  const dir = await tempDir()
+  try {
+    // A file where the log directory should be makes every append fail.
+    const blocked = join(dir, 'file')
+    await writeFile(blocked, 'x')
+    const writer = new LogWriter(join(blocked, 'logs'), 'supervisor', 1024)
+    await assert.rejects(writer.write(Buffer.from('x')))
+    await safely(() => writer.write(Buffer.from('x')))
+    await safely(() => pruneLogs(blocked, new Date(), 14))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

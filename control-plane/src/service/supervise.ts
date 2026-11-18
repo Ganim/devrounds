@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { isMain } from '../is-main.ts'
-import { KEEP_DAYS, LogWriter, MAX_LOG_BYTES, pruneLogs } from './logs.ts'
+import { KEEP_DAYS, LogWriter, MAX_LOG_BYTES, pruneLogs, safely } from './logs.ts'
 
 // Keeps `main.ts serve` running. Task Scheduler only restarts a task that fails to start, so crash restarts are
 // owned here; the scheduled task's 5-minute trigger (IgnoreNew) only brings this supervisor back if it dies.
@@ -22,14 +22,14 @@ export function nextDelay(previousMs: number | null, uptimeMs: number): number {
 const LOG_DIR = join(homedir(), '.devrounds', 'logs')
 const SERVE = fileURLToPath(new URL('../main.ts', import.meta.url))
 
-const prune = () => pruneLogs(LOG_DIR, new Date(), KEEP_DAYS)
+const prune = () => safely(() => pruneLogs(LOG_DIR, new Date(), KEEP_DAYS))
 // Serve output goes through the supervisor (not straight to a file) so one file cannot grow without bound while a
 // serve lives for weeks: files are named by UTC write day and roll over at MAX_LOG_BYTES.
 const supervisorLog = new LogWriter(LOG_DIR, 'supervisor', MAX_LOG_BYTES, undefined, () => void prune())
 const serveLog = new LogWriter(LOG_DIR, 'serve', MAX_LOG_BYTES, undefined, () => void prune())
 
 async function log(line: string): Promise<void> {
-  await supervisorLog.write(Buffer.from(`${new Date().toISOString()} ${line}\n`))
+  await safely(() => supervisorLog.write(Buffer.from(`${new Date().toISOString()} ${line}\n`)))
 }
 
 // Resolves with the uptime when the child exits. The IPC channel ties serve's life to this process (see main.ts).

@@ -91,3 +91,12 @@ export class LogWriter {
     }
   }
 }
+
+// Logging is best effort: a full disk or a locked file must never take the supervisor down.
+export async function safely(action: () => Promise<unknown>): Promise<void> {
+  try {
+    await action()
+  } catch {
+    // Nowhere left to report it.
+  }
+}
