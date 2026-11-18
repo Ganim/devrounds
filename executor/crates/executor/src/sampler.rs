@@ -2,6 +2,7 @@
 //! every second while the run holds its start slot, every 5 s after. Each
 //! sample feeds the slot (so the gate can lower the run's reservation and
 //! apply its settle rule), the run's summary and the caller's channel.
+//! Sampling ends on its own when the run exits.
 
 use std::{
     sync::Arc,
@@ -9,7 +10,7 @@ use std::{
 };
 
 use devrounds_core::gate::StartSlot;
-use devrounds_metrics::{RunSample, RunSummary, RunTracker, Sample, Subject, unix_ms};
+use devrounds_metrics::{JobTotals, RunSample, RunSummary, RunTracker, Sample, Subject, unix_ms};
 use devrounds_metrics_windows::WindowsSource;
 use devrounds_runner_windows::WindowsUnit;
 use tokio::{
@@ -39,8 +40,13 @@ impl Sampler {
     /// and unreleased, every sample reports the footprint and (from the
     /// second sample on, the first CPU reading being 0 by design) the CPU to
     /// it. Each sample is also sent on `tx`; a closed channel is ignored.
-    /// The sampler keeps a clone of `slot`, so the slot outlives the caller's
-    /// copy until sampling stops. Readings with no live member are skipped.
+    /// Readings with no live member are skipped.
+    ///
+    /// The task ends by itself once the unit has fully finished (its exit
+    /// report is out): it then drops its `slot` clone, so a run that exits
+    /// while holding its slot does not keep it, and drops `tx`, which tells
+    /// a listener that sampling is over. [`Sampler::finish`] still returns
+    /// the summary afterwards.
     pub fn spawn(
         run: impl Into<String>,
         unit: Arc<WindowsUnit>,
@@ -69,9 +75,10 @@ impl Sampler {
         }
     }
 
-    /// Stops sampling and returns the run's summary, its footprint peak
-    /// raised to the job's exact peak. Call it once the run has exited, so
-    /// the peak covers the whole run.
+    /// Stops sampling (if the run has not ended it already) and returns the
+    /// run's summary: its footprint peak raised to the job's exact peak, and
+    /// the job's exact CPU time. Call it once the run has exited, so both
+    /// cover the whole run.
     pub async fn finish(self) -> RunSummary {
         // The task may have ended already; then the send has no receiver.
         let _ = self.stop.send(());
@@ -84,18 +91,30 @@ impl Sampler {
                 tracker
             }
         };
-        let job_peak = self.unit.peak_memory().await.unwrap_or_else(|error| {
-            tracing::debug!(run = %self.run, %error, "job peak unreadable");
+        let peak_bytes = self.unit.peak_memory().await.unwrap_or_else(|error| {
+            tracing::warn!(run = %self.run, %error, "job peak unreadable; the sampled peak stands");
             0
         });
+        let cpu_seconds = match self.unit.cpu_time().await {
+            Ok(cpu) => cpu.as_secs_f64(),
+            Err(error) => {
+                tracing::warn!(run = %self.run, %error, "job CPU time unreadable");
+                0.0
+            }
+        };
+        let job = JobTotals {
+            peak_bytes,
+            cpu_seconds,
+        };
         tracker
-            .finish(&self.run, unix_ms(SystemTime::now()), job_peak)
+            .finish(&self.run, unix_ms(SystemTime::now()), job)
             .expect("the sampler tracks its own run")
     }
 }
 
-/// Samples until `stopped` fires or its sender is dropped; returns the
-/// tracker with every sample taken.
+/// Samples until the unit has finished, `stopped` fires or its sender is
+/// dropped; returns the tracker with every sample taken. Returning drops
+/// `slot` and `tx`.
 async fn sample_loop(
     run: String,
     unit: Arc<WindowsUnit>,
@@ -108,7 +127,7 @@ async fn sample_loop(
     let source = WindowsSource::new();
     let mut first = true;
     loop {
-        if let Some(reading) = read(&source, &unit).await {
+        if let Some(reading) = read(&run, &source, &unit).await {
             if let Some(slot) = held(&slot) {
                 slot.report_memory(reading.footprint_bytes);
                 // Every member reads 0 CPU on first sight, which must not
@@ -136,6 +155,8 @@ async fn sample_loop(
         };
         tokio::select! {
             _ = &mut stopped => return tracker,
+            // An error means the supervisor is gone, which ends the run too.
+            _ = unit.wait_report() => return tracker,
             () = tokio::time::sleep(period) => {}
         }
     }
@@ -148,11 +169,11 @@ fn held(slot: &Option<StartSlot>) -> Option<&StartSlot> {
 
 /// Reads the run's current members; `None` when none is alive or they
 /// cannot be read.
-async fn read(source: &WindowsSource, unit: &WindowsUnit) -> Option<RunSample> {
+async fn read(run: &str, source: &WindowsSource, unit: &WindowsUnit) -> Option<RunSample> {
     let members = match unit.job_members().await {
         Ok(members) => members,
         Err(error) => {
-            tracing::debug!(%error, "run members unreadable");
+            tracing::warn!(run, %error, "run members unreadable; sample skipped");
             return None;
         }
     };
@@ -161,9 +182,9 @@ async fn read(source: &WindowsSource, unit: &WindowsUnit) -> Option<RunSample> {
     }
     let source = source.clone();
     match tokio::task::spawn_blocking(move || source.sample_run(&members)).await {
-        Ok(reading) => Some(reading),
+        Ok(reading) => reading,
         Err(error) => {
-            tracing::debug!(%error, "run sample failed");
+            tracing::warn!(run, %error, "run sample failed");
             None
         }
     }

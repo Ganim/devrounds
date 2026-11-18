@@ -16,6 +16,7 @@ use devrounds_core::{
 use devrounds_executor::Sampler;
 use devrounds_metrics::Subject;
 use devrounds_runner_windows::{WindowsRunner, WindowsUnit};
+use tokio::sync::oneshot;
 
 /// Upper bound for the test body.
 const LIMIT: Duration = Duration::from_secs(60);
@@ -44,13 +45,25 @@ impl Drop for Cleanup {
 struct Reports {
     memory: Mutex<Vec<u64>>,
     cpu: Mutex<Vec<f64>>,
+    /// Told the reason of the first release.
+    released: Mutex<Option<oneshot::Sender<Release>>>,
 }
 
-/// A slot handle that records the reports and is never released.
+/// A slot handle that records the reports and the release, and reads as
+/// held throughout so the sampler keeps its 1 s cadence.
 struct Recorder(Arc<Reports>);
 
 impl SlotHandle for Recorder {
-    fn release(&self, _reason: Release) {}
+    fn release(&self, reason: Release) {
+        let mut released = self
+            .0
+            .released
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(tell) = released.take() {
+            let _ = tell.send(reason);
+        }
+    }
 
     fn report_cpu(&self, cpu_percent: f64) {
         let mut cpu = self.0.cpu.lock().unwrap_or_else(PoisonError::into_inner);
@@ -132,6 +145,48 @@ async fn sampler_feeds_a_held_slot_every_second() {
             sent += 1;
         }
         assert_eq!(sent, summary.samples);
+    })
+    .await
+    .expect("bounded");
+}
+
+/// A run that exits while holding its slot: the sampler ends on its own and
+/// drops its slot clone, the only one, so the slot is released, before
+/// anyone calls `finish`. The summary afterwards has the job's CPU time.
+#[tokio::test]
+async fn sampler_ends_and_releases_the_slot_when_the_run_exits() {
+    devrounds_test_fixtures::tree_fixture_path();
+    tokio::time::timeout(LIMIT, async {
+        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+        let unit = start(
+            dir.path(),
+            &["--alloc-mb", "64", "--touch", "--run-ms", "500"],
+        )
+        .await;
+        let _cleanup = Cleanup(Arc::clone(&unit), dir.path().to_path_buf());
+        let reports = Arc::new(Reports::default());
+        let (tell, released) = oneshot::channel();
+        *reports
+            .released
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(tell);
+        let slot = StartSlot::new(Recorder(Arc::clone(&reports)));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sampler = Sampler::spawn("run-2", Arc::clone(&unit), Some(slot), tx);
+
+        assert_eq!(released.await.expect("slot released"), Release::Dropped);
+        assert!(
+            unit.exit_report().is_some(),
+            "released before the run ended"
+        );
+        // The task owned the only sender: the channel closes once it ended.
+        while rx.recv().await.is_some() {}
+
+        let summary = sampler.finish().await;
+        assert!(summary.samples >= 1, "{summary:?}");
+        // Writing 64 MiB costs CPU that a sample may never see; the job's
+        // accounting counts it.
+        assert!(summary.cpu_seconds > 0.0, "{summary:?}");
     })
     .await
     .expect("bounded");

@@ -643,6 +643,14 @@ impl WindowsUnit {
         Ok(blocking(move || inner.job.peak_memory()).await??)
     }
 
+    /// CPU time every process of the run used so far, exited ones included,
+    /// read from its job's accounting.
+    pub async fn cpu_time(&self) -> Result<Duration, Error> {
+        let inner = Arc::clone(&self.inner);
+        let ticks = blocking(move || inner.job.cpu_time()).await??;
+        Ok(Duration::from_nanos(ticks.saturating_mul(100)))
+    }
+
     /// Ends every process of the unit at once by terminating its job, without
     /// waiting; the supervisor then reports the exit as usual.
     pub fn terminate(&self) {

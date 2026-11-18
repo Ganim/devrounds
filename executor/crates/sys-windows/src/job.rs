@@ -146,6 +146,20 @@ impl Job {
 
     /// How many processes in the job are still running.
     pub fn active_count(&self) -> io::Result<u32> {
+        Ok(self.accounting()?.ActiveProcesses)
+    }
+
+    /// Kernel plus user CPU time of every process the job ever held, exited
+    /// ones included, in 100 ns units. Exact where samples miss work done
+    /// before a process's first reading.
+    pub fn cpu_time(&self) -> io::Result<u64> {
+        let info = self.accounting()?;
+        let total = info.TotalUserTime.saturating_add(info.TotalKernelTime);
+        Ok(u64::try_from(total).unwrap_or(0))
+    }
+
+    /// The job's basic accounting counters.
+    fn accounting(&self) -> io::Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
         let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         // SAFETY: the job is open; `info` matches the class and size.
         let ok = unsafe {
@@ -160,7 +174,7 @@ impl Job {
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(info.ActiveProcesses)
+        Ok(info)
     }
 
     /// The most memory the job's processes ever committed at once

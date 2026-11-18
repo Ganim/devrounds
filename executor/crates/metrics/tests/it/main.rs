@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use devrounds_metrics::{
-    BaselinePolicy, ByteSummary, CpuSummary, QuantileSketch, Ring, RunSummary, RunTracker, Sample,
-    Subject, baseline,
+    BaselinePolicy, ByteSummary, CpuSummary, JobTotals, QuantileSketch, Ring, RunSummary,
+    RunTracker, Sample, Subject, baseline,
 };
 
 /// Builds a run-total sample.
@@ -72,7 +72,11 @@ fn run_tracker_summarizes_only_its_run_and_window() {
     let live = tracker.current("run-7").expect("live");
     assert_eq!((live.samples, live.ended_ms), (100, 110_000));
 
-    let summary = tracker.finish("run-7", 200_000, 0).expect("summary");
+    let job = JobTotals {
+        peak_bytes: 0,
+        cpu_seconds: 12.5,
+    };
+    let summary = tracker.finish("run-7", 200_000, job).expect("summary");
     assert!(tracker.current("run-7").is_none());
     assert_eq!(summary.run, "run-7");
     assert_eq!(summary.samples, 100);
@@ -80,12 +84,8 @@ fn run_tracker_summarizes_only_its_run_and_window() {
     assert_eq!(summary.footprint.peak, 100_000);
     assert_eq!(summary.cpu.peak, 100.0);
     assert_eq!(summary.rss_peak, 50_000);
-    // 1% to 100% of a core, each over the second before its sample.
-    assert!(
-        (summary.cpu_seconds - 50.5).abs() < 1e-9,
-        "{}",
-        summary.cpu_seconds
-    );
+    // The job's CPU time, not anything derived from the samples.
+    assert_eq!(summary.cpu_seconds, 12.5);
     let within = |actual: f64, expected: f64| (actual - expected).abs() <= expected * 0.01;
     assert!(
         within(summary.footprint.p50 as f64, 50_000.0),
@@ -98,7 +98,7 @@ fn run_tracker_summarizes_only_its_run_and_window() {
         summary.footprint
     );
     assert!(within(summary.cpu.p95, 95.0), "{:?}", summary.cpu);
-    assert!(tracker.finish("run-99", 1, 0).is_none());
+    assert!(tracker.finish("run-99", 1, JobTotals::default()).is_none());
 }
 
 #[test]
@@ -111,8 +111,12 @@ fn summary_reports_p50_p95_peak() {
         .collect();
     tracker.observe_all(&samples);
     // A job peak below the sampled one leaves the sampled peak.
+    let job = |peak_bytes| JobTotals {
+        peak_bytes,
+        cpu_seconds: 0.0,
+    };
     let summary = tracker
-        .finish("run-1", 201_000, 150 * MIB)
+        .finish("run-1", 201_000, job(150 * MIB))
         .expect("summary");
     assert_eq!(summary.samples, 101);
     // Lower rank floor(0.95 * 100) = 95: the 195 MiB sample.
@@ -127,7 +131,9 @@ fn summary_reports_p50_p95_peak() {
     // The job's peak counts when it saw more than any sample.
     tracker.start("run-2".into(), 0);
     tracker.observe(&run_sample("run-2", 1_000, 0.0, 10 * MIB));
-    let summary = tracker.finish("run-2", 2_000, 300 * MIB).expect("summary");
+    let summary = tracker
+        .finish("run-2", 2_000, job(300 * MIB))
+        .expect("summary");
     assert_eq!(summary.footprint.peak, 300 * MIB);
 }
 

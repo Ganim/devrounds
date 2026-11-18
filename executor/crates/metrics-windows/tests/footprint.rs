@@ -11,7 +11,7 @@ use std::{
 };
 
 use devrounds_core::{LaunchSpec, RunOutput};
-use devrounds_metrics::{RunTracker, Sample, Subject, unix_ms};
+use devrounds_metrics::{JobTotals, RunTracker, Sample, Subject, unix_ms};
 use devrounds_metrics_windows::WindowsSource;
 use devrounds_runner_windows::{WindowsRunner, WindowsUnit};
 use devrounds_sys_windows::usage::process_usage;
@@ -106,7 +106,9 @@ async fn footprint_counts_commit_not_working_set() {
         .await;
         wait_ready(dir.path(), 1).await;
         let members = unit.job_members().await.expect("members");
-        let sample = WindowsSource::new().sample_run(&members);
+        let sample = WindowsSource::new()
+            .sample_run(&members)
+            .expect("live members");
         assert!(sample.footprint_bytes >= 256 << 20, "{sample:?}");
         let leader = unit.identity();
         let usage = process_usage(leader.pid, leader.start_time)
@@ -117,8 +119,9 @@ async fn footprint_counts_commit_not_working_set() {
     .await;
 }
 
-/// Two children holding 100 MiB each after their leader exited: the run's
-/// footprint is their sum.
+/// A leader and two children holding 100 MiB each: the run's footprint is
+/// the sum over the tree. The leader runs 30 s, so the tree is still whole
+/// when it is read, however loaded the machine.
 #[tokio::test]
 async fn tree_footprint_sums_members() {
     bounded(async {
@@ -130,6 +133,8 @@ async fn tree_footprint_sums_members() {
                 "2",
                 "--alloc-mb",
                 "100",
+                "--run-ms",
+                "30000",
                 "--linger-ms",
                 "3000",
                 "--ready",
@@ -139,7 +144,9 @@ async fn tree_footprint_sums_members() {
         // The leader and both children.
         wait_ready(dir.path(), 3).await;
         let members = unit.job_members().await.expect("members");
-        let sample = WindowsSource::new().sample_run(&members);
+        let sample = WindowsSource::new()
+            .sample_run(&members)
+            .expect("live members");
         assert!(
             sample.footprint_bytes >= 200 << 20,
             "{sample:?} of {members:?}"
@@ -179,7 +186,7 @@ async fn peak_is_exact_between_samples() {
                 }
                 _ = ticks.tick() => {
                     let members = unit.job_members().await.expect("members");
-                    let reading = source.sample_run(&members);
+                    let reading = source.sample_run(&members).expect("live members");
                     tracker.observe(&Sample {
                         subject: Subject::Run { run: "peak".into() },
                         cpu_percent: reading.cpu_percent,
@@ -193,9 +200,12 @@ async fn peak_is_exact_between_samples() {
         let sampled = tracker.current("peak").expect("tracked");
         assert!(sampled.samples >= 1, "{sampled:?}");
         assert!(sampled.footprint.peak < 300_000_000, "{sampled:?}");
-        let job_peak = unit.peak_memory().await.expect("job peak");
+        let job = JobTotals {
+            peak_bytes: unit.peak_memory().await.expect("job peak"),
+            cpu_seconds: 0.0,
+        };
         let summary = tracker
-            .finish("peak", unix_ms(std::time::SystemTime::now()), job_peak)
+            .finish("peak", unix_ms(std::time::SystemTime::now()), job)
             .expect("summary");
         assert!(summary.footprint.peak >= 300_000_000, "{summary:?}");
     })

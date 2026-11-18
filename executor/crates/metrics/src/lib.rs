@@ -9,7 +9,7 @@
 //! [`RunTracker`].
 //!
 //! ```
-//! use devrounds_metrics::{RunTracker, Sample, Subject};
+//! use devrounds_metrics::{JobTotals, RunTracker, Sample, Subject};
 //!
 //! let mut tracker = RunTracker::default();
 //! tracker.start("run-1".into(), 1_000);
@@ -21,7 +21,8 @@
 //!     ts_ms: 2_000,
 //! });
 //! // The job committed 2 MiB at once between samples.
-//! let summary = tracker.finish("run-1", 3_000, 2 << 20).expect("tracked");
+//! let job = JobTotals { peak_bytes: 2 << 20, cpu_seconds: 0.25 };
+//! let summary = tracker.finish("run-1", 3_000, job).expect("tracked");
 //! assert_eq!(summary.footprint.peak, 2 << 20);
 //! ```
 
@@ -31,7 +32,7 @@ mod sketch;
 
 pub use ring::Ring;
 pub use run::{
-    Baseline, BaselinePolicy, ByteSummary, CpuSummary, RunSummary, RunTracker, baseline,
+    Baseline, BaselinePolicy, ByteSummary, CpuSummary, JobTotals, RunSummary, RunTracker, baseline,
 };
 pub use sketch::QuantileSketch;
 

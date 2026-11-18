@@ -41,7 +41,8 @@ devrounds-sys-windows, from crates/sys-windows at e2e4f1cafda94805d6e447331980b8
   WinSock windows-sys features; only listening_ports used them. Window class
   and title are devrounds names. ProcessUsage has private_bytes
   (PrivateUsage); added usage::self_private_bytes and Job::peak_memory
-  (PeakJobMemoryUsed).
+  (PeakJobMemoryUsed) and Job::cpu_time (accounting TotalUserTime plus
+  TotalKernelTime).
 
 devrounds-shell-windows, from crates/shell-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Removed exec_path_root, which started `git --exec-path` through
@@ -70,7 +71,8 @@ devrounds-runner-windows, from crates/runner-windows at e2e4f1cafda94805d6e44733
   detached_process. Added prepare_executor_process (clears the inherited
   ignore-Ctrl-C flag at executor startup), WindowsUnit::visible_windows and
   tests/hidden.rs; the live tests share tests/support. Added
-  WindowsUnit::peak_memory (the job's exact peak commit).
+  WindowsUnit::peak_memory and cpu_time (the job's exact peak commit and CPU
+  time).
 
 devrounds-start-gate, from crates/start-gate at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Requests carry run and job_type instead of lane and unit.
@@ -79,17 +81,18 @@ devrounds-metrics, from crates/metrics at e2e4f1cafda94805d6e447331980b83fcbab2e
   Kept ring, sketch and run. Removed aggregate and history. The subject of a
   sample is a run id: Subject is Run, Process (with run) or Daemon; UnitKey,
   container, Docker VM, project and lane subjects are gone. RunTracker and
-  RunSummary are keyed by run id. RunTracker::finish takes the job's peak
-  commit and the footprint peak is the larger of it and the sampled peak;
-  RunSummary has cpu_seconds. Added RunSample, a run tree's summed reading.
+  RunSummary are keyed by run id. RunTracker::finish takes JobTotals (the
+  job's peak commit and CPU time): the footprint peak is the larger of the
+  job peak and the sampled peak, and RunSummary.cpu_seconds is the job's CPU
+  time. Added RunSample, a run tree's summed reading.
 
 devrounds-metrics-windows, from crates/metrics-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Samples carry the run id of their target instead of a unit key. Container
   targets are gone from SampleRequest and its tests. The footprint is private
   bytes (commit) instead of the private working set (spec §16.5), so
   own_process_reports_memory no longer expects the working set to bound it.
-  Added WindowsSource::sample_run (a run's members summed), the
-  self_private_bytes re-export and tests/footprint.rs.
+  Added WindowsSource::sample_run (a run's members summed; None when none
+  was live), the self_private_bytes re-export and tests/footprint.rs.
 
 devrounds-logs, from crates/logs at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Kept framing, level and storage. Removed query and the grep-* and jiff

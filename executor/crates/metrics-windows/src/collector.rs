@@ -61,9 +61,10 @@ impl WindowsSource {
     /// of `members` (its job's members), summed. Each PID counts once;
     /// stale, exited and unreadable members are skipped. CPU is against this
     /// source's previous call and the cache keeps only these members, so
-    /// give each run a source of its own. Blocks: async callers use
-    /// `spawn_blocking`.
-    pub fn sample_run(&self, members: &[ProcessIdentity]) -> RunSample {
+    /// give each run a source of its own. `None` when no member could be
+    /// read: a run whose members all exited has no reading, not a zero one.
+    /// Blocks: async callers use `spawn_blocking`.
+    pub fn sample_run(&self, members: &[ProcessIdentity]) -> Option<RunSample> {
         let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
         let mut seen = HashSet::new();
@@ -80,8 +81,10 @@ impl WindowsSource {
             total.cpu_percent += cpu_percent;
             total.rss_bytes += usage.working_set;
         }
+        // Every member read lands in `readings`, so it is empty when none was.
+        let live = !readings.is_empty();
         *previous = readings;
-        total
+        live.then_some(total)
     }
 }
 
