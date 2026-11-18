@@ -161,7 +161,7 @@ test('a segment that decompresses past the read bound is DR503 naming the cursor
     assert.equal(err.data.next, 2)
     return true
   })
-  // Reading on from the cursor it names skips the segment.
+  // Reading on from the cursor it names skips only that segment.
   const read = await readRunLog(logCtx, runId, { cursor: 2n, maxBytes: 16384 })
   assert.deepEqual(
     read.lines.map((line) => line.seq),
@@ -248,6 +248,26 @@ test('segments older than the retention are pruned with their files', async () =
     read.lines.map((line) => line.seq),
     [4, 5, 6],
   )
+})
+
+test('lines read before an unreadable segment are returned first, and its DR503 comes on the next page', async () => {
+  const { logCtx, runId, machineId } = await setup()
+  await storeSegment(logCtx, runId, segment(1, 3), { machineId })
+  const bomb = segment(4, 6, () => 'a'.repeat(17 * 1024 * 1024))
+  await storeSegment(logCtx, runId, bomb, { machineId })
+  await storeSegment(logCtx, runId, segment(7, 8), { machineId })
+
+  const first = await readRunLog(logCtx, runId, { maxBytes: 16384 })
+  assert.deepEqual(
+    first.lines.map((line) => line.seq),
+    [1, 2, 3],
+  )
+  assert.equal(first.nextCursor, 4n)
+  await assert.rejects(readRunLog(logCtx, runId, { cursor: 4n, maxBytes: 16384 }), (err: DevRoundsError) => {
+    assert.equal(err.code, 'DR503')
+    assert.equal(err.data.next, 7)
+    return true
+  })
 })
 
 test('run logs pages at 16384 bytes with an exact --cursor continuation', async () => {

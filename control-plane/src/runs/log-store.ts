@@ -139,6 +139,7 @@ export async function readRunLog(
   const lines: LogLine[] = []
   let used = 0
   for (const segment of segments) {
+    // Exact as numbers: the protocol refuses any seq past 2^53 (executor/protocol.ts).
     const firstSeq = Number(segment.first_seq)
     const lastSeq = Number(segment.last_seq)
     let compressed: Buffer
@@ -157,6 +158,8 @@ export async function readRunLog(
         .filter((json) => json !== '')
         .map((json) => JSON.parse(json) as StoredLine)
     } catch (err) {
+      // Good lines already read go out first; the next page, from this segment, reports it.
+      if (lines.length > 0) return { lines, nextCursor: BigInt(firstSeq) }
       const reason = (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE' ? 'larger than 16 MiB' : String(err)
       fail('DR503', { run: runId, firstSeq, lastSeq, reason, next: lastSeq + 1 })
     }
@@ -193,6 +196,7 @@ export async function pruneLogSegments(
       trx.deleteFrom('log_segments').where('id', 'in', ids).returning(['run_id', 'first_seq']).execute(),
     )
     for (const row of deleted) {
+      // Number is exact: the protocol caps seqs at 2^53.
       await rm(segmentFile(logsRoot, tenantId, row.run_id, Number(row.first_seq)), { force: true })
     }
     pruned += deleted.length
