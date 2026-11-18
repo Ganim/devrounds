@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { sql } from 'kysely'
 import { migrateToLatest } from '../db/migrate.ts'
-import { tablesWithoutTenantPolicy } from '../test-support/catalog.ts'
+import { foreignKeysWithoutIndex, tablesWithoutTenantPolicy } from '../test-support/catalog.ts'
 import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import { withTenant } from './scope.ts'
 
@@ -126,6 +126,34 @@ test('the app role cannot bypass RLS', async () => {
 test('every public table has forced RLS and the tenant policy', async () => {
   const { admin } = await testDb()
   assert.deepEqual(await tablesWithoutTenantPolicy(admin), [])
+})
+
+test('every foreign key has an index leading with its referencing columns', async () => {
+  const { admin } = await testDb()
+  assert.deepEqual(await foreignKeysWithoutIndex(admin), [])
+})
+
+test('the foreign key guard flags a key whose columns are not the leading columns of any index', async () => {
+  const { admin } = await testDb()
+  const schema = `guard_probe_${randomBytes(4).toString('hex')}`
+  await sql.raw(`create schema ${schema}`).execute(admin)
+  try {
+    await sql.raw(`create table ${schema}.parent (tenant_id uuid, id uuid, unique (tenant_id, id))`).execute(admin)
+    await sql
+      .raw(`create table ${schema}.child (
+        tenant_id uuid, parent_id uuid, other_id uuid,
+        constraint fk_covered foreign key (tenant_id, parent_id) references ${schema}.parent (tenant_id, id),
+        constraint fk_trailing foreign key (tenant_id, other_id) references ${schema}.parent (tenant_id, id),
+        constraint fk_reordered foreign key (parent_id, other_id) references ${schema}.parent (tenant_id, id))`)
+      .execute(admin)
+    await sql.raw(`create index on ${schema}.child (parent_id, tenant_id)`).execute(admin)
+    // Leads with (parent_id, other_id): covers `fk_reordered`, but not `fk_trailing` (tenant_id, other_id).
+    await sql.raw(`create index on ${schema}.child (parent_id, other_id, tenant_id)`).execute(admin)
+
+    assert.deepEqual(await foreignKeysWithoutIndex(admin, schema), [`${schema}.child.fk_trailing`])
+  } finally {
+    await sql.raw(`drop schema ${schema} cascade`).execute(admin)
+  }
 })
 
 test('the tenant policy guard flags a policy with the right name and a different expression', async () => {

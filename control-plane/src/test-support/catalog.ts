@@ -29,3 +29,24 @@ export async function tablesWithoutTenantPolicy(db: Kysely<Database>, schema = '
     order by 1`.execute(db)
   return rows.map((row) => row.table)
 }
+
+// Why: Postgres does not index the referencing side of a foreign key, so deleting or updating a parent row scans the
+// child table, and every `(tenant_id, x_id)` join falls back to a seq scan. Returns `table.constraint` for each
+// composite FK with no valid, non-partial index whose leading columns are the FK columns (in any order). Single-column
+// `tenant_id -> tenants` FKs are out of scope: tenants are never deleted, so nothing scans the child through them.
+export async function foreignKeysWithoutIndex(db: Kysely<Database>, schema = 'public'): Promise<string[]> {
+  const { rows } = await sql<{ fk: string }>`
+    select c.conrelid::regclass::text || '.' || c.conname as fk
+    from pg_constraint c
+    join pg_namespace n on n.oid = c.connamespace
+    where c.contype = 'f' and n.nspname = ${schema} and cardinality(c.conkey) > 1
+      and not exists (
+        select 1 from pg_index i
+        where i.indrelid = c.conrelid and i.indisvalid and i.indpred is null
+          and (select array_agg(u.k order by u.k)
+               from unnest(i.indkey::int2[]) with ordinality as u(k, ord)
+               where u.ord <= cardinality(c.conkey))
+            = (select array_agg(k order by k) from unnest(c.conkey) as k))
+    order by 1`.execute(db)
+  return rows.map((row) => row.fk)
+}
