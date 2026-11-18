@@ -7,6 +7,7 @@ import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 import type { Kysely } from 'kysely'
 import pkg from '../../package.json' with { type: 'json' }
 import type { TokenOwner } from '../auth/tokens.ts'
+import { defaultLogsRoot } from '../config.ts'
 import { toDevRoundsError } from '../convert-error.ts'
 import type { Database } from '../db/schema.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
@@ -32,6 +33,8 @@ export type ServerOptions = {
   sessions?: Sessions
   // Tests pass one on a manual clock.
   pairingLimiter?: PairingLimiter
+  // Where run log segments are written (runs/log-store.ts); `serve` passes the configured one.
+  logsRoot?: string
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -89,9 +92,10 @@ export function buildServer(opts: ServerOptions) {
   const limiter = opts.pairingLimiter ?? new PairingLimiter()
   app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD } })
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  const logsRoot = opts.logsRoot ?? defaultLogsRoot()
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
-  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter })
+  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot })
 
   const webDir = opts.webDir ?? DEFAULT_WEB_DIR
   app.register(async (instance) => {

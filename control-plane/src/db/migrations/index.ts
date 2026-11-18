@@ -4,6 +4,7 @@ import { criteriaPosition } from './0002_criteria_position.ts'
 import { planEventsAppendOnly } from './0003_plan_events_append_only.ts'
 import { machines } from './0004_machines.ts'
 import { runs } from './0005_runs.ts'
+import { logSegments } from './0006_log_segments.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -16,5 +17,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0003_plan_events_append_only': planEventsAppendOnly(options),
     '0004_machines': machines(options),
     '0005_runs': runs,
+    '0006_log_segments': logSegments(options),
   }
 }

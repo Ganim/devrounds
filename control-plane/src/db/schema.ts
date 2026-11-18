@@ -1,6 +1,6 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts, 0004_machines.ts and 0005_runs.ts (0002 and 0003 add no columns). pg returns int8 and numeric
+// Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts and 0006_log_segments.ts (0002 and 0003 add no columns). pg returns int8 and numeric
 // as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
@@ -247,6 +247,18 @@ export interface RunDelaysTable {
   position: number
 }
 
+export interface LogSegmentsTable {
+  id: Generated<string>
+  tenant_id: string
+  run_id: string
+  first_seq: Int8
+  last_seq: Int8
+  records: number
+  bytes: number
+  path: string
+  created_at: Timestamp
+}
+
 export interface Database {
   tenants: TenantsTable
   members: MembersTable
@@ -267,6 +279,7 @@ export interface Database {
   runs: RunsTable
   run_steps: RunStepsTable
   run_delays: RunDelaysTable
+  log_segments: LogSegmentsTable
 }
 
 export type Member = Selectable<MembersTable>

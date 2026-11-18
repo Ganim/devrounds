@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { zstdCompressSync } from 'node:zlib'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { runCli } from '../cli/commands.ts'
@@ -32,11 +33,11 @@ let scratch: string
 before(async () => {
   t = await testDb()
   sessions = new Sessions()
-  app = buildServer({ db: t.db, logger: false, sessions })
-  await app.listen({ port: 0, host: '127.0.0.1' })
-  host = `127.0.0.1:${(app.server.address() as AddressInfo).port}`
   await mkdir(join(REPO_ROOT, '.superpowers', 'tmp'), { recursive: true })
   scratch = await mkdtemp(join(REPO_ROOT, '.superpowers', 'tmp', 'dispatch-'))
+  app = buildServer({ db: t.db, logger: false, sessions, logsRoot: join(scratch, 'logs') })
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  host = `127.0.0.1:${(app.server.address() as AddressInfo).port}`
 })
 
 after(async () => {
@@ -177,10 +178,14 @@ test('executor events drive the run to finished with timeline and resources', as
   const offered = await dispatch()
   assert.equal((await exec.next()).type, 'Offer')
   await running(exec, offered.id)
+  const lines = [1, 2].map((seq) => JSON.stringify({ run: offered.id, seq, timestamp_ms: 0, text: 'ok', level: null }))
+  const zstd_base64 = zstdCompressSync(Buffer.from(`${lines.join('\n')}\n`)).toString('base64')
+  await exec.event({ kind: 'LogSegment', run: offered.id, first_seq: 1, last_seq: 2, records: 2, zstd_base64 })
   await exec.event(finished(offered.id))
 
   const view = await runView(ctx, offered.id)
   assert.equal(view.state, 'finished')
+  assert.equal(view.outcome.logCursor, 2)
   const { queuedAt, offeredAt, admittedAt, startedAt, finishedAt } = view.timeline
   assert.ok(queuedAt && offeredAt && admittedAt && startedAt && finishedAt, JSON.stringify(view.timeline))
   assert.ok(view.durations.totalMs !== null && view.durations.totalMs >= 0)

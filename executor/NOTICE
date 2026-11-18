@@ -102,7 +102,8 @@ devrounds-logs, from crates/logs at e2e4f1cafda94805d6e447331980b83fcbab2e72
   copied) with its unit field renamed to run. LogReader lost its unused unit
   field and storage its unused skip helper, which only query read. Tests
   use expect instead of allowing clippy::unwrap_used; the query-based tests
-  were dropped.
+  were dropped. Added storage::read_segment (one closed segment's lines, for
+  shipping it to the control plane).
 
 Partial copies and derived files (tracked by devlanes-sync.toml)
 -----------------------------------------------------------------

@@ -17,6 +17,7 @@ use devrounds_core::{
     JobSpec, LaunchSpec, StopPolicy,
     gate::{Release, StartSlot},
 };
+use devrounds_logs::LogOptions;
 use devrounds_protocol::{FinishReason, Offer, RunEvent, ServerMessage};
 use devrounds_runner_windows::{ExitReport, WindowsRunner, WindowsUnit};
 use devrounds_store::{RunIdentity, Store, StoredRun};
@@ -43,6 +44,20 @@ pub struct RunLoopDeps {
     /// Each run writes into `<runs_dir>/<run id>`.
     pub runs_dir: PathBuf,
     pub machine_env: BTreeMap<String, String>,
+    /// How each run's output is cut into segments; [`run_log_options`] in
+    /// production.
+    pub log_options: LogOptions,
+}
+
+/// Segments of at most 1 MiB or 30 s, compressed: a closed segment ships as
+/// one `LogSegment` event, well under the 4 MiB frame limit as base64.
+pub fn run_log_options() -> LogOptions {
+    LogOptions {
+        segment_bytes: 1 << 20,
+        segment_age_ms: 30_000,
+        compress: true,
+        ..LogOptions::default()
+    }
 }
 
 /// Runs offered to this machine. Clones share the runs.
@@ -58,6 +73,7 @@ struct Shared {
     connected: watch::Receiver<bool>,
     runs_dir: PathBuf,
     machine_env: Arc<BTreeMap<String, String>>,
+    log_options: LogOptions,
     /// Runs offered and not finished yet, each with its stop flag.
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
     /// Runs with a live process.
@@ -106,6 +122,7 @@ impl RunLoop {
                 connected: deps.connected,
                 runs_dir: deps.runs_dir,
                 machine_env: Arc::new(deps.machine_env),
+                log_options: deps.log_options,
                 active: Mutex::new(HashMap::new()),
                 running: AtomicU32::new(0),
             }),
@@ -387,7 +404,13 @@ async fn follow(
     // Nothing reads the samples yet; the sampler ignores a closed channel.
     let (samples, _) = mpsc::unbounded_channel();
     let sampler = Sampler::spawn(run, Arc::clone(&unit), Some(slot), samples);
-    let tail = OutputTail::spawn(run.to_owned(), output, shared.store.clone());
+    let tail = OutputTail::spawn(
+        run.to_owned(),
+        output,
+        shared.store.clone(),
+        shared.runs_dir.join(run).join("segments"),
+        shared.log_options.clone(),
+    );
 
     let timeout = tokio::time::sleep(Duration::from_secs(job.timeout_s.into()));
     tokio::pin!(timeout);

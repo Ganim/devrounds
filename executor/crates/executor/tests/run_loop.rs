@@ -20,7 +20,7 @@ use devrounds_core::{
 };
 use devrounds_executor::{
     admission::{Admission, AdmissionConfig, AdmissionStep, DEFAULT_MEMORY_NEED},
-    runs::{RunLoop, RunLoopDeps},
+    runs::{RunLoop, RunLoopDeps, run_log_options},
 };
 use devrounds_protocol::{
     ClientMessage, FinishReason, Offer, RunEvent, ServerMessage, StepOutcome, Stop, StopReason,
@@ -103,6 +103,7 @@ async fn harness(config: AdmissionConfig) -> Harness {
         connected: connected_rx,
         runs_dir: home.path().join("runs"),
         machine_env: std::env::vars().collect::<BTreeMap<_, _>>(),
+        log_options: run_log_options(),
     });
     Harness {
         home,
@@ -231,7 +232,10 @@ async fn an_offer_reports_admitted_started_finished_in_seq_order() {
         ));
         let events = until_finished(&h.store, "run-1").await;
 
-        assert_eq!(kinds(&events), ["Admitted", "RunStarted", "RunFinished"]);
+        assert_eq!(
+            kinds(&events),
+            ["Admitted", "RunStarted", "LogSegment", "RunFinished"]
+        );
         let seqs: Vec<u64> = events.iter().map(|(seq, _)| *seq).collect();
         assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
         let RunEvent::RunStarted {
@@ -353,7 +357,10 @@ async fn timeout_stops_the_tree_and_reports_timeout() {
         ));
         let events = until_finished(&h.store, "run-3").await;
 
-        assert_eq!(kinds(&events), ["Admitted", "RunStarted", "RunFinished"]);
+        assert_eq!(
+            kinds(&events),
+            ["Admitted", "RunStarted", "LogSegment", "RunFinished"]
+        );
         let RunEvent::RunFinished {
             reason,
             tail,
@@ -405,6 +412,7 @@ async fn step_markers_become_step_events() {
                 "StepFinished",
                 "StepStarted",
                 "StepFinished",
+                "LogSegment",
                 "RunFinished"
             ]
         );
@@ -500,7 +508,10 @@ async fn a_cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
         ));
         let events = until_finished(&h.store, "run-cmd").await;
 
-        assert_eq!(kinds(&events), ["Admitted", "RunStarted", "RunFinished"]);
+        assert_eq!(
+            kinds(&events),
+            ["Admitted", "RunStarted", "LogSegment", "RunFinished"]
+        );
         let RunEvent::RunFinished {
             reason,
             exit_code,

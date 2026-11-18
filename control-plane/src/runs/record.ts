@@ -115,7 +115,8 @@ const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
  * timestamp. The executor clock may be behind the control plane's, or step back: a time earlier than the latest one
  * already on the run (offered_at, which the control plane stamped, or any later stamp, step or delay) is clamped to
  * it, and clock_skew_ms keeps the largest gap seen, so no duration is ever negative.
- * LogSegment and Orphans are not run record events: Tasks 14 and 15 handle them, and here they change nothing.
+ * LogSegment and Orphans are not run record events and change nothing here: the gateway stores segments
+ * (log-store.ts), and Orphans is Task 15's.
  * `log` gets the one warning a classification that ran out of pattern budget writes.
  */
 export async function applyRunEvent(

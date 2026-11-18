@@ -278,6 +278,9 @@ type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
   delays: { at: string; reason: string; needBytes: number; availableBytes: number | null; position: number }[]
 }
 
+// GET /runs/:id/logs (runs/log-store.ts LogPage, with the cursor as a number).
+type LogPageJson = { lines: { seq: number; text: string }[]; nextCursor: number | null }
+
 const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
 const RUN_WAIT_S = 25
@@ -318,7 +321,7 @@ function runShow(r: RunJson): Result {
   }
   const id = shellArg(r.id)
   const next = failed
-    ? `devrounds run show ${id}`
+    ? `devrounds run logs ${id}`
     : TERMINAL_RUN.includes(r.state)
       ? 'devrounds plan show'
       : `devrounds run show ${id} --wait`
@@ -791,6 +794,33 @@ export const COMMANDS: Spec[] = [
     },
   },
   {
+    path: ['run', 'logs'],
+    usage: 'run logs <id> [--cursor <n>]   the run output, 16384 bytes a page; --cursor is a line seq',
+    args: 1,
+    // Not `pages`: the cursor is the seq of a log line, which the server pages by, not a body line index.
+    options: { cursor: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const id = arg(inv, 0, '<id>')
+      const cursor = text(inv, 'cursor')
+      if (cursor !== undefined && !/^\d{1,19}$/.test(cursor)) {
+        fail('DR101', { path: '--cursor', reason: 'must be a line seq (an integer >= 0)' })
+      }
+      const page = await api.get<LogPageJson>(path('runs', id, 'logs'), { cursor })
+      const lines = page.lines.map((line) => line.text)
+      // The server counts raw text; printed lines are escaped (oneLine) and may be longer, so the budget is checked
+      // again here and a cut continues at the first line not printed.
+      const end = fitBody(lines, { budget: BODY_BUDGET, cursor: 0 })
+      const nextCursor = end < lines.length ? page.lines[end].seq : page.nextCursor
+      const body = lines.slice(0, end)
+      if (body.length === 0) body.push(cursor === undefined ? 'no output yet' : 'no output after this cursor')
+      if (nextCursor !== null) {
+        body.push(`truncated; more: devrounds run logs ${shellArg(id)} --cursor ${nextCursor}`)
+      }
+      return { failures: [], body, next: `devrounds run show ${shellArg(id)}` }
+    },
+  },
+  {
     path: ['run', 'stop'],
     usage: 'run stop <id>   the executor stops the process tree; the run ends as stopped',
     args: 1,
@@ -848,7 +878,8 @@ export function parseCommand(argv: string[]): { spec: Spec; inv: Invocation } {
     fail('DR101', { path: spec.path.join(' '), reason: `unexpected argument "${parsed.positionals[spec.args]}"` })
   }
   const inv: Invocation = { args: parsed.positionals, values: parsed.values as Values, cursor: 0 }
-  inv.cursor = integer(inv, 'cursor', 0) ?? 0
+  // Only paged commands read --cursor as a body line index; `run logs` reads its own.
+  if (spec.pages) inv.cursor = integer(inv, 'cursor', 0) ?? 0
   return { spec, inv }
 }
 

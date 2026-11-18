@@ -83,6 +83,8 @@ struct Inner {
     requests: mpsc::Sender<Request>,
     /// The highest seq appended by this process, for the connection to wake on.
     appended: watch::Sender<u64>,
+    /// The highest seq acked in this process, for local copies that wait on it.
+    acked: watch::Sender<u64>,
 }
 
 impl Store {
@@ -121,6 +123,7 @@ impl Store {
                 path: path.to_path_buf(),
                 requests,
                 appended: watch::Sender::new(0),
+                acked: watch::Sender::new(0),
             }),
         })
     }
@@ -214,13 +217,27 @@ impl Store {
         .await
     }
 
+    /// Changes whenever an ack moves past the highest seq acked so far in this
+    /// process; the value is that seq.
+    pub fn acked(&self) -> watch::Receiver<u64> {
+        self.inner.acked.subscribe()
+    }
+
     /// Drops every event up to and including `seq`: the control plane has applied them.
     pub async fn ack_through(&self, seq: u64) -> Result<(), DrError> {
         self.call(move |connection| {
             connection.execute("delete from outbox where seq <= ?1", params![seq])?;
             Ok(())
         })
-        .await
+        .await?;
+        self.inner.acked.send_if_modified(|highest| {
+            let higher = seq > *highest;
+            if higher {
+                *highest = seq;
+            }
+            higher
+        });
+        Ok(())
     }
 
     /// The frames still kept after `seq`, in seq order.

@@ -28,7 +28,8 @@ pub use framing::{Frame, Framer, MAX_LINE_BYTES, PARTIAL_FLUSH_MS, SGR_RESET};
 pub use level::extract_level;
 use serde::{Deserialize, Serialize};
 pub use storage::{
-    IndexEntry, LogOptions, LogReader, SegmentMetadata, UnitLog, line_records, strip_sgr,
+    IndexEntry, LogOptions, LogReader, SegmentMetadata, UnitLog, line_records, read_segment,
+    strip_sgr,
 };
 
 /// One stored log line. Moved here from devlanes-proto, which DevRounds does

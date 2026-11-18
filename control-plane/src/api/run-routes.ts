@@ -8,6 +8,7 @@ import type { ControlPlaneMessage } from '../executor/protocol.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
 import { prepareStop, recordDispatch, waitForRun } from '../runs/dispatch.ts'
+import { readRunLog } from '../runs/log-store.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -15,6 +16,8 @@ const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Headers = Type.Object({ 'idempotency-key': Type.Optional(Key) })
 const JobTypeParams = Type.Object({ key: Key, jobType: Key })
 const RunParams = Type.Object({ key: Key, id: Key })
+// The agent output budget (cli/output.ts BODY_BUDGET): one page is one CLI screen.
+const LOG_PAGE_BYTES = 16384
 
 // Job types and runs of one project. Messages to the executor go out only after mutateIdempotent committed, and only
 // when the mutation ran: a replayed Idempotency-Key offers or stops nothing again.
@@ -85,6 +88,27 @@ export const runRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessio
         projectKey: request.params.key,
         signal: gone.signal,
       })
+    },
+  )
+
+  // One page of the run's output; the CLI shows it as `devrounds run logs <id> [--cursor <n>]`.
+  app.get(
+    '/runs/:id/logs',
+    {
+      schema: {
+        params: RunParams,
+        querystring: Type.Object({ cursor: Type.Optional(Type.String({ pattern: '^[0-9]{1,19}$' })) }),
+      },
+    },
+    async (request) => {
+      const { cursor } = request.query
+      const page = await readRunLog(memberCtx(db, request), request.params.id, {
+        cursor: cursor === undefined ? undefined : BigInt(cursor),
+        maxBytes: LOG_PAGE_BYTES,
+        projectKey: request.params.key,
+      })
+      // Seqs fit a JS number: the protocol refuses any past 2^53 (executor/protocol.ts).
+      return { lines: page.lines, nextCursor: page.nextCursor === null ? null : Number(page.nextCursor) }
     },
   )
 

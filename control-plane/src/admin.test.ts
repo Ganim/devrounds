@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { bootstrap, initConfig } from './admin.ts'
 import { resolveToken } from './auth/tokens.ts'
-import { loadConfig, loadServerConfig } from './config.ts'
+import { defaultLogsRoot, loadConfig, loadServerConfig } from './config.ts'
 import { DevRoundsError } from './errors/error.ts'
 import { TEST_APP_ROLE, testDb } from './test-support/db.ts'
 
@@ -37,12 +37,22 @@ test('serve config loads without an admin URL and never returns owner credential
   t.after(() => rm(dir, { recursive: true, force: true }))
   const path = join(dir, 'server.json')
   await writeFile(path, JSON.stringify({ databaseUrl: 'postgres://app@127.0.0.1/devrounds', port: 4992 }))
-  assert.deepEqual(await loadServerConfig({}, path), { databaseUrl: 'postgres://app@127.0.0.1/devrounds', port: 4992 })
+  assert.deepEqual(await loadServerConfig({}, path), {
+    databaseUrl: 'postgres://app@127.0.0.1/devrounds',
+    port: 4992,
+    logsRoot: defaultLogsRoot(),
+    logRetentionDays: 14,
+  })
   await assert.rejects(loadConfig({}, path), (err) => err instanceof DevRoundsError && err.code === 'DR502')
 
   const full = join(dir, 'full.json')
   await initConfig(full, { force: false })
-  assert.deepEqual(Object.keys(await loadServerConfig({}, full)).sort(), ['databaseUrl', 'port'])
+  assert.deepEqual(Object.keys(await loadServerConfig({}, full)).sort(), [
+    'databaseUrl',
+    'logRetentionDays',
+    'logsRoot',
+    'port',
+  ])
 })
 
 // The owner connection skips RLS; bootstrap must still see only its own tenant when the service checks for the key.

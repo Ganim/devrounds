@@ -1,20 +1,27 @@
 //! Follows one run's output files while it runs: frames each stream into
-//! lines, reports step markers as step events and keeps the last lines as the
-//! run's tail. Task 14 ships the output itself; this only reads it.
+//! lines, reports step markers as step events, keeps the last lines as the
+//! run's tail and cuts the output into log segments (`<run dir>/segments`)
+//! that ship as `LogSegment` events through the store outbox. A segment's
+//! local files go once its event is acked; the raw output files go once the
+//! last segment of the run is.
 
 use std::{
     collections::VecDeque,
     fs::File,
     io::{self, Read, Seek, SeekFrom},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::Engine;
 use devrounds_core::RunOutput;
-use devrounds_logs::Framer;
+use devrounds_logs::{Framer, LogOptions, SegmentMetadata, UnitLog, read_segment};
 use devrounds_protocol::RunEvent;
 use devrounds_store::Store;
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    task::JoinHandle,
+};
 
 use crate::steps::{StepChange, Steps, parse_step_marker};
 
@@ -35,25 +42,41 @@ pub struct OutputTail {
 }
 
 impl OutputTail {
-    pub fn spawn(run: String, output: RunOutput, store: Store) -> Self {
+    /// `segments` is the directory the run's log segments are cut into,
+    /// with `options`.
+    pub fn spawn(
+        run: String,
+        output: RunOutput,
+        store: Store,
+        segments: PathBuf,
+        options: LogOptions,
+    ) -> Self {
         let (stop, stopped) = oneshot::channel();
-        let mut streams = vec![Stream::new(output.stdout.clone())];
+        let mut raw = vec![output.stdout.clone()];
+        let mut streams = vec![Stream::new("stdout", output.stdout.clone())];
         if output.stderr != output.stdout {
-            streams.push(Stream::new(output.stderr));
+            raw.push(output.stderr.clone());
+            streams.push(Stream::new("stderr", output.stderr));
         }
+        let (reap, reaps) = mpsc::unbounded_channel();
+        tokio::spawn(reaper(store.acked(), reaps, segments.clone(), raw));
         let state = State {
             streams,
             tail: Tail::default(),
             steps: Steps::default(),
+            log: RunLog::Pending {
+                dir: segments,
+                options,
+            },
             #[cfg(test)]
             largest_read: 0,
         };
-        let task = tokio::spawn(follow(run, state, store, stopped));
+        let task = tokio::spawn(follow(run, state, store, reap, stopped));
         Self { stop, task }
     }
 
     /// Call once the run has exited: reads to the end of both files, reports
-    /// the last step changes and returns the tail.
+    /// the last step changes, ships the last segment and returns the tail.
     pub async fn finish(self) -> Vec<String> {
         let _ = self.stop.send(());
         self.task.await.unwrap_or_else(|error| {
@@ -67,31 +90,37 @@ async fn follow(
     run: String,
     mut state: State,
     store: Store,
+    reap: mpsc::UnboundedSender<Reap>,
     mut stopped: oneshot::Receiver<()>,
 ) -> Vec<String> {
     let mut poll = tokio::time::interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last = false;
     loop {
-        // A dropped sender also means the run is over.
-        let last = tokio::select! {
-            biased;
-            _ = &mut stopped => true,
-            _ = poll.tick() => false,
-        };
+        // A dropped sender also means the run is over. Once it is, the final
+        // drain goes on without waiting, a few segments per round.
+        if !last {
+            last = tokio::select! {
+                biased;
+                _ = &mut stopped => true,
+                _ = poll.tick() => false,
+            };
+        }
+        let name = run.clone();
         let read = tokio::task::spawn_blocking(move || {
-            let changes = state.poll(last);
-            (state, changes)
+            let polled = state.poll(&name, last);
+            (state, polled)
         })
         .await;
-        let changes;
-        (state, changes) = match read {
+        let polled;
+        (state, polled) = match read {
             Ok(read) => read,
             Err(error) => {
                 tracing::warn!(%run, %error, "output read failed; the run reports no tail");
                 return Vec::new();
             }
         };
-        for change in changes {
+        for change in polled.changes {
             let event = match change {
                 StepChange::Started { step, name } => RunEvent::StepStarted {
                     run: run.clone(),
@@ -108,13 +137,90 @@ async fn follow(
                 tracing::warn!(%run, %error, "step event not stored");
             }
         }
-        if last {
+        for Shipment { event, files } in polled.segments {
+            match store.append_event(event).await {
+                Ok(seq) => {
+                    let _ = reap.send(Reap::Shipped { seq, files });
+                }
+                // Its files stay, as do the raw files: nothing else holds that output.
+                Err(error) => tracing::error!(%run, %error, "log segment not stored"),
+            }
+        }
+        if polled.done {
+            if polled.sealed {
+                let _ = reap.send(Reap::Sealed);
+            }
             return state.tail.lines.into();
         }
     }
 }
 
+/// What the reaper hears from the output task.
+enum Reap {
+    /// A segment is in the outbox as event `seq`; `files` go once it is acked.
+    Shipped { seq: u64, files: Vec<PathBuf> },
+    /// Every segment of the run was shipped.
+    Sealed,
+}
+
+/// Deletes each shipped segment's files once its event is acked, then the
+/// segment directory and the raw output files once the run is sealed and its
+/// last segment acked. Ends early, keeping the files, when the output task
+/// ends without sealing (the log failed) or the store goes away.
+async fn reaper(
+    mut acked: watch::Receiver<u64>,
+    mut reaps: mpsc::UnboundedReceiver<Reap>,
+    segments: PathBuf,
+    raw: Vec<PathBuf>,
+) {
+    let mut pending = VecDeque::<(u64, Vec<PathBuf>)>::new();
+    let mut sealed = false;
+    loop {
+        let through = *acked.borrow_and_update();
+        while pending.front().is_some_and(|(seq, _)| *seq <= through) {
+            if let Some((_, files)) = pending.pop_front() {
+                for file in files {
+                    remove(&file).await;
+                }
+            }
+        }
+        if sealed && pending.is_empty() {
+            for file in raw {
+                remove(&file).await;
+            }
+            if let Err(error) = tokio::fs::remove_dir_all(&segments).await
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %segments.display(), %error, "segment directory not removed");
+            }
+            return;
+        }
+        tokio::select! {
+            reap = reaps.recv(), if !sealed => match reap {
+                Some(Reap::Shipped { seq, files }) => pending.push_back((seq, files)),
+                Some(Reap::Sealed) => sealed = true,
+                None => return,
+            },
+            changed = acked.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn remove(file: &Path) {
+    if let Err(error) = tokio::fs::remove_file(file).await
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %file.display(), %error, "acked log file not removed");
+    }
+}
+
 struct Stream {
+    /// The `UnitLog` stream id: `stdout` or `stderr`.
+    name: &'static str,
     path: PathBuf,
     offset: u64,
     framer: Framer,
@@ -123,8 +229,9 @@ struct Stream {
 }
 
 impl Stream {
-    fn new(path: PathBuf) -> Self {
+    fn new(name: &'static str, path: PathBuf) -> Self {
         Self {
+            name,
             path,
             offset: 0,
             framer: Framer::default(),
@@ -148,10 +255,124 @@ impl Stream {
     }
 }
 
+/// A closed segment as its `LogSegment` event, and the files it leaves on disk.
+struct Shipment {
+    event: RunEvent,
+    files: Vec<PathBuf>,
+}
+
+/// What one poll found.
+#[derive(Default)]
+struct Polled {
+    changes: Vec<StepChange>,
+    segments: Vec<Shipment>,
+    /// The final drain is complete: nothing is left to read.
+    done: bool,
+    /// With `done`: the last segment was sealed and every segment handed out.
+    sealed: bool,
+}
+
+/// The run's segmented log. Opened on the first poll (it does disk I/O), and
+/// off for good after a failure: the run goes on, its raw files stay.
+enum RunLog {
+    Pending {
+        dir: PathBuf,
+        options: LogOptions,
+    },
+    Open {
+        log: UnitLog,
+        /// `last_seq` of the last segment handed out.
+        shipped_through: u64,
+    },
+    Off,
+}
+
+impl RunLog {
+    fn open(&mut self, run: &str) {
+        let Self::Pending { dir, options } = self else {
+            return;
+        };
+        *self = match UnitLog::open(&*dir, run, options.clone()) {
+            Ok(log) => Self::Open {
+                log,
+                shipped_through: 0,
+            },
+            Err(error) => {
+                tracing::warn!(%run, %error, "run log not opened; its output does not ship");
+                Self::Off
+            }
+        };
+    }
+
+    /// Applies `work` to the open log; a failure turns the log off.
+    fn with(&mut self, run: &str, work: impl FnOnce(&mut UnitLog) -> devrounds_logs::Result<()>) {
+        if let Self::Open { log, .. } = self
+            && let Err(error) = work(log)
+        {
+            tracing::warn!(%run, %error, "run log failed; the rest of its output does not ship");
+            *self = Self::Off;
+        }
+    }
+
+    /// Closed segments not handed out yet, as shipments.
+    fn closed(&mut self, run: &str) -> Vec<Shipment> {
+        let Self::Open {
+            log,
+            shipped_through,
+        } = self
+        else {
+            return Vec::new();
+        };
+        let dir = log.path().to_owned();
+        let mut shipments = Vec::new();
+        for meta in log.reader().segments() {
+            if !meta.closed || meta.records == 0 || meta.first_seq <= *shipped_through {
+                continue;
+            }
+            *shipped_through = meta.last_seq;
+            match shipment(&dir, meta, run) {
+                Ok(shipment) => shipments.push(shipment),
+                // Its lines are lost to the control plane; the file stays for inspection.
+                Err(error) => {
+                    tracing::warn!(%run, first_seq = meta.first_seq, %error, "log segment not shipped");
+                }
+            }
+        }
+        shipments
+    }
+}
+
+/// The segment as zstd-compressed JSON lines, one `LogLine` per record,
+/// base64 in the event. One segment at a time, so what this holds is bounded
+/// by the segment size.
+fn shipment(dir: &Path, meta: &SegmentMetadata, run: &str) -> Result<Shipment, String> {
+    let lines = read_segment(meta, run).map_err(|error| error.to_string())?;
+    let mut json = Vec::with_capacity(usize::try_from(meta.uncompressed_bytes).unwrap_or(0));
+    for line in &lines {
+        serde_json::to_writer(&mut json, line).map_err(|error| error.to_string())?;
+        json.push(b'\n');
+    }
+    let compressed = zstd::stream::encode_all(json.as_slice(), 3).map_err(|e| e.to_string())?;
+    let event = RunEvent::LogSegment {
+        run: run.to_owned(),
+        first_seq: meta.first_seq,
+        last_seq: meta.last_seq,
+        records: u32::try_from(lines.len()).map_err(|error| error.to_string())?,
+        zstd_base64: base64::engine::general_purpose::STANDARD.encode(compressed),
+    };
+    // The metadata name follows devrounds-logs' `<first_seq:020>.meta.json`.
+    let files = vec![
+        meta.path.clone(),
+        dir.join(format!("{:020}.meta.json", meta.first_seq)),
+    ];
+    Ok(Shipment { event, files })
+}
+
 struct State {
     streams: Vec<Stream>,
     tail: Tail,
     steps: Steps,
+    log: RunLog,
     /// The largest chunk one read returned: with lines handed on per chunk,
     /// it bounds what a poll holds besides the tail.
     #[cfg(test)]
@@ -159,20 +380,23 @@ struct State {
 }
 
 impl State {
-    /// One read of every stream; `last` reads to the end and flushes any
-    /// unterminated line.
+    /// One read of every stream. `last` reads on to the end, flushes any
+    /// unterminated line and seals the log; it returns early (`done` false)
+    /// whenever segments closed, so the caller ships them before reading on.
     ///
-    /// Each chunk's lines go straight to the step parser and the tail, so a
-    /// backlog left by a fast writer costs one chunk plus the tail at any time,
-    /// never the whole backlog.
-    fn poll(&mut self, last: bool) -> Vec<StepChange> {
+    /// Each chunk's lines go straight to the step parser, the tail and the
+    /// log, so a backlog left by a fast writer costs one chunk, the tail and
+    /// the segments of that chunk at any time, never the whole backlog.
+    fn poll(&mut self, run: &str, last: bool) -> Polled {
         let Self {
             streams,
             tail,
             steps,
+            log,
             #[cfg(test)]
             largest_read,
         } = self;
+        log.open(run);
         let mut changes = Vec::new();
         let mut take = |line: String| {
             if let Some(change) = parse_step_marker(&line).and_then(|marker| steps.apply(marker)) {
@@ -202,15 +426,38 @@ impl State {
                     take(frame.text);
                     Ok::<(), ()>(())
                 });
+                if !bytes.is_empty() {
+                    log.with(run, |log| log.ingest_stream(stream.name, &bytes, now));
+                }
                 if !more {
                     break;
+                }
+                let segments = log.closed(run);
+                if !segments.is_empty() {
+                    return Polled {
+                        changes,
+                        segments,
+                        ..Polled::default()
+                    };
                 }
             }
             if let Some(frame) = stream.framer.flush_partial(now, last) {
                 take(frame.text);
             }
         }
-        changes
+        if last {
+            log.with(run, |log| log.finish(now));
+        } else {
+            // Exposes a waiting prompt as a partial line and rotates by age.
+            log.with(run, |log| log.flush_partial(now, false));
+        }
+        let segments = log.closed(run);
+        Polled {
+            changes,
+            segments,
+            done: last,
+            sealed: last && matches!(log, RunLog::Open { .. }),
+        }
     }
 }
 
@@ -252,7 +499,7 @@ fn unix_ms() -> u64 {
 mod tests {
     use std::io::Write;
 
-    use super::{POLL_BYTES, State, Stream, TAIL_BYTES, TAIL_LINES, Tail};
+    use super::{POLL_BYTES, RunLog, State, Stream, TAIL_BYTES, TAIL_LINES, Tail};
     use crate::steps::{StepChange, Steps};
 
     #[test]
@@ -279,12 +526,15 @@ mod tests {
         drop(file);
 
         let mut state = State {
-            streams: vec![Stream::new(path.clone())],
+            streams: vec![Stream::new("stdout", path.clone())],
             tail: Tail::default(),
             steps: Steps::default(),
+            log: RunLog::Off,
             largest_read: 0,
         };
-        let changes = state.poll(true);
+        let polled = state.poll("run", true);
+        assert!(polled.done);
+        let changes = polled.changes;
 
         assert_eq!(changes.len(), 2, "{changes:?}");
         assert!(matches!(changes[1], StepChange::Finished { step: 0, .. }));

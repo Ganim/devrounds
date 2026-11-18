@@ -11,6 +11,7 @@ import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
 import { runEvents } from '../runs/dispatch.ts'
+import { type LogCtx, storeSegment } from '../runs/log-store.ts'
 import { applyRunEvent } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import {
@@ -83,7 +84,7 @@ export class Sessions {
   }
 }
 
-type GatewayOptions = { db: Kysely<Database>; sessions: Sessions; limiter: PairingLimiter }
+type GatewayOptions = { db: Kysely<Database>; sessions: Sessions; limiter: PairingLimiter; logsRoot: string }
 
 // Moves machines.last_seq to `seq`, only while it is below: the row lock and condition keep a replaced session still
 // draining frames from applying a seq the newer one already did. False when the seq was applied already.
@@ -113,12 +114,18 @@ async function skipEvent(ctx: TenantCtx, rejected: Rejected, log: FastifyBaseLog
  * code) rolls back and is skipped (skipEvent); any other failure throws and closes the session 1011, so the executor
  * resends it later. Unknown event kinds advance last_seq and change nothing else.
  */
-async function applyEvent(ctx: TenantCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
+async function applyEvent(ctx: LogCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
   try {
     const applied = await withTenant(ctx.db, ctx.tenantId, async (trx) => {
-      if (!(await advanceLastSeq(trx, machineId, message.seq)) || message.event.kind === 'Unknown') return undefined
-      await applyRunEvent({ ...ctx, trx }, machineId, message.event, new Date(message.at), log)
-      return 'run' in message.event ? message.event.run : undefined
+      const { event } = message
+      if (!(await advanceLastSeq(trx, machineId, message.seq)) || event.kind === 'Unknown') return undefined
+      // A segment changes no run state, so nobody waiting on the run is woken for it.
+      if (event.kind === 'LogSegment') {
+        await storeSegment({ ...ctx, trx }, event.run, event, { machineId })
+        return undefined
+      }
+      await applyRunEvent({ ...ctx, trx }, machineId, event, new Date(message.at), log)
+      return 'run' in event ? event.run : undefined
     })
     // After the commit, so a waiting `GET /runs/:id?wait` reads the new state.
     if (applied !== undefined) runEvents.emit('changed', applied)
@@ -171,7 +178,7 @@ function serveSession(
 
   const handle = async (text: string) => {
     if (closed || !machine) return
-    const ctx = { db, tenantId: machine.tenantId }
+    const ctx = { db, tenantId: machine.tenantId, logsRoot: opts.logsRoot }
     let message: ReturnType<typeof parseExecutorMessage>
     try {
       message = parseExecutorMessage(text)
@@ -217,7 +224,8 @@ function serveSession(
       const { machineId } = machine
       await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log))
     }
-    // Log chunks reach watchers from Task 14 on; unknown types are ignored by design.
+    // LogChunk is live output for watchers, and stage 1 has none, so it is dropped; the durable copy arrives as
+    // LogSegment events. Unknown types are ignored by design.
   }
 
   // Ack is cumulative, so it always names tracker.lastSeq, the last applied seq, never the incoming one: acking an

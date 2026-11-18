@@ -12,7 +12,7 @@ use devrounds_executor::{
     admission::Admission,
     config::{self, HomeLock, STORE_FILE},
     connection::{Connection, Handler},
-    runs::{RunLoop, RunLoopDeps},
+    runs::{RunLoop, RunLoopDeps, run_log_options},
 };
 use devrounds_metrics_windows::WindowsPressure;
 use devrounds_protocol::{MachineReport, ServerMessage};
@@ -46,6 +46,7 @@ pub async fn serve() -> Result<(), DrError> {
         connected: connection.connected(),
         runs_dir: home.join("runs"),
         machine_env,
+        log_options: run_log_options(),
     });
     let boot_id = tokio::task::spawn_blocking(proc::boot_id)
         .await

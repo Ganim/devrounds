@@ -837,6 +837,17 @@ pub(crate) fn read_record(
     )))
 }
 
+/// Every record of the closed segment `meta`, oldest first: what the executor
+/// ships of it. One segment is bounded by `segment_bytes`, so this is too.
+pub fn read_segment(meta: &SegmentMetadata, run: &str) -> Result<Vec<LogLine>> {
+    let mut reader = open_reader(&meta.path, meta.compressed)?;
+    let mut lines = Vec::with_capacity(usize::try_from(meta.records).unwrap_or(0));
+    while let Some((line, _)) = read_record(reader.as_mut(), run, false)? {
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
 /// How many records [`UnitLog::append_line`] writes for `line`: one, or more
 /// when it is longer than [`crate::MAX_LINE_BYTES`].
 pub fn line_records(line: &str) -> u64 {

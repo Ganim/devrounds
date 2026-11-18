@@ -4,9 +4,22 @@ import { join } from 'node:path'
 import { fail } from './errors/error.ts'
 
 // appPassword is the devrounds_app password written by `devrounds-admin init`; migrations set it on the role.
-export type Config = { databaseUrl: string; adminDatabaseUrl: string; port: number; appPassword?: string }
+// logsRoot holds the run log segments (runs/log-store.ts); they are pruned logRetentionDays after they arrive.
+export type Config = {
+  databaseUrl: string
+  adminDatabaseUrl: string
+  port: number
+  logsRoot: string
+  logRetentionDays: number
+  appPassword?: string
+}
 
 const DEFAULT_PORT = 4992
+const DEFAULT_LOG_RETENTION_DAYS = 14
+
+export function defaultLogsRoot(): string {
+  return join(homedir(), '.devrounds', 'logs')
+}
 
 export function configPath(): string {
   return join(homedir(), '.devrounds', 'server.json')
@@ -28,14 +41,22 @@ async function readConfigFile(path: string): Promise<Partial<Config>> {
   }
 }
 
-export type ServerConfig = Pick<Config, 'databaseUrl' | 'port'>
+export type ServerConfig = Pick<Config, 'databaseUrl' | 'port' | 'logsRoot' | 'logRetentionDays'>
 
 function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConfig {
   const databaseUrl = env.DEVROUNDS_DATABASE_URL ?? file.databaseUrl
   const port = Number(env.DEVROUNDS_PORT ?? file.port ?? DEFAULT_PORT)
+  const logsRoot = env.DEVROUNDS_LOGS_ROOT ?? file.logsRoot ?? defaultLogsRoot()
+  const logRetentionDays = Number(
+    env.DEVROUNDS_LOG_RETENTION_DAYS ?? file.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS,
+  )
   if (typeof databaseUrl !== 'string' || databaseUrl === '') fail('DR502', { reason: 'databaseUrl is not set' })
   if (!Number.isInteger(port) || port < 1 || port > 65535) fail('DR502', { reason: 'port must be 1-65535' })
-  return { databaseUrl, port }
+  if (typeof logsRoot !== 'string' || logsRoot === '') fail('DR502', { reason: 'logsRoot must be a directory path' })
+  if (!Number.isFinite(logRetentionDays) || logRetentionDays <= 0) {
+    fail('DR502', { reason: 'logRetentionDays must be a number of days above 0' })
+  }
+  return { databaseUrl, port, logsRoot, logRetentionDays }
 }
 
 // What `serve` loads: the server never holds owner credentials, so the admin URL and app password are neither

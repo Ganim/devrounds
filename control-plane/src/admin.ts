@@ -5,7 +5,7 @@ import { dirname } from 'node:path'
 import { parseArgs } from 'node:util'
 import { type Kysely, sql } from 'kysely'
 import { issueToken, issueTokenIn, revokeToken } from './auth/tokens.ts'
-import { type Config, configPath, loadConfig } from './config.ts'
+import { type Config, configPath, defaultLogsRoot, loadConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
 import { migrateToLatest } from './db/migrate.ts'
@@ -41,6 +41,8 @@ export async function initConfig(path: string, opts: { force: boolean }): Promis
     databaseUrl: `postgres://${APP_ROLE}:${appPassword}@127.0.0.1:15433/devrounds`,
     adminDatabaseUrl: 'postgres://postgres:postgres@127.0.0.1:15433/devrounds',
     port: 4992,
+    logsRoot: defaultLogsRoot(),
+    logRetentionDays: 14,
     appPassword,
   }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })

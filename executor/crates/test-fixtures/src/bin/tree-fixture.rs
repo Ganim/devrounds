@@ -5,7 +5,7 @@
 //! tree-fixture [--children N] [--depth D] [--run-ms MS] [--linger-ms MS]
 //!              [--print N] [--steps NAME,...] [--print-env] [--exit CODE]
 //!              [--alloc-mb MB [--touch] [--alloc-hold-ms MS]]
-//!              [--ctrl-c ignore|bye] [--ready] [--breakaway]
+//!              [--ctrl-c ignore|bye] [--ready] [--breakaway] [--raw-hex HEX]
 //! ```
 //!
 //! - `--children N --depth D`: every process above depth `D` starts `N`
@@ -36,6 +36,8 @@
 //! - `--breakaway`: the leader starts a child with `CREATE_BREAKAWAY_FROM_JOB`
 //!   and prints `breakaway: denied` when Windows refuses it,
 //!   `breakaway: allowed` when it starts.
+//! - `--raw-hex HEX`: the leader writes these bytes to stdout last, as they
+//!   are: no newline is added, and they need not be UTF-8.
 //!
 //! Exits 2 on an unknown or malformed argument.
 
@@ -85,6 +87,7 @@ struct Args {
     ctrl_c: Option<CtrlC>,
     ready: bool,
     breakaway: bool,
+    raw: Vec<u8>,
     /// Set on the children this program starts.
     child: bool,
 }
@@ -94,6 +97,23 @@ fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
     value
         .parse()
         .map_err(|_| format!("{flag}: bad number {value:?}"))
+}
+
+/// Parses `value`, pairs of hex digits, for `flag`.
+fn hex(flag: &str, value: &str) -> Result<Vec<u8>, String> {
+    let bad = || format!("{flag}: bad hex {value:?}");
+    if !value.len().is_multiple_of(2) {
+        return Err(bad());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|at| {
+            value
+                .get(at..at + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or_else(bad)
+        })
+        .collect()
 }
 
 /// Parses `args`; `Err` names the offending argument.
@@ -113,6 +133,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         ctrl_c: None,
         ready: false,
         breakaway: false,
+        raw: Vec::new(),
         child: false,
     };
     let mut args = args.into_iter();
@@ -147,6 +168,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             }
             "--ready" => parsed.ready = true,
             "--breakaway" => parsed.breakaway = true,
+            "--raw-hex" => parsed.raw = hex(&flag, &value()?)?,
             "--child" => parsed.child = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -273,6 +295,7 @@ fn leader_output(args: &Args) -> io::Result<()> {
     if args.breakaway {
         writeln!(out, "breakaway: {}", try_breakaway())?;
     }
+    out.write_all(&args.raw)?;
     out.flush()
 }
 
