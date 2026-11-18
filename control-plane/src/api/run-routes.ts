@@ -70,18 +70,35 @@ export const runRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessio
 
   app.get(
     '/runs/:id',
-    { schema: { params: RunParams, querystring: Type.Object({ wait: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })) }) } },
-    (request) => waitForRun(memberCtx(db, request), request.params.id, request.query.wait ?? 0),
+    {
+      schema: {
+        params: RunParams,
+        querystring: Type.Object({ wait: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })) }),
+      },
+    },
+    (request, reply) => {
+      // The response closing before it was sent means the client went away: end the wait and drop its listener.
+      const gone = new AbortController()
+      if (request.raw.socket.destroyed) gone.abort()
+      else reply.raw.once('close', () => gone.abort())
+      return waitForRun(memberCtx(db, request), request.params.id, request.query.wait ?? 0, {
+        projectKey: request.params.key,
+        signal: gone.signal,
+      })
+    },
   )
 
   app.post('/runs/:id/stop', { schema: { params: RunParams, headers: Headers } }, async (request, reply) => {
-    let target: string | undefined
+    let target: { machineId: string; machine: string } | undefined
     const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
-      const { view, machineId } = await prepareStop(ctx, sessions, request.params.id)
-      target = machineId
+      const { view, machineId } = await prepareStop(ctx, sessions, request.params.id, request.params.key)
+      target = { machineId, machine: view.machine }
       return view
     })
-    if (target) sessions.send(target, { type: 'Stop', run: request.params.id, reason: 'cancel' })
+    // Same answer as stopRun: a session lost since the check is DR350, not a stop that silently went nowhere.
+    if (target && !sessions.send(target.machineId, { type: 'Stop', run: request.params.id, reason: 'cancel' })) {
+      fail('DR350', { machine: target.machine })
+    }
     return answer
   })
 }

@@ -268,7 +268,7 @@ test('steps and delays are recorded with the run', async () => {
     0,
   )
   await event(
-    { kind: 'Delayed', run: created.id, reason: 'concurrency', position: 1, need: 512 * MIB, available: 0 },
+    { kind: 'Delayed', run: created.id, reason: 'concurrency', position: 1, need: 512 * MIB, available: null },
     100,
   )
   await event({ kind: 'Admitted', run: created.id }, 200)
@@ -280,7 +280,7 @@ test('steps and delays are recorded with the run', async () => {
   const view = await runView(ctx, created.id)
   assert.deepEqual(view.delays, [
     { at: later(at, 0), reason: 'memory', needBytes: 512 * MIB, availableBytes: 100 * MIB, position: 2 },
-    { at: later(at, 100), reason: 'concurrency', needBytes: 512 * MIB, availableBytes: 0, position: 1 },
+    { at: later(at, 100), reason: 'concurrency', needBytes: 512 * MIB, availableBytes: null, position: 1 },
   ])
   assert.deepEqual(view.steps, [
     { step: 1, name: 'build', startedAt: later(at, 400), finishedAt: later(at, 500), outcome: 'finished' },

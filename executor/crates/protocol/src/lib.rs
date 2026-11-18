@@ -118,8 +118,8 @@ pub enum RunEvent {
         position: u32,
         /// Bytes.
         need: u64,
-        /// Bytes.
-        available: u64,
+        /// Bytes; `None` before the first memory reading.
+        available: Option<u64>,
     },
     RunStarted {
         run: String,

@@ -476,3 +476,46 @@ async fn missing_program_reports_spawn_failed_with_a_summary() {
     .await
     .expect("bounded");
 }
+
+/// A job whose program is a `cmd` wrapper, as `pnpm.cmd` is: it runs hidden
+/// and gets every argument as given, spaces and `&` included.
+#[tokio::test]
+async fn a_cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
+    tokio::time::timeout(LIMIT, async {
+        let h = harness(AdmissionConfig::default()).await;
+        let script = h.home.path().join("echo args.cmd");
+        // One bracketed line per argument as `%*` passed it; `%%~a` drops the
+        // quotes the runner's escaping added.
+        std::fs::write(
+            &script,
+            "@chcp 65001 >nul\r\n@echo off\r\nfor %%a in (%*) do echo [%%~a]\r\n",
+        )
+        .expect("write the wrapper");
+        h.runs.handle(offer(
+            "run-cmd",
+            script.display().to_string(),
+            &["a b", "c&d", "plain"],
+            h.home.path(),
+            600,
+        ));
+        let events = until_finished(&h.store, "run-cmd").await;
+
+        assert_eq!(kinds(&events), ["Admitted", "RunStarted", "RunFinished"]);
+        let RunEvent::RunFinished {
+            reason,
+            exit_code,
+            visible_windows,
+            tail,
+            ..
+        } = finished(&events)
+        else {
+            unreachable!()
+        };
+        assert_eq!(reason, FinishReason::Exited);
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(tail, ["[a b]", "[c&d]", "[plain]"]);
+        assert_eq!(visible_windows, 0);
+    })
+    .await
+    .expect("bounded");
+}

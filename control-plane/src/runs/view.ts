@@ -1,6 +1,6 @@
 import type { DelayReason, FailureClass, RunState, StepOutcome } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
-import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import { findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 
 // Byte counts, exit codes and cursors are int8 in Postgres but numbers here: the protocol refuses any value past
 // 2^53 (executor/protocol.ts), so every one of them fits a JS number exactly.
@@ -54,12 +54,14 @@ const num = (value: string | null): number | null => (value === null ? null : Nu
 const between = (from: Date | null, to: Date | null): number | null =>
   from && to ? to.getTime() - from.getTime() : null
 
-export async function runView(ctx: TenantCtx, runId: string): Promise<RunView> {
+/** With `projectKey`, a run of another project answers DR201 as if it did not exist. */
+export async function runView(ctx: TenantCtx, runId: string, projectKey?: string): Promise<RunView> {
   requireRunId(runId)
-  return run(ctx, (trx) => loadRunView(trx, runId))
+  return run(ctx, (trx) => loadRunView(trx, runId, projectKey))
 }
 
-export async function loadRunView(trx: Trx, runId: string): Promise<RunView> {
+export async function loadRunView(trx: Trx, runId: string, projectKey?: string): Promise<RunView> {
+  const projectId = projectKey === undefined ? undefined : (await findProject(trx, projectKey)).id
   const row = await trx
     .selectFrom('runs as r')
     .innerJoin('jobs as j', 'j.id', 'r.job_id')
@@ -69,6 +71,7 @@ export async function loadRunView(trx: Trx, runId: string): Promise<RunView> {
     .selectAll('r')
     .select(['jt.key as job_type_key', 'm.name as machine_name', 't.key as task_key'])
     .where('r.id', '=', runId)
+    .$if(projectId !== undefined, (query) => query.where('r.project_id', '=', projectId as string))
     .executeTakeFirst()
   if (!row) fail('DR201', { kind: 'run', key: runId })
   const [steps, delays] = await Promise.all([

@@ -60,7 +60,8 @@ async function setup() {
   const { code: pairing } = await createPairingCode(ctx, 'build-01')
   const machine = await redeemPairingCode(t.db, new PairingLimiter(), pairing, { os: 'windows', version: '0.1.0' })
   const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
-  const dispatch = () => dispatchRun(ctx, sessions, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' })
+  const dispatch = () =>
+    dispatchRun(ctx, sessions, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' })
   return { tenant, ctx, machine, token, dispatch }
 }
 
@@ -136,7 +137,11 @@ test('dispatch sends one Offer with memory_need 536870912 without history', asyn
   const post = () =>
     fetch(`http://${host}/api/projects/${projectKey}/runs`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'idempotency-key': 'dispatch-1' },
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'dispatch-1',
+      },
       body,
     })
   const first = await post()
@@ -211,6 +216,65 @@ test('stop of a finished run answers DR351', async () => {
   exec.close()
 })
 
+test('run routes stay within their project, stop answers DR350 when the Stop cannot go out', async () => {
+  const { ctx, machine, token, dispatch } = await setup()
+  await createProject(ctx, { key: 'other', name: 'Other' })
+  const exec = await executor(machine.token)
+  const offered = await dispatch()
+  assert.equal((await exec.next()).type, 'Offer')
+  const call = (project: string, path: string, init: RequestInit = {}) =>
+    fetch(`http://${host}/api/projects/${project}/runs/${offered.id}${path}`, {
+      ...init,
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+  // A run of `devrounds` does not exist under `other`.
+  for (const res of [await call('other', ''), await call('other', '/stop', { method: 'POST' })]) {
+    assert.equal(((await res.json()) as { code: string }).code, 'DR201')
+  }
+
+  // The session dropping between the check and the send.
+  const send = sessions.send
+  sessions.send = () => false
+  try {
+    const res = await call(projectKey, '/stop', { method: 'POST' })
+    const body = (await res.json()) as { code: string; data: { machine: string } }
+    assert.deepEqual([res.status, body.code, body.data.machine], [409, 'DR350', 'build-01'])
+  } finally {
+    sessions.send = send
+  }
+  exec.close()
+})
+
+test('a client that leaves GET /runs/:id?wait ends the wait and its listener', async () => {
+  const { machine, token, dispatch } = await setup()
+  const exec = await executor(machine.token)
+  const offered = await dispatch()
+  assert.equal((await exec.next()).type, 'Offer')
+  // `once(runEvents, 'newListener')` would resolve on the 'error' listener `once` itself adds; wait for 'changed'.
+  const listener = (kind: 'newListener' | 'removeListener') =>
+    new Promise<void>((resolve) => {
+      const seen = (event: string | symbol) => {
+        if (event !== 'changed') return
+        runEvents.off(kind, seen)
+        resolve()
+      }
+      runEvents.on(kind, seen)
+    })
+  const subscribed = listener('newListener')
+  const leave = new AbortController()
+  const waiting = fetch(`http://${host}/api/projects/${projectKey}/runs/${offered.id}?wait=60`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: leave.signal,
+  }).catch(() => undefined)
+  await subscribed
+  const unsubscribed = listener('removeListener')
+  leave.abort()
+  await Promise.all([waiting, unsubscribed])
+  assert.equal(runEvents.listenerCount('changed'), 0)
+  exec.close()
+})
+
 test('run show --wait returns as soon as the run is terminal', async () => {
   const { machine, token, dispatch } = await setup()
   const exec = await executor(machine.token)
@@ -232,7 +296,10 @@ test('run show --wait returns as soon as the run is terminal', async () => {
   assert.ok(Date.now() - began < 10_000, `took ${Date.now() - began} ms`)
   const lines = out.stdout.trimEnd().split('\n')
   assert.match(lines[0], new RegExp(`^run ${offered.id} finished`))
-  assert.ok(lines.some((line) => line.startsWith('steps:')), out.stdout)
+  assert.ok(
+    lines.some((line) => line.startsWith('steps:')),
+    out.stdout,
+  )
   assert.equal(lines.at(-1), 'next: devrounds plan show')
   exec.close()
 })

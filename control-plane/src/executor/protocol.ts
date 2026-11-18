@@ -36,7 +36,8 @@ export const RUN_EVENTS = {
     reason: OneOf('memory', 'concurrency', 'memory_critical'),
     position: U32,
     need: U64,
-    available: U64,
+    // null before the executor's first memory reading.
+    available: Nullable(U64),
   }),
   RunStarted: Type.Object({
     kind: Type.Literal('RunStarted'),

@@ -14,7 +14,13 @@ export const runEvents = new EventEmitter()
 // One listener per `GET /runs/:id?wait` in flight; Node's default of 10 would warn under normal load.
 runEvents.setMaxListeners(0)
 
-export type DispatchInput = { projectKey: string; jobTypeKey: string; machineName: string; cwd: string; taskKey?: string }
+export type DispatchInput = {
+  projectKey: string
+  jobTypeKey: string
+  machineName: string
+  cwd: string
+  taskKey?: string
+}
 
 type Offer = Extract<ControlPlaneMessage, { type: 'Offer' }>
 
@@ -79,10 +85,11 @@ export async function prepareStop(
   ctx: TenantCtx,
   sessions: Sessions,
   runId: string,
+  projectKey?: string,
 ): Promise<{ view: RunView; machineId: string }> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
-    const view = await loadRunView(trx, runId)
+    const view = await loadRunView(trx, runId, projectKey)
     if (TERMINAL.includes(view.state)) fail('DR351', { run: runId, state: view.state })
     const row = await trx.selectFrom('runs').select('machine_id').where('id', '=', runId).executeTakeFirstOrThrow()
     if (!sessions.get(row.machine_id)) fail('DR350', { machine: view.machine })
@@ -91,17 +98,31 @@ export async function prepareStop(
 }
 
 /** Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350. */
-export async function stopRun(ctx: TenantCtx, sessions: Sessions, runId: string): Promise<RunView> {
-  const { view, machineId } = await prepareStop(ctx, sessions, runId)
+export async function stopRun(
+  ctx: TenantCtx,
+  sessions: Sessions,
+  runId: string,
+  projectKey?: string,
+): Promise<RunView> {
+  const { view, machineId } = await prepareStop(ctx, sessions, runId, projectKey)
   if (!sessions.send(machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {
     fail('DR350', { machine: view.machine })
   }
   return view
 }
 
-/** The run once it is terminal, or as it is after `waitS` seconds. */
-export async function waitForRun(ctx: TenantCtx, runId: string, waitS: number): Promise<RunView> {
+/**
+ * The run once it is terminal, or as it is after `waitS` seconds. An aborted `signal` (the client went away) ends the
+ * wait early with the run as it is.
+ */
+export async function waitForRun(
+  ctx: TenantCtx,
+  runId: string,
+  waitS: number,
+  opts: { projectKey?: string; signal?: AbortSignal } = {},
+): Promise<RunView> {
   requireRunId(runId)
+  const { projectKey, signal } = opts
   const deadline = Date.now() + waitS * 1000
   let wake: (() => void) | undefined
   let dirty = false
@@ -110,14 +131,16 @@ export async function waitForRun(ctx: TenantCtx, runId: string, waitS: number): 
     dirty = true
     wake?.()
   }
+  const abort = () => wake?.()
   // Subscribed before the first read, so an event applied between a read and the wait is not missed.
   runEvents.on('changed', listener)
+  signal?.addEventListener('abort', abort)
   try {
     for (;;) {
       dirty = false
-      const view = await runView(ctx, runId)
+      const view = await runView(ctx, runId, projectKey)
       const left = deadline - Date.now()
-      if (TERMINAL.includes(view.state) || left <= 0) return view
+      if (TERMINAL.includes(view.state) || left <= 0 || signal?.aborted) return view
       if (dirty) continue
       let timer: NodeJS.Timeout | undefined
       await new Promise<void>((resolve) => {
@@ -129,5 +152,6 @@ export async function waitForRun(ctx: TenantCtx, runId: string, waitS: number): 
     }
   } finally {
     runEvents.off('changed', listener)
+    signal?.removeEventListener('abort', abort)
   }
 }

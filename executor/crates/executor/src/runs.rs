@@ -155,7 +155,7 @@ impl RunLoop {
 async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bool>) {
     let run = offer.run.clone();
     let ending = run_once(&shared, offer, stopped).await;
-    emit(
+    let stored = emit(
         &shared.store,
         RunEvent::RunFinished {
             run: run.clone(),
@@ -173,8 +173,11 @@ async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bo
     )
     .await;
     // After RunFinished is in the outbox: a crash in between leaves the run in
-    // flight for the next start to look at, never a run nobody reports.
-    if let Err(error) = shared.store.forget_run(&run).await {
+    // flight for the next start to look at, never a run nobody reports. For
+    // the same reason a RunFinished that was not stored keeps the run.
+    if !stored {
+        tracing::error!(%run, "RunFinished not stored; the run stays in the store");
+    } else if let Err(error) = shared.store.forget_run(&run).await {
         tracing::warn!(%run, %error, "finished run not removed from the store");
     }
     shared
@@ -191,9 +194,14 @@ async fn stop_asked(stopped: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn emit(store: &Store, event: RunEvent) {
-    if let Err(error) = store.append_event(event).await {
-        tracing::error!(%error, "run event not stored");
+/// Appends `event`; false (logged) when the store refused it.
+async fn emit(store: &Store, event: RunEvent) -> bool {
+    match store.append_event(event).await {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::error!(%error, "run event not stored");
+            false
+        }
     }
 }
 
@@ -338,8 +346,7 @@ async fn admit(
                     },
                     position: u32::try_from(position).unwrap_or(u32::MAX),
                     need,
-                    // No reading yet counts as nothing available.
-                    available: available.unwrap_or(0),
+                    available,
                 };
                 emit(&shared.store, event).await;
             }

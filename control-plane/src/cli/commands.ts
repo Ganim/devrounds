@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
-import { restrictToOwner } from '../owner-only.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
+import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
 import type { RunView } from '../runs/view.ts'
@@ -305,7 +305,8 @@ function runShow(r: RunJson): Result {
   ]
   if (r.steps.length > 0) {
     body.push('steps:')
-    for (const s of r.steps) body.push(`  ${s.step} ${s.name} ${s.outcome ?? 'open'} · ${s.startedAt} → ${s.finishedAt ?? '-'}`)
+    for (const s of r.steps)
+      body.push(`  ${s.step} ${s.name} ${s.outcome ?? 'open'} · ${s.startedAt} → ${s.finishedAt ?? '-'}`)
   }
   if (r.delays.length > 0) {
     body.push('delays:')
@@ -796,7 +797,11 @@ export const COMMANDS: Spec[] = [
       const api = await connect()
       const id = arg(inv, 0, '<id>')
       await api.send('POST', path('runs', id, 'stop'))
-      return { failures: [], body: [`asked the executor to stop run ${id}`], next: `devrounds run show ${shellArg(id)} --wait` }
+      return {
+        failures: [],
+        body: [`asked the executor to stop run ${id}`],
+        next: `devrounds run show ${shellArg(id)} --wait`,
+      }
     },
   },
 ]

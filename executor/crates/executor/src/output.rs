@@ -45,6 +45,8 @@ impl OutputTail {
             streams,
             tail: Tail::default(),
             steps: Steps::default(),
+            #[cfg(test)]
+            largest_read: 0,
         };
         let task = tokio::spawn(follow(run, state, store, stopped));
         Self { stop, task }
@@ -150,15 +152,36 @@ struct State {
     streams: Vec<Stream>,
     tail: Tail,
     steps: Steps,
+    /// The largest chunk one read returned: with lines handed on per chunk,
+    /// it bounds what a poll holds besides the tail.
+    #[cfg(test)]
+    largest_read: usize,
 }
 
 impl State {
     /// One read of every stream; `last` reads to the end and flushes any
     /// unterminated line.
+    ///
+    /// Each chunk's lines go straight to the step parser and the tail, so a
+    /// backlog left by a fast writer costs one chunk plus the tail at any time,
+    /// never the whole backlog.
     fn poll(&mut self, last: bool) -> Vec<StepChange> {
-        let mut lines = Vec::new();
+        let Self {
+            streams,
+            tail,
+            steps,
+            #[cfg(test)]
+            largest_read,
+        } = self;
+        let mut changes = Vec::new();
+        let mut take = |line: String| {
+            if let Some(change) = parse_step_marker(&line).and_then(|marker| steps.apply(marker)) {
+                changes.push(change);
+            }
+            tail.push(line);
+        };
         let now = unix_ms();
-        for stream in &mut self.streams {
+        for stream in streams.iter_mut() {
             loop {
                 let bytes = match stream.read(POLL_BYTES) {
                     Ok(bytes) => bytes,
@@ -170,9 +193,13 @@ impl State {
                         break;
                     }
                 };
+                #[cfg(test)]
+                {
+                    *largest_read = (*largest_read).max(bytes.len());
+                }
                 let more = last && bytes.len() == POLL_BYTES;
                 let _ = stream.framer.ingest(&bytes, now, |frame| {
-                    lines.push(frame.text);
+                    take(frame.text);
                     Ok::<(), ()>(())
                 });
                 if !more {
@@ -180,17 +207,8 @@ impl State {
                 }
             }
             if let Some(frame) = stream.framer.flush_partial(now, last) {
-                lines.push(frame.text);
+                take(frame.text);
             }
-        }
-        let mut changes = Vec::new();
-        for line in lines {
-            if let Some(change) =
-                parse_step_marker(&line).and_then(|marker| self.steps.apply(marker))
-            {
-                changes.push(change);
-            }
-            self.tail.push(line);
         }
         changes
     }
@@ -232,7 +250,56 @@ fn unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{TAIL_BYTES, TAIL_LINES, Tail};
+    use std::io::Write;
+
+    use super::{POLL_BYTES, State, Stream, TAIL_BYTES, TAIL_LINES, Tail};
+    use crate::steps::{StepChange, Steps};
+
+    #[test]
+    fn a_large_backlog_drains_through_a_bounded_buffer() {
+        // Unit tests get no CARGO_TARGET_TMPDIR; the workspace target dir stands in.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        std::fs::create_dir_all(&root).expect("create target/tmp");
+        let dir = tempfile::tempdir_in(root).expect("tempdir");
+        let path = dir.path().join("stdout.raw");
+
+        // About 24 MiB written before any poll: what a fast writer leaves for the
+        // final drain. Step markers at both ends prove every chunk was parsed.
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).expect("create"));
+        writeln!(file, "::devrounds::step-start name=build").expect("write");
+        let line = "x".repeat(120);
+        let mut written = 0;
+        while written < 24 * 1024 * 1024 {
+            writeln!(file, "{line}").expect("write");
+            written += line.len() + 1;
+        }
+        writeln!(file, "::devrounds::step-end name=build outcome=finished").expect("write");
+        writeln!(file, "last line").expect("write");
+        file.flush().expect("flush");
+        drop(file);
+
+        let mut state = State {
+            streams: vec![Stream::new(path.clone())],
+            tail: Tail::default(),
+            steps: Steps::default(),
+            largest_read: 0,
+        };
+        let changes = state.poll(true);
+
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert!(matches!(changes[1], StepChange::Finished { step: 0, .. }));
+        assert_eq!(
+            state.streams[0].offset,
+            std::fs::metadata(&path).expect("metadata").len()
+        );
+        assert!(state.tail.lines.len() <= TAIL_LINES);
+        assert!(state.tail.bytes <= TAIL_BYTES);
+        assert_eq!(
+            state.tail.lines.back().map(String::as_str),
+            Some("last line")
+        );
+        assert!(state.largest_read <= POLL_BYTES, "{}", state.largest_read);
+    }
 
     #[test]
     fn the_tail_keeps_the_last_lines_within_its_byte_budget() {
