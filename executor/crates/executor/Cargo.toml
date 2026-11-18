@@ -10,8 +10,12 @@ publish.workspace = true
 [dependencies]
 devrounds-core = { path = "../core" }
 devrounds-metrics = { path = "../metrics" }
+devrounds-start-gate = { path = "../start-gate" }
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 devrounds-metrics-windows = { path = "../metrics-windows" }

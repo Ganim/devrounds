@@ -75,7 +75,9 @@ devrounds-runner-windows, from crates/runner-windows at e2e4f1cafda94805d6e44733
   time).
 
 devrounds-start-gate, from crates/start-gate at e2e4f1cafda94805d6e447331980b83fcbab2e72
-  Requests carry run and job_type instead of lane and unit.
+  Requests carry run and job_type instead of lane and unit. Added
+  AdaptiveGate::changes, a watch receiver the engine marks after every grant
+  pass, so the executor's admission reports hold changes without polling.
 
 devrounds-metrics, from crates/metrics at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Kept ring, sketch and run. Removed aggregate and history. The subject of a

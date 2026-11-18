@@ -42,6 +42,7 @@ use devrounds_core::{
     clock::Clock,
     gate::{Arrival, GateSnapshot, PressureSource, StartGate, StartRequest, StartTicket},
 };
+use tokio::sync::watch;
 
 pub use controller::{AdaptiveConfig, Controller};
 pub use engine::{GateOptions, default_reserve};
@@ -113,6 +114,12 @@ impl AdaptiveGate {
             clock,
             Some(pressure),
         ))
+    }
+
+    /// A receiver marked changed after every grant pass, when the snapshot
+    /// (hold, queue, readings, window) may differ from the last one read.
+    pub fn changes(&self) -> watch::Receiver<()> {
+        self.0.changes()
     }
 }
 

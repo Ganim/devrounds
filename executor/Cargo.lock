@@ -64,10 +64,12 @@ dependencies = [
 name = "devrounds-executor"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "devrounds-core",
  "devrounds-metrics",
  "devrounds-metrics-windows",
  "devrounds-runner-windows",
+ "devrounds-start-gate",
  "devrounds-test-fixtures",
  "tempfile",
  "tokio",

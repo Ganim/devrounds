@@ -17,7 +17,7 @@ use devrounds_core::{
         Release, SlotHandle, StartRequest, StartSlot, StartTicket,
     },
 };
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, oneshot, watch};
 
 use crate::controller::Controller;
 
@@ -209,6 +209,9 @@ pub(crate) struct Engine {
     state: Mutex<State>,
     wake: Arc<Notify>,
     driving: AtomicBool,
+    /// Ticks after every grant pass, so waiters can re-read the snapshot
+    /// instead of polling it (DevRounds: admission reports hold changes).
+    changed: watch::Sender<()>,
 }
 
 impl Engine {
@@ -248,7 +251,14 @@ impl Engine {
             }),
             wake: Arc::new(Notify::new()),
             driving: AtomicBool::new(false),
+            changed: watch::channel(()).0,
         })
+    }
+
+    /// A receiver marked changed after every grant pass: a new reading, a
+    /// grant, a release, a timeout or a ticket leaving the queue.
+    pub(crate) fn changes(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
     }
 
     /// Locks the state; a panicked holder leaves consistent data behind because
@@ -512,6 +522,8 @@ impl Engine {
             // or a reading is needed before the head can be decided.
             self.wake.notify_one();
         }
+        // Every grant pass ends here, after the state it changed is visible.
+        self.changed.send_replace(());
     }
 
     /// Removes a held slot with `reason` and fills the freed capacity.
