@@ -47,3 +47,7 @@ pnpm lint:executor                       # rustfmt check + clippy with -D warnin
 ```
 
 The `sh.exe` tests need Git for Windows on `PATH`.
+
+`pnpm devlanes-sync --fetch` fetches upstream devlanes into the gitignored `executor/.devlanes-cache` and fails (exit 1)
+listing every upstream commit that touches a copied crate and is not yet ported or recorded as `[[reviewed]]` in
+`executor/devlanes-sync.toml`. Without `--fetch` it only reads the cache; `pnpm test` runs the same check.

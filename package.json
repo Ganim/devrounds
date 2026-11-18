@@ -12,6 +12,7 @@
     "lint:executor": "cd executor && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",
     "typecheck": "tsc -p control-plane && tsc -p web",
     "lint": "biome check --error-on-warnings .",
+    "devlanes-sync": "node scripts/devlanes-sync.ts",
     "gen:errors": "node scripts/gen-error-docs.ts",
     "db:up": "docker compose up -d"
   },
