@@ -72,3 +72,9 @@ synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
 # crate = "<[[crate]] name>"
 # decision = "ported" # or "not_applicable"
 # reason = "<why>"
+
+[[reviewed]]
+commit = "c1572f4035bdf2597639fd6f3e7f3066ec650753"
+crate = "workspace/cargo-toml"
+decision = "not_applicable"
+reason = "Upstream release CI now ships debug archives; the only Cargo.toml change is a comment above strip = true in [profile.release], and DevRounds has no matching CI."
