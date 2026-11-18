@@ -1,0 +1,23 @@
+[package]
+name = "devrounds-store"
+description = "The executor's local SQLite state: runs in flight and the outbox of events not yet acked"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+devrounds-core = { path = "../core" }
+devrounds-protocol = { path = "../protocol" }
+# fallible_uint: seqs and FILETIMEs are u64; past i64::MAX they fail instead of wrapping.
+rusqlite = { version = "0.43", features = ["bundled", "fallible_uint"] }
+serde_json.workspace = true
+time = { version = "0.3", features = ["formatting"] }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

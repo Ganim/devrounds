@@ -12,13 +12,14 @@ use std::{
 
 use devrounds_core::{DrError, gate::MemoryPressure};
 use devrounds_executor::{
-    config::{CONFIG_FILE, ExecutorConfig, HomeLock, TOKEN_FILE},
+    config::{CONFIG_FILE, ExecutorConfig, HomeLock, STORE_FILE, TOKEN_FILE},
     connection::{Connection, Handler},
     pair::pair,
 };
 use devrounds_protocol::{
     ClientMessage, HelloAck, MachineReport, PROTOCOL, ServerMessage, decode_client, encode_server,
 };
+use devrounds_store::Store;
 use devrounds_sys_windows::security::check_private_file;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -41,6 +42,14 @@ async fn bounded<T, F: Future<Output = T>>(body: F) -> T {
 
 fn home() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir")
+}
+
+/// A connection over a fresh store in `dir`.
+async fn connection(dir: &tempfile::TempDir) -> Connection {
+    let store = Store::open(&dir.path().join(STORE_FILE))
+        .await
+        .expect("store");
+    Connection::new(store)
 }
 
 #[derive(Default)]
@@ -89,7 +98,9 @@ async fn ws_to_a_non_loopback_host_is_refused() {
             url: url.to_owned(),
             machine_id: "m".to_owned(),
         };
-        let error = bounded(Connection::run(&config, TOKEN, &mut Recorder::default()))
+        let dir = home();
+        let connection = connection(&dir).await;
+        let error = bounded(connection.run(&config, TOKEN, &mut Recorder::default()))
             .await
             .expect_err(url);
         assert_eq!(error.code, "DR551", "{url}: {error}");
@@ -233,7 +244,9 @@ async fn hello_then_machine_report_reach_the_server() {
 
     let mut recorder = Recorder::default();
     let messages = Arc::clone(&recorder.messages);
-    let client = tokio::spawn(async move { Connection::run(&config, TOKEN, &mut recorder).await });
+    let dir = home();
+    let connection = connection(&dir).await;
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut recorder).await });
     let (authorization, hello, sent) = bounded(server).await.expect("server");
     client.abort();
 

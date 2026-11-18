@@ -2,16 +2,24 @@
 //! WebSocket, sends `Hello`, hands every frame to a [`Handler`], sends a
 //! `MachineReport` every 10 s and reconnects with backoff when the socket
 //! drops.
+//!
+//! Events reach the control plane only through the [`Store`] outbox: each
+//! session resends what is left after `HelloAck.last_seq`, then sends new
+//! events as they are appended. `Ack` drops events from the outbox and
+//! `Resync` resends from the seq it names, so an event is applied once and in
+//! order whatever happens to the socket or the control plane.
 
 use std::time::Duration;
 
 use devrounds_core::DrError;
 use devrounds_protocol::{
-    ClientMessage, FEATURES, Hello, MachineReport, PROTOCOL, ServerMessage, decode_server,
-    encode_client,
+    Ack, ClientMessage, FEATURES, Hello, HelloAck, MachineReport, PROTOCOL, Resync, ServerMessage,
+    decode_server, encode_client,
 };
-use futures_util::{SinkExt, StreamExt};
+use devrounds_store::Store;
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::json;
+use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::{
     Message,
     client::IntoClientRequest,
@@ -52,15 +60,32 @@ enum Ended {
     Replaced,
 }
 
-pub struct Connection;
+pub struct Connection {
+    store: Store,
+    connected: watch::Sender<bool>,
+}
 
 impl Connection {
+    pub fn new(store: Store) -> Self {
+        Self {
+            store,
+            connected: watch::Sender::new(false),
+        }
+    }
+
+    /// True while a session is past `HelloAck` and has resent the outbox. The
+    /// run loop waits for it before spawning a granted run.
+    pub fn connected(&self) -> watch::Receiver<bool> {
+        self.connected.subscribe()
+    }
+
     /// Keeps a session to the control plane at `config.url` until the token
-    /// stops working (DR452) or a newer session of this machine replaces
-    /// this one (`Ok`). Refuses `ws://` to a non-loopback host with DR551.
-    /// Reconnects after 1 s, doubling to 30 s; a session that got its
-    /// `HelloAck` starts the backoff over.
+    /// stops working (DR452), a newer session of this machine replaces this
+    /// one (`Ok`) or the store fails (DR550). Refuses `ws://` to a
+    /// non-loopback host with DR551. Reconnects after 1 s, doubling to 30 s;
+    /// a session that got its `HelloAck` starts the backoff over.
     pub async fn run<H: Handler>(
+        &self,
         config: &ExecutorConfig,
         token: &str,
         handler: &mut H,
@@ -68,7 +93,9 @@ impl Connection {
         let url = ControlPlaneUrl::parse(&config.url)?.ws("/api/executor/connect");
         let mut backoff = FIRST_BACKOFF;
         loop {
-            match session(&url, token, handler).await? {
+            let ended = session(&url, token, handler, &self.store, &self.connected).await;
+            self.connected.send_replace(false);
+            match ended? {
                 Ended::Revoked => {
                     return Err(DrError::new("DR452", json!({})));
                 }
@@ -90,7 +117,13 @@ impl Connection {
 
 /// One connection, from dialing to close. Errors only for what reconnecting
 /// cannot fix.
-async fn session<H: Handler>(url: &str, token: &str, handler: &mut H) -> Result<Ended, DrError> {
+async fn session<H: Handler>(
+    url: &str,
+    token: &str,
+    handler: &mut H,
+    store: &Store,
+    connected: &watch::Sender<bool>,
+) -> Result<Ended, DrError> {
     let invalid = |reason: String| DrError::new("DR551", json!({ "reason": reason }));
     let mut request = url
         .into_client_request()
@@ -126,7 +159,10 @@ async fn session<H: Handler>(url: &str, token: &str, handler: &mut H) -> Result<
     }
     let mut reports = tokio::time::interval(REPORT_INTERVAL);
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut appended = store.appended();
     let mut acked = false;
+    // The last seq this session has sent; events go out strictly after it.
+    let mut sent = 0;
     loop {
         tokio::select! {
             _ = reports.tick(), if acked => {
@@ -135,14 +171,38 @@ async fn session<H: Handler>(url: &str, token: &str, handler: &mut H) -> Result<
                     return Ok(Ended::Dropped { acked });
                 }
             }
+            changed = appended.changed(), if acked => {
+                // The store this session holds owns the sender, so `changed` cannot fail; if it ever
+                // did, dropping the session beats spinning on it.
+                if changed.is_err() || !send_pending(&mut sink, store, &mut sent).await? {
+                    return Ok(Ended::Dropped { acked });
+                }
+            }
             frame = stream.next() => match frame {
                 Some(Ok(Message::Text(text))) => match decode_server(&text) {
                     Ok(ServerMessage::Unknown) => {}
                     Ok(message) => {
-                        if matches!(message, ServerMessage::HelloAck(_)) && !acked {
-                            acked = true;
-                            // The first report goes right after the ack.
-                            reports.reset_immediately();
+                        match &message {
+                            ServerMessage::HelloAck(HelloAck { last_seq, .. }) if !acked => {
+                                acked = true;
+                                // The first report goes right after the ack.
+                                reports.reset_immediately();
+                                store.ack_through(*last_seq).await?;
+                                sent = *last_seq;
+                                appended.mark_unchanged();
+                                if !send_pending(&mut sink, store, &mut sent).await? {
+                                    return Ok(Ended::Dropped { acked });
+                                }
+                                connected.send_replace(true);
+                            }
+                            ServerMessage::Ack(Ack { seq }) => store.ack_through(*seq).await?,
+                            ServerMessage::Resync(Resync { from_seq }) if acked => {
+                                sent = from_seq.saturating_sub(1);
+                                if !send_pending(&mut sink, store, &mut sent).await? {
+                                    return Ok(Ended::Dropped { acked });
+                                }
+                            }
+                            _ => {}
                         }
                         handler.on_message(message);
                     }
@@ -158,6 +218,21 @@ async fn session<H: Handler>(url: &str, token: &str, handler: &mut H) -> Result<
             },
         }
     }
+}
+
+/// Sends every outbox frame after `sent`, in seq order, moving `sent` along.
+/// False when the socket failed.
+async fn send_pending<S>(sink: &mut S, store: &Store, sent: &mut u64) -> Result<bool, DrError>
+where
+    S: Sink<Message> + Unpin,
+{
+    for (seq, frame) in store.pending_after(*sent).await? {
+        if sink.send(Message::text(frame)).await.is_err() {
+            return Ok(false);
+        }
+        *sent = seq;
+    }
+    Ok(true)
 }
 
 fn closed(frame: Option<&CloseFrame>, acked: bool) -> Ended {

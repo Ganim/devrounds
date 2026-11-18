@@ -4,7 +4,10 @@ import { after, before, test } from 'node:test'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { createDb } from '../db/connection.ts'
+import { putJobType } from '../job-types/service.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
+import { createProject } from '../planning/service.ts'
+import { createRun, markOffered } from '../runs/record.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { FEATURES } from './protocol.ts'
 
@@ -165,6 +168,138 @@ test('a second session for the same machine replaces the first (close 4409)', as
     [['build-01', true]],
   )
   second.close()
+})
+
+// A run offered to the paired machine `build-01`, ready for its executor's events.
+async function offeredRun(tenant: Awaited<ReturnType<typeof paired>>['tenant']) {
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(ctx, { key: 'devrounds', name: 'DevRounds' })
+  await putJobType(ctx, 'devrounds', {
+    key: 'check',
+    command: { program: 'pnpm', args: ['check'] },
+    env: ['PATH'],
+    timeout_s: 600,
+    orphan_policy: 'kill',
+    classify: [],
+  })
+  const run = await createRun(ctx, {
+    projectKey: 'devrounds',
+    jobTypeKey: 'check',
+    machineName: 'build-01',
+    cwd: 'C:\\w',
+  })
+  await markOffered(ctx, run.id)
+  return run.id
+}
+
+const AT = '2026-11-18T12:00:00Z'
+// Changes nothing in the run record (Task 15 handles it), so it needs no run.
+const orphans = (seq: number) => ({ type: 'Event', seq, at: AT, event: { kind: 'Orphans', runs: [] } })
+const ack = (seq: number) => ({ type: 'Ack', seq })
+
+function lastSeq(machineId: string) {
+  return t.admin
+    .selectFrom('machines')
+    .select('last_seq')
+    .where('id', '=', machineId)
+    .executeTakeFirstOrThrow()
+    .then((row) => Number(row.last_seq))
+}
+
+test('an event with seq <= last_seq is acked and not applied twice', async () => {
+  const { tenant, machine } = await paired()
+  const run = await offeredRun(tenant)
+  const delayed = (seq: number) => ({
+    type: 'Event',
+    seq,
+    at: AT,
+    event: { kind: 'Delayed', run, reason: 'memory', position: 1, need: 1024, available: 512 },
+  })
+  const session = await helloAcked(machine.token)
+  await session.send(delayed(1))
+  assert.deepEqual(await session.next(), ack(1))
+  // The executor resends after a reconnect it thinks lost the ack.
+  await session.send(delayed(1))
+  assert.deepEqual(await session.next(), ack(1))
+  session.close()
+
+  const again = dial(machine.token)
+  await again.send(HELLO)
+  assert.equal(((await again.next()) as { last_seq: number }).last_seq, 1)
+  await again.send(delayed(1))
+  assert.deepEqual(await again.next(), ack(1))
+  again.close()
+
+  // Each apply of Delayed adds a run_delays row.
+  const delays = await t.admin.selectFrom('run_delays').select('id').where('run_id', '=', run).execute()
+  assert.equal(delays.length, 1)
+  assert.equal(await lastSeq(machine.machineId), 1)
+})
+
+test('a gap gets exactly one Resync', async () => {
+  const { machine } = await paired()
+  const session = await helloAcked(machine.token)
+  await session.send(orphans(1))
+  assert.deepEqual(await session.next(), ack(1))
+  await session.send(orphans(3))
+  assert.deepEqual(await session.next(), { type: 'Resync', from_seq: 2 })
+  // Still missing 2: no second Resync, and the ack stays at the last applied seq.
+  await session.send(orphans(4))
+  assert.deepEqual(await session.next(), ack(1))
+  for (const seq of [2, 3, 4]) {
+    await session.send(orphans(seq))
+    assert.deepEqual(await session.next(), ack(seq))
+  }
+  session.close()
+  assert.equal(await lastSeq(machine.machineId), 4)
+})
+
+// Ack is cumulative: acking the ahead-of-gap seq would tell the executor to drop the missing events.
+test('with a gap open, an ahead-of-gap event does not advance the ack', async () => {
+  const { machine } = await paired()
+  const session = await helloAcked(machine.token)
+  await session.send(orphans(2))
+  assert.deepEqual(await session.next(), { type: 'Resync', from_seq: 1 })
+  await session.send(orphans(3))
+  assert.deepEqual(await session.next(), ack(0))
+  session.close()
+  assert.equal(await lastSeq(machine.machineId), 0)
+})
+
+test('an event answering DR351 is acked and its seq counts as applied', async () => {
+  const { tenant, machine } = await paired()
+  const run = await offeredRun(tenant)
+  const admitted = (seq: number) => ({ type: 'Event', seq, at: AT, event: { kind: 'Admitted', run } })
+  const session = await helloAcked(machine.token)
+  await session.send(admitted(1))
+  assert.deepEqual(await session.next(), ack(1))
+  // admitted → admitted is illegal; a session that stopped here would get the same event forever.
+  await session.send(admitted(2))
+  assert.deepEqual(await session.next(), ack(2))
+  session.close()
+  assert.equal(await lastSeq(machine.machineId), 2)
+})
+
+test('last_seq survives a control plane restart', async () => {
+  const { machine } = await paired()
+  const session = await helloAcked(machine.token)
+  for (const seq of [1, 2, 3]) {
+    await session.send(orphans(seq))
+    assert.deepEqual(await session.next(), ack(seq))
+  }
+  session.close()
+
+  const restarted = buildServer({ db: t.db, logger: false })
+  try {
+    await restarted.listen({ port: 0, host: '127.0.0.1' })
+    const port = (restarted.server.address() as AddressInfo).port
+    const again = dial(machine.token, `127.0.0.1:${port}`)
+    await again.send(HELLO)
+    assert.equal(((await again.next()) as { last_seq: number }).last_seq, 3)
+    again.close()
+  } finally {
+    await restarted.close()
+  }
 })
 
 test('Hello with protocol 2 answers DR151 and closes 4400', async () => {

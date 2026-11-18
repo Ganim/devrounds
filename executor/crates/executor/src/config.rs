@@ -16,6 +16,9 @@ pub const HOME_ENV: &str = "DEVROUNDS_EXECUTOR_HOME";
 pub const CONFIG_FILE: &str = "config.json";
 /// The machine token; never logged, never in `config.json`.
 pub const TOKEN_FILE: &str = "machine-token";
+/// The SQLite store of runs in flight and unacked events (`devrounds_store::Store`);
+/// it inherits the home's owner-only access list.
+pub const STORE_FILE: &str = "executor.db";
 const LOCK_FILE: &str = "executor.lock";
 /// The lock holder's pid. A separate file: Windows byte-range locks block
 /// other processes from reading the locked file itself.

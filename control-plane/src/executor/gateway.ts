@@ -9,7 +9,17 @@ import type { Database } from '../db/schema.ts'
 import { DevRoundsError } from '../errors/error.ts'
 import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../machines/pairing.ts'
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
-import { type ControlPlaneMessage, checkHello, PROTOCOL, parseExecutorMessage } from './protocol.ts'
+import type { TenantCtx, Trx } from '../planning/resolve.ts'
+import { applyRunEvent } from '../runs/record.ts'
+import { withTenant } from '../tenancy/scope.ts'
+import {
+  type ControlPlaneMessage,
+  checkHello,
+  type EventMessage,
+  PROTOCOL,
+  parseExecutorMessage,
+  SeqTracker,
+} from './protocol.ts'
 
 // WebSocket close codes the executor acts on: 4400 protocol (no or bad Hello), 4401 token (pair again, see
 // CLOSE_REVOKED), 4409 replaced by a newer session of the same machine (do not reconnect and steal it back).
@@ -74,6 +84,36 @@ export class Sessions {
 
 type GatewayOptions = { db: Kysely<Database>; sessions: Sessions; limiter: PairingLimiter }
 
+/**
+ * Applies one new event and moves machines.last_seq to its seq in one transaction, so after a crash the executor
+ * resends exactly what was not applied. The machine row is updated first, only while last_seq is below seq: that
+ * row lock and condition keep a replaced session still draining frames from applying a seq the newer one already
+ * did. An event the run state does not allow (DR351) is logged and its seq still counts as applied; otherwise the
+ * executor would resend it forever. Unknown event kinds count the same way.
+ */
+async function applyEvent(ctx: TenantCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
+  const advance = async (trx: Trx) => {
+    const row = await trx
+      .updateTable('machines')
+      .set({ last_seq: message.seq })
+      .where('id', '=', machineId)
+      .where('last_seq', '<', String(message.seq))
+      .returning('id')
+      .executeTakeFirst()
+    return row !== undefined
+  }
+  try {
+    await withTenant(ctx.db, ctx.tenantId, async (trx) => {
+      if (!(await advance(trx)) || message.event.kind === 'Unknown') return
+      await applyRunEvent({ ...ctx, trx }, machineId, message.event, new Date(message.at), log)
+    })
+  } catch (err) {
+    if (!(err instanceof DevRoundsError && err.code === 'DR351')) throw err
+    log.warn({ err, machineId, seq: message.seq }, 'executor event does not fit the run state; acked, not applied')
+    await withTenant(ctx.db, ctx.tenantId, advance)
+  }
+}
+
 // Messages are handled one at a time, in arrival order, on a promise chain: the listener must be attached before the
 // token lookup awaits, or frames sent right after the upgrade are lost.
 function serveSession(
@@ -85,6 +125,8 @@ function serveSession(
   const { db, sessions } = opts
   let machine: { tenantId: string; machineId: string } | undefined
   let session: Session | undefined
+  // From HelloAck on: the last seq applied for this machine, as of this session.
+  let tracker: SeqTracker | undefined
   let closed = false
 
   const end = (code: number, error: DevRoundsError) => {
@@ -125,6 +167,7 @@ function serveSession(
       const lastSeq = await recordHello(ctx, machine.machineId, message.version)
       if (lastSeq === null) return end(CLOSE_REVOKED, new DevRoundsError('DR452'))
       if (closed) return
+      tracker = new SeqTracker(lastSeq)
       sessions.send(machine.machineId, {
         type: 'HelloAck',
         protocol: PROTOCOL,
@@ -135,7 +178,23 @@ function serveSession(
       return
     }
     if (message.type === 'MachineReport') await recordReport(ctx, machine.machineId, message)
-    // Events and log chunks are handled from Task 12 on; unknown types are ignored by design.
+    if (message.type === 'Event') await event(message)
+    // Log chunks reach watchers from Task 14 on; unknown types are ignored by design.
+  }
+
+  // Ack is cumulative, so it always names tracker.lastSeq, the last applied seq, never the incoming one: acking an
+  // ahead-of-gap event would let the executor drop the events still missing.
+  const event = async (message: EventMessage) => {
+    if (!machine || !tracker) return
+    const verdict = tracker.accept(message.seq)
+    if (verdict === 'gap') return reply({ type: 'Resync', from_seq: Number(tracker.lastSeq + 1n) })
+    if (verdict === 'new') await applyEvent({ db, tenantId: machine.tenantId }, machine.machineId, message, log)
+    reply({ type: 'Ack', seq: Number(tracker.lastSeq) })
+  }
+
+  // This session's own socket: once replaced, sessions.send would reach the newer session.
+  const reply = (message: ControlPlaneMessage) => {
+    if (!closed) socket.send(JSON.stringify(message))
   }
 
   // A server fault (the database, usually): logged here, never sent to the client, and the executor reconnects
