@@ -10,7 +10,9 @@ use std::{sync::Arc, time::Duration};
 use devrounds_core::StopPolicy;
 use devrounds_runner_windows::WindowsUnit;
 use devrounds_sys_windows::{proc, window};
-use support::{Cleanup, bounded, fixture, launch, run_dir, runner, stdout, tree_fixture};
+use support::{
+    Cleanup, bounded, fixture, launch, run_dir, runner, stdout, tree_fixture, wait_for_lines,
+};
 use tokio::task::JoinHandle;
 
 /// How often the windows are read.
@@ -82,10 +84,11 @@ async fn cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
     bounded(async {
         let dir = run_dir();
         let script = dir.path().join("echo-args.cmd");
-        // UTF-8 output, so `é` comes back as written.
+        // UTF-8 output, so `é` comes back as written; the ping keeps the run
+        // alive about a second, so the watcher reads it a few times.
         std::fs::write(
             &script,
-            "@chcp 65001 >nul\r\n@echo off\r\nfor %%a in (%*) do echo [%%~a]\r\n",
+            "@chcp 65001 >nul\r\n@echo off\r\nfor %%a in (%*) do echo [%%~a]\r\nping -n 2 127.0.0.1 >nul\r\n",
         )
         .expect("write echo-args.cmd");
         let spec = launch(dir.path(), &script.to_string_lossy(), &["a b", "c&d", "é"]);
@@ -96,9 +99,7 @@ async fn cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
         assert_eq!(report.outcome.code, Some(0), "{report:?}");
         let out = stdout(dir.path());
         assert_eq!(out.lines().collect::<Vec<_>>(), ["[a b]", "[c&d]", "[é]"]);
-        // A batch file finishes fast; the readings cover what there was.
-        let readings = watching.await.expect("watch");
-        assert!(readings.iter().all(|&count| count == 0), "{readings:?}");
+        assert_hidden(&watching.await.expect("watch"));
     })
     .await;
 }
@@ -112,7 +113,7 @@ async fn console_ctrl_helper_is_hidden() {
     bounded(async {
         let dir = run_dir();
         let unit = runner()
-            .spawn_unit(fixture(dir.path(), &["--ctrl-c", "bye"]))
+            .spawn_unit(fixture(dir.path(), &["--ctrl-c", "bye", "--ready"]))
             .await
             .expect("spawn");
         let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
@@ -128,8 +129,10 @@ async fn console_ctrl_helper_is_hidden() {
                 readings
             }
         });
-        // Let the fixture install its handler and the watchers read a few times.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        wait_for_lines(dir.path(), "ready", 1).await;
+        // Not a readiness guess: lets the watchers read a few times before the
+        // stop too.
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let report = unit
             .stop_with_report(StopPolicy::default())
             .await

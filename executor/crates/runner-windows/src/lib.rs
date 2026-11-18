@@ -8,8 +8,8 @@
 //! stdout and stderr, and is waited on through its process handle. The run
 //! ends when its leader exits; members still running then get
 //! [`WindowsRunner::exit_grace`] before the job is terminated. All Win32
-//! calls go through `devrounds-sys-windows`. The executor calls
-//! [`prepare_executor_process`] once at startup.
+//! calls go through `devrounds-sys-windows`. `devrounds-executor` calls
+//! [`prepare_executor_process`] at startup.
 //!
 //! A `/bin/sh` program runs as Git for Windows' `sh.exe`, given with
 //! [`WindowsRunner::with_shell`].
@@ -74,8 +74,7 @@ pub use spawn::SpawnError;
 pub use unit::{ExitReport, StopOutcome, WindowsUnit};
 
 /// Prepares the executor process for running units; call it once at startup,
-/// before the first spawn (`devrounds-executor`'s `main` will, once it has a
-/// startup path).
+/// before the first spawn, as `devrounds-executor`'s `main` does.
 ///
 /// Clears this process's ignore-Ctrl-C flag. Windows passes that flag to
 /// every process started from one that has it, and a shell, service host or

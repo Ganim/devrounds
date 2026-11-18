@@ -1,7 +1,5 @@
 //! `devrounds-executor`: runs DevRounds jobs on this machine. Later tasks add
-//! `pair`, `run`, `supervise` and `service`. Their startup path, before the
-//! first run spawn, must call
-//! `devrounds_runner_windows::prepare_executor_process()` on Windows.
+//! `pair`, `run`, `supervise` and `service`.
 
 use std::process::ExitCode;
 
@@ -16,6 +14,12 @@ fn main() -> ExitCode {
         .is_some_and(|arg| arg == devrounds_runner_windows::HELPER_ARG)
     {
         return ExitCode::from(devrounds_runner_windows::console_ctrl_main(args));
+    }
+    // Before any run is spawned: runs inherit this process's ignore-Ctrl-C
+    // flag. A failure only costs graceful Ctrl-C stops, so it is not fatal.
+    #[cfg(windows)]
+    if let Err(error) = devrounds_runner_windows::prepare_executor_process() {
+        eprintln!("devrounds-executor: clearing the ignore-Ctrl-C flag failed: {error}");
     }
     match first.as_deref().and_then(|arg| arg.to_str()) {
         Some("version") => {

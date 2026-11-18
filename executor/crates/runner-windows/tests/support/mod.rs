@@ -116,3 +116,21 @@ pub async fn bounded(body: impl Future<Output = ()>) {
     devrounds_test_fixtures::tree_fixture_path();
     tokio::time::timeout(LIMIT, body).await.expect("bounded");
 }
+
+/// Waits up to 10 s until the run's stdout holds `count` lines equal to
+/// `line`, such as tree-fixture's `--ready` markers; panics with the output
+/// on timeout.
+pub async fn wait_for_lines(dir: &Path, line: &str, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = std::fs::read_to_string(dir.join("stdout.raw")).unwrap_or_default();
+        if out.lines().filter(|l| *l == line).count() >= count {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{count} × {line:?} not seen within 10 s; stdout: {out:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

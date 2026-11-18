@@ -5,13 +5,13 @@
 //! tree-fixture [--children N] [--depth D] [--run-ms MS] [--linger-ms MS]
 //!              [--print N] [--steps NAME,...] [--print-env] [--exit CODE]
 //!              [--alloc-mb MB [--touch] [--alloc-hold-ms MS]]
-//!              [--ctrl-c ignore|bye] [--breakaway]
+//!              [--ctrl-c ignore|bye] [--ready] [--breakaway]
 //! ```
 //!
 //! - `--children N --depth D`: every process above depth `D` starts `N`
 //!   children of this same program, so the tree has `1 + N + ... + N^D`
 //!   processes (`--depth` defaults to 1). Children inherit the console and
-//!   the standard handles; they print nothing but `bye`.
+//!   the standard handles; they print nothing but `ready` and `bye`.
 //! - `--run-ms MS`: the leader keeps running `MS` ms after its output.
 //!   Without it the leader exits right away, unless `--ctrl-c` is given,
 //!   which keeps it running until Ctrl-C.
@@ -30,6 +30,9 @@
 //!   held until exit.
 //! - `--ctrl-c ignore`: every process ignores Ctrl-C. `--ctrl-c bye`: every
 //!   process prints `bye` on Ctrl-C and exits 0.
+//! - `--ready`: every process prints `ready` once its Ctrl-C handler (with
+//!   `--ctrl-c`) is installed, so a test can wait for the whole tree instead
+//!   of sleeping.
 //! - `--breakaway`: the leader starts a child with `CREATE_BREAKAWAY_FROM_JOB`
 //!   and prints `breakaway: denied` when Windows refuses it,
 //!   `breakaway: allowed` when it starts.
@@ -80,6 +83,7 @@ struct Args {
     touch: bool,
     alloc_hold_ms: Option<u64>,
     ctrl_c: Option<CtrlC>,
+    ready: bool,
     breakaway: bool,
     /// Set on the children this program starts.
     child: bool,
@@ -107,6 +111,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         touch: false,
         alloc_hold_ms: None,
         ctrl_c: None,
+        ready: false,
         breakaway: false,
         child: false,
     };
@@ -140,6 +145,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                     }
                 });
             }
+            "--ready" => parsed.ready = true,
             "--breakaway" => parsed.breakaway = true,
             "--child" => parsed.child = true,
             other => return Err(format!("unknown argument {other:?}")),
@@ -177,6 +183,11 @@ async fn run(args: Args) -> io::Result<u8> {
         Some(_) => Some(tokio::signal::windows::ctrl_c()?),
         None => None,
     };
+    if args.ready {
+        let mut out = io::stdout().lock();
+        writeln!(out, "ready")?;
+        out.flush()?;
+    }
     let memory = allocate(args.alloc_mb, args.touch);
     let held = match args.alloc_hold_ms {
         Some(hold) => {
@@ -285,6 +296,9 @@ fn start_child(args: &Args, lifetime: Option<Duration>) -> io::Result<()> {
     }
     if let Some(ctrl_c) = args.ctrl_c {
         command.args(["--ctrl-c", ctrl_c.name()]);
+    }
+    if args.ready {
+        command.arg("--ready");
     }
     if args.alloc_mb > 0 {
         command.args(["--alloc-mb", &args.alloc_mb.to_string()]);

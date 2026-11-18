@@ -380,12 +380,14 @@ impl Inner {
 
     /// See [`WindowsUnit::visible_windows`]. Blocking.
     fn visible_windows_blocking(&self) -> Result<u32, Error> {
-        let members: Vec<Held> = self
-            .job
-            .processes()?
-            .into_iter()
-            .filter_map(|p| Held::open(p.pid, p.start_time).ok().flatten())
-            .collect();
+        // `None`: the member exited since the job was read, so it owns no
+        // window. A failed open is an error, never a member to skip.
+        let mut members = Vec::new();
+        for p in self.job.processes()? {
+            if let Some(held) = Held::open(p.pid, p.start_time)? {
+                members.push(held);
+            }
+        }
         let count = window::visible_windows()
             .iter()
             .filter(|w| members.iter().any(|m| m.pid() == w.pid))

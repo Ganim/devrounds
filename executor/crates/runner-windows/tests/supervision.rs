@@ -14,7 +14,9 @@ use std::{
 
 use devrounds_core::{ProcessIdentity, StopPolicy};
 use devrounds_sys_windows::{console, proc};
-use support::{Cleanup, bounded, fixture, remove_when_released, run_dir, runner, stdout};
+use support::{
+    Cleanup, bounded, fixture, remove_when_released, run_dir, runner, stdout, wait_for_lines,
+};
 
 /// Ends recorded processes when the test is done, for runs whose handles the
 /// test dropped on purpose, then removes the run directory.
@@ -95,23 +97,22 @@ async fn breakaway_is_refused() {
 /// executor's real startup path, which must clear it.
 #[tokio::test]
 async fn graceful_stop_lets_ctrl_c_handlers_run() {
+    // The process-wide flag is true from here until prepare_executor_process:
+    // a Ctrl-C test added to this binary could spawn then and inherit it.
     console::set_ctrl_c_ignored(true).expect("ignore Ctrl-C");
     devrounds_runner_windows::prepare_executor_process().expect("prepare");
     bounded(async {
         let dir = run_dir();
         let unit = runner()
-            .spawn_unit(fixture(dir.path(), &["--children", "2", "--ctrl-c", "bye"]))
+            .spawn_unit(fixture(
+                dir.path(),
+                &["--children", "2", "--ctrl-c", "bye", "--ready"],
+            ))
             .await
             .expect("spawn");
         let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
-        // Let the tree start and install its handlers.
-        for _ in 0..50 {
-            if unit.job_members().await.expect("members").len() == 3 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Every process of the tree has its handler installed.
+        wait_for_lines(dir.path(), "ready", 3).await;
         let started = Instant::now();
         let report = unit
             .stop_with_report(StopPolicy::default())
