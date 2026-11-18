@@ -719,7 +719,7 @@ fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::rename(from, to)
 }
 
-/// [`fs::rename`], retried while a reader (`devlanes logs`, an editor, an
+/// [`fs::rename`], retried while a reader (the log upload, an editor, an
 /// indexer) briefly holds the file, which Windows refuses to rename.
 #[cfg(windows)]
 fn rename(from: &Path, to: &Path) -> std::io::Result<()> {

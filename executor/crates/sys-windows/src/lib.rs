@@ -1,8 +1,7 @@
-//! Safe wrappers over the Win32 calls devlanes needs on Windows: security
-//! identifiers and descriptors, private directories, named pipes, the process
-//! table, job objects, process creation, suspension and efficiency mode,
-//! consoles, windows, the registry, the shell's `ShellExecuteExW`, file
-//! identity, certificate stores, socket options and the computer name.
+//! Safe wrappers over the Win32 calls the DevRounds executor needs on Windows:
+//! security identifiers and descriptors, private directories, the process
+//! table, job objects, process creation, consoles, windows, file identity and
+//! the computer name.
 //!
 //! The wrappers hold no policy and produce no user-facing text; the crates that
 //! call them decide what a result means. Every call blocks, so async callers use

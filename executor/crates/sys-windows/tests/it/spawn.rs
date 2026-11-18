@@ -19,14 +19,14 @@ fn output_environment_cwd_and_exit_code() -> io::Result<()> {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
     let environment = Environment::new([
         (OsStr::new("SystemRoot"), root.as_os_str()),
-        (OsStr::new("DEVLANES_PROBE"), OsStr::new("here")),
+        (OsStr::new("DEVROUNDS_PROBE"), OsStr::new("here")),
     ])
     .map_err(io::Error::other)?;
     let cwd = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
     let child = spawn(&Spawn {
         program: &program,
         command_line: OsStr::new(
-            r#"cmd.exe /d /c "echo %DEVLANES_PROBE% %HOME%& cd& echo err 1>&2& exit 3""#,
+            r#"cmd.exe /d /c "echo %DEVROUNDS_PROBE% %HOME%& cd& echo err 1>&2& exit 3""#,
         ),
         environment: Some(&environment),
         cwd: Some(cwd.path()),

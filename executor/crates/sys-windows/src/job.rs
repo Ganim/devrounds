@@ -1,11 +1,10 @@
 //! Job objects: the Windows grouping for a unit's processes.
 //!
 //! Jobs created here do not allow breakaway unless [`Job::allow_breakaway`]
-//! is called, which tests standing in for another program's job do, and
-//! `devlanes mcp`, whose commands may start the daemon. Git for Windows'
-//! MSYS2 runtime asks for `CREATE_BREAKAWAY_FROM_JOB` for every child it
-//! starts whenever the job allows it, so a job that allowed it would lose
-//! every process a `sh -c` starts. A tool that insists on breaking away gets
+//! is called, which tests standing in for another program's job do. Git for
+//! Windows' MSYS2 runtime asks for `CREATE_BREAKAWAY_FROM_JOB` for every
+//! child it starts whenever the job allows it, so a job that allowed it would
+//! lose every process a `sh -c` starts. A tool that insists on breaking away gets
 //! access denied.
 
 use std::io;

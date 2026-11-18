@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
-import { readdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
+import { EXECUTOR, rustFiles } from './test-support/rust-files.ts'
 
-const EXECUTOR = fileURLToPath(new URL('../../executor/', import.meta.url))
 const SYNC_COMMIT = 'e2e4f1ca'
 // The FFI modules of sys-windows are the one accepted place for lint allows (AGENTS.md).
 const ALLOWED = new Set(['crates/sys-windows/src/lib.rs'])
@@ -13,18 +12,6 @@ const ALLOWED = new Set(['crates/sys-windows/src/lib.rs'])
 const ALLOW = new RegExp(`#!?\\[${'allow'}\\(|#\\[${'expect'}\\(`)
 
 type SyncCrate = { name: string; upstream_path: string; synced_commit: string }
-
-async function rustFiles(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const nested = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) return entry.name === 'target' ? [] : rustFiles(path)
-      return entry.name.endsWith('.rs') ? [path] : []
-    }),
-  )
-  return nested.flat()
-}
 
 test('NOTICE names every crate of devlanes-sync.toml with its upstream path and commit', async () => {
   const notice = await readFile(join(EXECUTOR, 'NOTICE'), 'utf8')
@@ -38,7 +25,7 @@ test('NOTICE names every crate of devlanes-sync.toml with its upstream path and 
 
 test('rust code allows lints only in the accepted list', async () => {
   const offenders: string[] = []
-  for (const file of await rustFiles(EXECUTOR)) {
+  for (const file of await rustFiles()) {
     const path = relative(EXECUTOR, file).split(sep).join('/')
     if (!ALLOWED.has(path) && ALLOW.test(await readFile(file, 'utf8'))) offenders.push(path)
   }

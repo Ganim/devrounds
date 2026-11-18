@@ -290,17 +290,17 @@ impl GateSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Arrival(pub u64);
 
-/// Decides when service starts may spawn. One instance is shared by every lane
-/// and project of the machine.
+/// Decides when service starts may spawn. One instance is shared by every run on
+/// the machine.
 #[async_trait]
 pub trait StartGate: Send + Sync {
     /// Takes a place in line for a batch whose requests are not known yet, so a
     /// caller can look up memory needs without losing its arrival order.
     fn arrive(&self) -> Arrival;
 
-    /// Queues the units of one start request at the place `arrival` took and
+    /// Queues the requests of one batch at the place `arrival` took and
     /// returns at once, one ticket per request in the same order. Batches are
-    /// served by arrival, so a later lane never jumps ahead of an earlier one;
+    /// served by arrival, so a later batch never jumps ahead of an earlier one;
     /// within a batch, by [`StartRequest::order`]. Dropping a ticket before
     /// its grant leaves the queue.
     fn enqueue_batch_at(&self, arrival: Arrival, requests: Vec<StartRequest>) -> Vec<StartTicket>;

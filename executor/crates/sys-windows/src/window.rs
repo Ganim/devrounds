@@ -160,7 +160,7 @@ thread_local! {
 }
 
 /// The class every watch window uses; registered once per process.
-const CLASS: &str = "devlanes-session-end";
+const CLASS: &str = "devrounds-session-end";
 
 /// The private message that ends a watch once [`Watcher::stopping`] is set.
 /// `WM_CLOSE` cannot do it, since other programs send that one to ask the
@@ -251,7 +251,7 @@ impl Drop for SessionWatch {
 /// Registers the class (once) and creates the hidden window on this thread.
 fn create_window() -> io::Result<HWND> {
     let class = wide(OsStr::new(CLASS))?;
-    let title = wide(OsStr::new("devlanes"))?;
+    let title = wide(OsStr::new("devrounds"))?;
     // SAFETY: a null name asks for this executable's module handle.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     let definition = WNDCLASSW {

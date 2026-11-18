@@ -19,8 +19,9 @@ use devrounds_sys_windows::{
 
 use crate::CONTROL_C_EXIT;
 
-/// The hidden first argument `devlanes` dispatches to [`console_ctrl_main`] on,
-/// before parsing anything else: `devlanes __console-ctrl <pid> <c|break>`.
+/// The hidden first argument `devrounds-executor` dispatches to
+/// [`console_ctrl_main`] on, before parsing anything else:
+/// `devrounds-executor __console-ctrl <pid> <c|break>`.
 pub const HELPER_ARG: &str = "__console-ctrl";
 
 /// How long the helper waits for its own event to come back, which shows the
@@ -84,11 +85,11 @@ pub struct ConsoleHelper {
 }
 
 impl ConsoleHelper {
-    /// This executable as its own helper: `<exe> __console-ctrl`. The daemon
-    /// reads the path once at start, so after `install.ps1` swaps the binary
-    /// under a running daemon, the newer devlanes at that path is the helper.
+    /// This executable as its own helper: `<exe> __console-ctrl`. The executor
+    /// reads the path once at start, so after an update swaps the binary under
+    /// a running executor, the newer binary at that path is the helper.
     /// The `__console-ctrl <pid> <c|break>` form and the exit codes must
-    /// therefore stay readable by older and newer daemons alike.
+    /// therefore stay readable by older and newer executors alike.
     pub fn current_exe() -> std::io::Result<Self> {
         Ok(Self {
             program: std::env::current_exe()?,

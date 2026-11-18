@@ -1,5 +1,5 @@
 //! The process table: snapshots, single lookups, held and verified handles,
-//! listening sockets, established TCP connections and the boot id.
+//! and the boot id.
 //!
 //! A process's start time is its creation `FILETIME` as one `u64` (100 ns
 //! ticks since 1601 UTC), recorded once at creation, so clock changes never
@@ -8,7 +8,6 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::PathBuf;
@@ -21,14 +20,8 @@ use windows_sys::Wdk::System::SystemInformation::{
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, INVALID_HANDLE_VALUE,
-    NO_ERROR, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, MIB_TCP_STATE_ESTAB, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
-    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_CLASS, TCP_TABLE_OWNER_PID_CONNECTIONS,
-    TCP_TABLE_OWNER_PID_LISTENER,
-};
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
@@ -39,7 +32,7 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject,
 };
 
-use crate::util::{owned, raw, until_nul, win32_error};
+use crate::util::{owned, raw, until_nul};
 
 /// One process of the table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,54 +286,6 @@ pub fn boot_id() -> io::Result<String> {
     Ok(info[0].wrapping_sub(info[4]).to_string())
 }
 
-/// TCP listeners (IPv4 and IPv6) owned by `pids`, as `(pid, address)`.
-pub fn listening_tcp(pids: &[u32]) -> io::Result<Vec<(u32, SocketAddr)>> {
-    let mut sockets = tcp_listeners()?;
-    sockets.retain(|(pid, _)| pids.contains(pid));
-    Ok(sockets)
-}
-
-/// Every TCP listener on the machine (IPv4 and IPv6), as `(pid, address)`,
-/// read from the kernel's table without enumerating processes.
-pub fn tcp_listeners() -> io::Result<Vec<(u32, SocketAddr)>> {
-    let mut sockets = Vec::new();
-    for row in v4_rows(TCP_TABLE_OWNER_PID_LISTENER)? {
-        sockets.push((row.dwOwningPid, v4_addr(row.dwLocalAddr, row.dwLocalPort)));
-    }
-    for row in v6_rows(TCP_TABLE_OWNER_PID_LISTENER)? {
-        let addr = v6_addr(row.ucLocalAddr, row.dwLocalPort, row.dwLocalScopeId);
-        sockets.push((row.dwOwningPid, addr));
-    }
-    Ok(sockets)
-}
-
-/// Every established TCP connection on the machine (IPv4 and IPv6), as
-/// `(local, remote)`, both ends of loopback connections included. A
-/// connection the kernel completed but no process has accepted yet is listed
-/// too, so connections to a suspended server show up.
-pub fn established_tcp() -> io::Result<Vec<(SocketAddr, SocketAddr)>> {
-    let established = MIB_TCP_STATE_ESTAB.cast_unsigned();
-    let mut connections = Vec::new();
-    // The connections table leaves listeners out, so it stays small.
-    for row in v4_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? {
-        if row.dwState == established {
-            connections.push((
-                v4_addr(row.dwLocalAddr, row.dwLocalPort),
-                v4_addr(row.dwRemoteAddr, row.dwRemotePort),
-            ));
-        }
-    }
-    for row in v6_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? {
-        if row.dwState == established {
-            connections.push((
-                v6_addr(row.ucLocalAddr, row.dwLocalPort, row.dwLocalScopeId),
-                v6_addr(row.ucRemoteAddr, row.dwRemotePort, row.dwRemoteScopeId),
-            ));
-        }
-    }
-    Ok(connections)
-}
-
 /// Opens `pid` with `access`; `None` when no process has that PID.
 pub(crate) fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> io::Result<Option<OwnedHandle>> {
     if pid == 0 {
@@ -517,90 +462,4 @@ fn image_path(handle: &impl AsRawHandle) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::other("the executable's path is too long"))
-}
-
-/// The TCP port in the low 16 bits of a table entry, in network byte order.
-fn port(raw_port: u32) -> u16 {
-    u16::from_be(raw_port as u16)
-}
-
-/// An IPv4 table entry's address and port, both in network byte order.
-fn v4_addr(raw_ip: u32, raw_port: u32) -> SocketAddr {
-    let ip = Ipv4Addr::from(raw_ip.to_ne_bytes());
-    SocketAddr::V4(SocketAddrV4::new(ip, port(raw_port)))
-}
-
-/// An IPv6 table entry's address, port in network byte order, and scope.
-fn v6_addr(raw_ip: [u8; 16], raw_port: u32, scope: u32) -> SocketAddr {
-    let ip = Ipv6Addr::from(raw_ip);
-    SocketAddr::V6(SocketAddrV6::new(ip, port(raw_port), 0, scope))
-}
-
-/// The IPv4 rows of the `class` table, one of the `TCP_TABLE_OWNER_PID_*`.
-fn v4_rows(class: TCP_TABLE_CLASS) -> io::Result<Vec<MIB_TCPROW_OWNER_PID>> {
-    let table = tcp_table(AF_INET, class)?;
-    Ok(rows(
-        &table,
-        std::mem::offset_of!(MIB_TCPTABLE_OWNER_PID, table),
-    ))
-}
-
-/// The IPv6 rows of the `class` table, one of the `TCP_TABLE_OWNER_PID_*`.
-fn v6_rows(class: TCP_TABLE_CLASS) -> io::Result<Vec<MIB_TCP6ROW_OWNER_PID>> {
-    let table = tcp_table(AF_INET6, class)?;
-    Ok(rows(
-        &table,
-        std::mem::offset_of!(MIB_TCP6TABLE_OWNER_PID, table),
-    ))
-}
-
-/// The `class` table of one address family, as 8-aligned bytes holding a
-/// `MIB_TCP*TABLE_OWNER_PID`: a row count followed by rows.
-fn tcp_table(family: u16, class: TCP_TABLE_CLASS) -> io::Result<Vec<u64>> {
-    let mut bytes = 0_u32;
-    for _ in 0..5 {
-        // A quarter more than the size asked for, so connections opened
-        // between the size query and the read still fit.
-        let wanted = bytes as usize + bytes as usize / 4;
-        let mut buffer = vec![0_u64; wanted.div_ceil(8).max(1)];
-        bytes = u32::try_from(buffer.len() * 8).unwrap_or(u32::MAX);
-        // SAFETY: `buffer` holds `bytes` writable, aligned bytes.
-        let status = unsafe {
-            GetExtendedTcpTable(
-                buffer.as_mut_ptr().cast(),
-                &raw mut bytes,
-                0,
-                u32::from(family),
-                class,
-                0,
-            )
-        };
-        match status {
-            NO_ERROR => return Ok(buffer),
-            // The table grew between the size query and the read; ask again.
-            ERROR_INSUFFICIENT_BUFFER => {}
-            other => return Err(win32_error(other)),
-        }
-    }
-    Err(io::Error::other(
-        "the TCP table kept growing while being read",
-    ))
-}
-
-/// The rows of a table from [`tcp_table`] whose rows start at `offset`.
-fn rows<Row: Copy>(table: &[u64], offset: usize) -> Vec<Row> {
-    let count = (table[0] & 0xffff_ffff) as usize;
-    let available = (table.len() * 8).saturating_sub(offset) / size_of::<Row>();
-    let base = table.as_ptr().cast::<u8>();
-    (0..count.min(available))
-        .map(|index| {
-            // SAFETY: the row lies within the buffer, as `available` bounds it;
-            // `read_unaligned` makes no alignment assumption.
-            unsafe {
-                base.add(offset + index * size_of::<Row>())
-                    .cast::<Row>()
-                    .read_unaligned()
-            }
-        })
-        .collect()
 }

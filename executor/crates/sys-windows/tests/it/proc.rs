@@ -1,5 +1,4 @@
 use std::io;
-use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use devrounds_sys_windows::proc::{self, Held, Terminated};
@@ -38,59 +37,6 @@ fn boot_id_is_stable() -> io::Result<()> {
     let first = proc::boot_id()?;
     assert!(!first.is_empty());
     assert_eq!(proc::boot_id()?, first);
-    Ok(())
-}
-
-/// Listeners on both families are reported with this process's PID and
-/// their port; other PIDs get none of them, and the whole table lists them.
-#[test]
-fn listeners_of_this_process() -> io::Result<()> {
-    let v4 = TcpListener::bind("127.0.0.1:0")?;
-    let v6 = TcpListener::bind("[::1]:0")?;
-    let me = std::process::id();
-    let found = proc::listening_tcp(&[me])?;
-    for listener in [&v4, &v6] {
-        let addr = listener.local_addr()?;
-        assert!(found.contains(&(me, addr)), "{addr} in {found:?}");
-    }
-    assert!(proc::listening_tcp(&[])?.is_empty());
-    let all = proc::tcp_listeners()?;
-    for listener in [&v4, &v6] {
-        let addr = listener.local_addr()?;
-        assert!(all.contains(&(me, addr)), "{addr} in every listener");
-    }
-    Ok(())
-}
-
-/// A connection to a listener that never accepts is established on both
-/// families, seen from each end.
-#[test]
-fn established_connections_without_accept() -> io::Result<()> {
-    let v4 = TcpListener::bind("127.0.0.1:0")?;
-    let v6 = TcpListener::bind("[::1]:0")?;
-    let clients = [
-        TcpStream::connect(v4.local_addr()?)?,
-        TcpStream::connect(v6.local_addr()?)?,
-    ];
-    let found = proc::established_tcp()?;
-    for (listener, client) in [&v4, &v6].into_iter().zip(&clients) {
-        let (server, local) = (listener.local_addr()?, client.local_addr()?);
-        assert!(
-            found.contains(&(local, server)),
-            "{local} to {server}: {found:?}"
-        );
-        assert!(
-            found.contains(&(server, local)),
-            "{server} from {local}: {found:?}"
-        );
-    }
-    // Listeners have no remote end and are not listed.
-    assert!(
-        !found
-            .iter()
-            .any(|(_, remote)| remote.port() == 0 || remote.ip().is_unspecified()),
-        "{found:?}"
-    );
     Ok(())
 }
 

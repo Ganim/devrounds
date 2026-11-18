@@ -105,7 +105,7 @@ pub fn remove_dir_all_retrying(path: &Path) -> io::Result<()> {
     retrying(true, || std::fs::remove_dir_all(path))
 }
 
-/// Runs `operation`, a rename or removal of a file devlanes owns that the
+/// Runs `operation`, a rename or removal of a file the executor owns that the
 /// helpers above do not cover (such as `tempfile`'s `persist`), with their
 /// retries. Blocks for up to about 0.6 s.
 pub fn retry_while_held(operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {

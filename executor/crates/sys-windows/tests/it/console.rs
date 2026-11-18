@@ -15,10 +15,10 @@ use crate::{PATIENCE, read_all, test_job};
 
 /// Set in the helper process of the tests below to `<pid>:c` or
 /// `<pid>:break`: the process whose console it attaches to and the event.
-const TARGET: &str = "DEVLANES_SYS_WINDOWS_TEST_CTRL_TARGET";
+const TARGET: &str = "DEVROUNDS_SYS_WINDOWS_TEST_CTRL_TARGET";
 
 /// Set in the unit process of the tests below, which then waits to be ended.
-const UNIT: &str = "DEVLANES_SYS_WINDOWS_TEST_CTRL_UNIT";
+const UNIT: &str = "DEVROUNDS_SYS_WINDOWS_TEST_CTRL_UNIT";
 
 /// `STATUS_CONTROL_C_EXIT`: ended by a console control event.
 const CONTROL_C_EXIT: u32 = 0xC000_013A;
@@ -142,7 +142,7 @@ fn ctrl_break_reaches_a_console() -> io::Result<()> {
 
 /// Set in the process of [`alloc_entry`], which then checks
 /// [`alloc_console`] and exits with the first failed check's number.
-const ALLOC: &str = "DEVLANES_SYS_WINDOWS_TEST_ALLOC";
+const ALLOC: &str = "DEVROUNDS_SYS_WINDOWS_TEST_ALLOC";
 
 /// Not a test of its own: with [`ALLOC`] set to `new`, this binary was
 /// started without a console and gets a hidden one; with `existing`, it had
@@ -203,7 +203,7 @@ fn alloc_console_gives_a_hidden_console() -> io::Result<()> {
 }
 
 /// Set in the process of [`alloc_hidden_entry`].
-const ALLOC_HIDDEN: &str = "DEVLANES_SYS_WINDOWS_TEST_ALLOC_HIDDEN";
+const ALLOC_HIDDEN: &str = "DEVROUNDS_SYS_WINDOWS_TEST_ALLOC_HIDDEN";
 
 /// Not a test of its own: with [`ALLOC_HIDDEN`] set, this binary was started
 /// without a console and with stdout on a pipe. It gets a console without a

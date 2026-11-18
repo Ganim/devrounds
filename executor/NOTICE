@@ -31,7 +31,10 @@ devrounds-sys-windows, from crates/sys-windows at e2e4f1cafda94805d6e447331980b8
   tests and windows-sys features, the test-support feature and rcgen.
   Removed Job::adopt_suspended (needed power), the Stdio::PseudoConsole spawn
   path (needed conpty), security::kernel_object_owner and util::hresult_error,
-  which only the removed modules used.
+  which only the removed modules used, and the proc TCP table wrappers
+  (listening_tcp, tcp_listeners, established_tcp) with the IpHelper and
+  WinSock windows-sys features; only listening_ports used them. Window class
+  and title are devrounds names.
 
 devrounds-shell-windows, from crates/shell-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Removed exec_path_root, which started `git --exec-path` through
@@ -57,13 +60,17 @@ devrounds-metrics, from crates/metrics at e2e4f1cafda94805d6e447331980b83fcbab2e
   RunSummary are keyed by run id.
 
 devrounds-metrics-windows, from crates/metrics-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
-  Samples carry the run id of their target instead of a unit key.
+  Samples carry the run id of their target instead of a unit key. Container
+  targets are gone from SampleRequest and its tests.
 
 devrounds-logs, from crates/logs at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Kept framing, level and storage. Removed query and the grep-* and jiff
-  dependencies. LogLine moved into this crate with its unit field renamed to
-  run. Tests use expect instead of allowing clippy::unwrap_used; the
-  query-based tests were dropped.
+  dependencies. LogLine moved into this crate from devlanes-proto (not
+  copied) with its unit field renamed to run. LogReader lost its unused unit
+  field and storage its unused skip helper, which only query read. Tests
+  use expect instead of allowing clippy::unwrap_used; the query-based tests
+  were dropped.
 
-Not copied: devlanes-sys (only ProcessInfo was needed) and devlanes-runner-pty
+Not copied: devlanes-sys (only ProcessInfo was needed), devlanes-proto (only
+LogLine was needed) and devlanes-runner-pty
 (Unix-only; Windows terminals wait for a later phase).

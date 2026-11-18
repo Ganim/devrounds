@@ -36,6 +36,7 @@ pub(crate) fn raw(handle: &impl AsRawHandle) -> HANDLE {
     handle.as_raw_handle()
 }
 
+/// The UTF-16 units before the first NUL of a fixed-size field.
 pub(crate) fn until_nul(field: &[u16]) -> &[u16] {
     let len = field
         .iter()

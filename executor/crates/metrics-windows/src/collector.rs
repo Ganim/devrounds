@@ -79,7 +79,7 @@ impl MetricsSource for WindowsSource {
     }
 }
 
-/// Captures the identity `devlanes-sys` would record for `pid` (start token =
+/// Captures the identity the runner records for `pid` (start token =
 /// creation time, `sid` 0). Returns `None` once no process has the PID or it
 /// refuses queries.
 pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
