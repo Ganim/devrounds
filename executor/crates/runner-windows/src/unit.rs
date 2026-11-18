@@ -20,7 +20,7 @@ use devrounds_sys_windows::{
     job::Job,
     proc::{self, Held, ProcessEntry},
     spawn::Child,
-    window::close_windows,
+    window::{self, close_windows},
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
@@ -378,6 +378,21 @@ impl Inner {
         Ok(live)
     }
 
+    /// See [`WindowsUnit::visible_windows`]. Blocking.
+    fn visible_windows_blocking(&self) -> Result<u32, Error> {
+        let members: Vec<Held> = self
+            .job
+            .processes()?
+            .into_iter()
+            .filter_map(|p| Held::open(p.pid, p.start_time).ok().flatten())
+            .collect();
+        let count = window::visible_windows()
+            .iter()
+            .filter(|w| members.iter().any(|m| m.pid() == w.pid))
+            .count();
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// [`Inner::refresh_blocking`] for supervisor paths, where a failed read
     /// must not abort cleanup: the last known members stand in.
     async fn live_members(self: &Arc<Self>) -> Vec<ProcessInfo> {
@@ -606,6 +621,16 @@ impl WindowsUnit {
             .iter()
             .map(ProcessInfo::identity)
             .collect())
+    }
+
+    /// How many visible top-level windows the run's processes own now: every
+    /// job member, the console host included, held while the windows are
+    /// read so a reused PID is never counted. A console window counts for one
+    /// of its client processes. Runs are started hidden, so this is 0 unless
+    /// a member opened a window itself.
+    pub async fn visible_windows(&self) -> Result<u32, Error> {
+        let inner = Arc::clone(&self.inner);
+        blocking(move || inner.visible_windows_blocking()).await?
     }
 
     /// Ends every process of the unit at once by terminating its job, without

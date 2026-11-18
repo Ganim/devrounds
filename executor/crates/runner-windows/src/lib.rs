@@ -3,11 +3,13 @@
 //! Every unit starts inside its own job object, which its processes cannot
 //! leave, so the job's member list is the unit's process tree; no process
 //! snapshots are taken. The leader runs with a hidden console of its own
-//! (`CREATE_NO_WINDOW`), `NUL` as stdin and the run's own output files
-//! ([`devrounds_core::RunOutput`]) as stdout and stderr, and is waited on
-//! through its process handle. The run ends when its leader exits; members
-//! still running then get [`WindowsRunner::exit_grace`] before the job is
-//! terminated. All Win32 calls go through `devrounds-sys-windows`.
+//! (`CREATE_NO_WINDOW`), which its console descendants share, heads a process
+//! group of its own that still accepts Ctrl-C, gets `NUL` as stdin and the
+//! run's own output files ([`devrounds_core::RunOutput`]) as stdout and
+//! stderr, and is waited on through its process handle. The run ends when its
+//! leader exits; members still running then get
+//! [`WindowsRunner::exit_grace`] before the job is terminated. All Win32
+//! calls go through `devrounds-sys-windows`.
 //!
 //! A `/bin/sh` program runs as Git for Windows' `sh.exe`, given with
 //! [`WindowsRunner::with_shell`].

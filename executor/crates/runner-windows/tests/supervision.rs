@@ -5,86 +5,16 @@
 //! and output lands in files the run owns.
 #![cfg(windows)]
 
+mod support;
+
 use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    path::{Path, PathBuf},
-    sync::Arc,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
-use devrounds_core::{LaunchSpec, ProcessIdentity, RunOutput, StopPolicy};
-use devrounds_runner_windows::{ConsoleHelper, HELPER_ARG, WindowsRunner, WindowsUnit};
-use devrounds_sys_windows::proc;
-
-/// Upper bound for each test body; the sweep and stop tests wait out the
-/// 10 s grace.
-const LIMIT: Duration = Duration::from_secs(60);
-
-/// Not a test of its own: started with [`HELPER_ARG`] among its arguments,
-/// this binary is the runner's console helper, as `devrounds-executor
-/// __console-ctrl` is in the shipped binary.
-#[test]
-fn helper_entry() {
-    let args: Vec<OsString> = std::env::args_os().collect();
-    if let Some(at) = args.iter().position(|arg| arg == HELPER_ARG) {
-        let code = devrounds_runner_windows::console_ctrl_main(args[at + 1..].iter().cloned());
-        std::process::exit(i32::from(code));
-    }
-}
-
-/// The runner with this test binary as its console helper.
-fn runner() -> WindowsRunner {
-    let helper = ConsoleHelper {
-        program: std::env::current_exe().expect("test binary path"),
-        args: ["--exact", "helper_entry", "--nocapture", HELPER_ARG]
-            .map(OsString::from)
-            .into(),
-    };
-    WindowsRunner::default().with_console_helper(helper)
-}
-
-/// A run directory under Cargo's per-target temp dir, never the system one.
-fn run_dir() -> tempfile::TempDir {
-    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir")
-}
-
-/// A tree-fixture launch with `args`, writing to `dir`'s `stdout.raw` and
-/// `stderr.raw`.
-fn fixture(dir: &Path, args: &[&str]) -> LaunchSpec {
-    let env: BTreeMap<String, String> = ["SystemRoot", "windir", "TEMP", "TMP", "PATH"]
-        .iter()
-        .filter_map(|name| Some(((*name).to_owned(), std::env::var(name).ok()?)))
-        .collect();
-    LaunchSpec {
-        program: devrounds_test_fixtures::tree_fixture_path()
-            .to_string_lossy()
-            .into_owned(),
-        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        cwd: dir.to_path_buf(),
-        env,
-        output: RunOutput {
-            stdout: dir.join("stdout.raw"),
-            stderr: dir.join("stderr.raw"),
-        },
-    }
-}
-
-/// The run's stdout so far.
-fn stdout(dir: &Path) -> String {
-    std::fs::read_to_string(dir.join("stdout.raw")).expect("stdout.raw")
-}
-
-/// Ends the run's job when the test is done, passed or failed, then removes
-/// its run directory once the job's processes are gone.
-struct Cleanup(Arc<WindowsUnit>, PathBuf);
-
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        self.0.terminate();
-        remove_when_released(&self.1);
-    }
-}
+use devrounds_core::{ProcessIdentity, StopPolicy};
+use devrounds_sys_windows::{console, proc};
+use support::{Cleanup, bounded, fixture, remove_when_released, run_dir, runner, stdout};
 
 /// Ends recorded processes when the test is done, for runs whose handles the
 /// test dropped on purpose, then removes the run directory.
@@ -99,35 +29,9 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// Removes `dir`, retrying for up to 5 s. Every process of a run holds its
-/// output files until it has exited, so this waits (bounded) for the
-/// terminated tree to end; the `TempDir` would otherwise fail to delete it
-/// silently and leave it under `CARGO_TARGET_TMPDIR`. Blocks the thread: the
-/// processes end in the kernel without the runner's help.
-fn remove_when_released(dir: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while std::fs::remove_dir_all(dir).is_err() && dir.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Whether `p` is still the process that was recorded.
 fn alive(p: &ProcessIdentity) -> bool {
     proc::matches(p.pid, p.start_time).expect("process lookup")
-}
-
-/// Runs inherit the ignore-Ctrl-C flag, which the terminal that started the
-/// tests may have set; the executor clears it at startup the same way.
-fn accept_ctrl_c() {
-    devrounds_sys_windows::console::set_ctrl_c_ignored(false).expect("accept Ctrl-C");
-}
-
-/// Runs `body` with the test's time limit. The fixture is resolved first, so
-/// a cold `cargo build` of it is not charged to the limit (`body` is lazy and
-/// only calls [`fixture`] once polled).
-async fn bounded(body: impl Future<Output = ()>) {
-    devrounds_test_fixtures::tree_fixture_path();
-    tokio::time::timeout(LIMIT, body).await.expect("bounded");
 }
 
 /// A leader with two children of two children each: seven processes, all of
@@ -184,28 +88,41 @@ async fn breakaway_is_refused() {
     .await;
 }
 
-/// SIGTERM goes out as Ctrl-C first; a run that handles it exits on its own
-/// without escalation.
+/// SIGTERM goes out as Ctrl-C first, and a run whose tree handles it exits on
+/// its own within the grace, without escalation and with nothing left to
+/// sweep. Runs lead a new process group, which Windows starts with Ctrl-C
+/// ignored; the runner clears that for the leader, and descendants inherit
+/// it. This test process ignores Ctrl-C on purpose, as one started from a
+/// shell or service that set the flag does, so nothing here helps the run.
 #[tokio::test]
 async fn graceful_stop_lets_ctrl_c_handlers_run() {
-    accept_ctrl_c();
+    console::set_ctrl_c_ignored(true).expect("ignore Ctrl-C");
     bounded(async {
         let dir = run_dir();
         let unit = runner()
-            .spawn_unit(fixture(dir.path(), &["--ctrl-c", "bye"]))
+            .spawn_unit(fixture(dir.path(), &["--children", "2", "--ctrl-c", "bye"]))
             .await
             .expect("spawn");
         let _cleanup = Cleanup(unit.clone(), dir.path().to_path_buf());
-        // Let the fixture install its handler.
+        // Let the tree start and install its handlers.
+        for _ in 0..50 {
+            if unit.job_members().await.expect("members").len() == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
+        let started = Instant::now();
         let report = unit
             .stop_with_report(StopPolicy::default())
             .await
             .expect("stop");
+        assert!(started.elapsed() < Duration::from_secs(10), "{report:?}");
         let stop = report.stop.expect("stop outcome");
         assert!(!stop.escalated, "{report:?}");
+        assert!(report.swept.is_empty(), "{report:?}");
         let out = stdout(dir.path());
-        assert!(out.contains("bye"), "{out}");
+        assert_eq!(out.matches("bye").count(), 3, "{out}");
     })
     .await;
 }
@@ -214,7 +131,6 @@ async fn graceful_stop_lets_ctrl_c_handlers_run() {
 /// of it survives.
 #[tokio::test]
 async fn stop_ends_the_tree_within_grace() {
-    accept_ctrl_c();
     bounded(async {
         let dir = run_dir();
         let unit = runner()

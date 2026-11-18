@@ -23,6 +23,20 @@ test('NOTICE names every crate of devlanes-sync.toml with its upstream path and 
   }
 })
 
+// sys-windows spawn is the one place that starts processes, hidden and inside a job. The test fixtures are test
+// programs, and tests/ may use std's Command: neither ships.
+const SPAWN = /std::process::Command|tokio::process::Command|Command::new\(/
+
+test('executor starts processes only through sys-windows spawn', async () => {
+  const offenders: string[] = []
+  for (const file of await rustFiles()) {
+    const path = relative(EXECUTOR, file).split(sep).join('/')
+    if (!path.split('/').includes('src') || path.startsWith('crates/test-fixtures/')) continue
+    if (SPAWN.test(await readFile(file, 'utf8'))) offenders.push(path)
+  }
+  assert.deepEqual(offenders, [], 'start processes with devrounds_sys_windows::spawn::spawn')
+})
+
 test('rust code allows lints only in the accepted list', async () => {
   const offenders: string[] = []
   for (const file of await rustFiles()) {

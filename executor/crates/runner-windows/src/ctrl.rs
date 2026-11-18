@@ -2,8 +2,9 @@
 //! unit's console and sends it Ctrl-C or Ctrl-Break.
 //!
 //! A process can be attached to one console only, so the daemon cannot send
-//! the event itself. The runner starts the helper without a console of its
-//! own and does not wait for it in the unit's supervisor.
+//! the event itself. The runner starts the helper with a hidden console of
+//! its own, which it leaves before attaching, and does not wait for it in
+//! the unit's supervisor.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -129,9 +130,10 @@ impl ConsoleHelper {
             },
             inherit: &[],
             job: None,
-            // No console of its own, so it can attach to the unit's.
+            // A hidden console of its own, which `Attached::to` leaves before
+            // attaching to the unit's; it never shows a window meanwhile.
             flags: CreationFlags {
-                detached_process: true,
+                no_window: true,
                 ..CreationFlags::default()
             },
         })

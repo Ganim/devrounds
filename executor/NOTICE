@@ -39,7 +39,10 @@ devrounds-sys-windows, from crates/sys-windows at e2e4f1cafda94805d6e447331980b8
   which only the removed modules used, and the proc TCP table wrappers
   (listening_tcp, tcp_listeners, established_tcp) with the IpHelper and
   WinSock windows-sys features; only listening_ports used them. Window class
-  and title are devrounds names.
+  and title are devrounds names. Added CreationFlags::accept_ctrl_c, which
+  creates the child suspended, clears the ignore-Ctrl-C bit of its process
+  parameters' ConsoleFlags and resumes it (Win32_System_Diagnostics_Debug
+  feature); proc::basic_information is factored out of parent_of for it.
 
 devrounds-shell-windows, from crates/shell-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Removed exec_path_root, which started `git --exec-path` through
@@ -64,7 +67,11 @@ devrounds-runner-windows, from crates/runner-windows at e2e4f1cafda94805d6e44733
   tests/supervision.rs on DevRounds' tree-fixture (crates/test-fixtures).
   The orphan, MSYS Ctrl-Break, freezing, throttling and pseudo-console tests
   did not. The cmd and sh.exe tests were copied and now read the output
-  files.
+  files. Leaders start in a process group of their own with Ctrl-C accepted
+  (new_process_group + accept_ctrl_c, besides no_window); the console helper
+  starts with no_window instead of detached_process. Added
+  WindowsUnit::visible_windows and tests/hidden.rs; the live tests share
+  tests/support.
 
 devrounds-start-gate, from crates/start-gate at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Requests carry run and job_type instead of lane and unit.
