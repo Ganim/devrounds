@@ -1,0 +1,25 @@
+[package]
+name = "devrounds-runner-windows"
+description = "Job-object runner for executor-owned units on Windows"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The crate is empty on other platforms.
+[target.'cfg(windows)'.dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+devrounds-core = { path = "../core" }
+devrounds-shell-windows = { path = "../shell-windows" }
+devrounds-sys-windows = { path = "../sys-windows" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true

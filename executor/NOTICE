@@ -1,0 +1,69 @@
+DevRounds executor
+
+This workspace contains code copied from devlanes
+(https://github.com/devlanes-run/devlanes), licensed under the Apache License,
+Version 2.0 (see LICENSE). Every copied crate was taken at commit
+e2e4f1cafda94805d6e447331980b83fcbab2e72 and renamed from devlanes-* to
+devrounds-*; upstream names of types and functions are kept so later ports stay
+mechanical. devlanes-sync.toml records the crates and the upstream commits
+reviewed since.
+
+Upstream READMEs and CHANGELOGs were not copied. Copied tests were kept where
+they still apply; temporary directories moved from the system temp to Cargo's
+target directory.
+
+Changes per crate
+-----------------
+
+devrounds-core, from crates/core at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Kept clock, gate, runtime, stop. paths keeps only names_a_path and fold_case;
+  env keeps only fold_name. Removed color, contrib, ports, redact, refs, the
+  lane/project/unit-run ids and Actor. runtime drops pseudo-terminal launches
+  (LaunchSpec pty/size, TerminalSize, OutputStream::Terminal), Power, ExitSweep
+  and the Unit methods input, resize, set_power and renders_screen.
+  ProcessInfo moved here from devlanes-sys. StartRequest is
+  { run, job_type, order, memory_need } instead of lane/unit, and
+  GateSnapshot::find takes a run id. Added DrError (error.rs) and JobSpec
+  (job.rs).
+
+devrounds-sys-windows, from crates/sys-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Removed cert, conpty, net, pipe, power, registry and shell_execute with their
+  tests and windows-sys features, the test-support feature and rcgen.
+  Removed Job::adopt_suspended (needed power), the Stdio::PseudoConsole spawn
+  path (needed conpty), security::kernel_object_owner and util::hresult_error,
+  which only the removed modules used.
+
+devrounds-shell-windows, from crates/shell-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Removed exec_path_root, which started `git --exec-path` through
+  tokio::process outside devrounds_sys_windows::spawn; windows_shell now finds
+  Git's sh.exe from PATH only.
+
+devrounds-runner-windows, from crates/runner-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Removed foreground (spawn_foreground, shell_exit_code), terminal (ConPTY
+  units, batch-prompt answers), listening_ports, set_power/freezing,
+  with_exit_sweep and the devlanes-sys dependency. output.rs is kept without
+  terminal sizing until run output moves to run-owned files. The integration
+  tests that drove devlanes-testing's fixture-server (stops, orphans, process
+  trees, freezing, throttling) and the pseudo-console tests were not copied;
+  the cmd and sh.exe tests were.
+
+devrounds-start-gate, from crates/start-gate at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Requests carry run and job_type instead of lane and unit.
+
+devrounds-metrics, from crates/metrics at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Kept ring, sketch and run. Removed aggregate and history. The subject of a
+  sample is a run id: Subject is Run, Process (with run) or Daemon; UnitKey,
+  container, Docker VM, project and lane subjects are gone. RunTracker and
+  RunSummary are keyed by run id.
+
+devrounds-metrics-windows, from crates/metrics-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Samples carry the run id of their target instead of a unit key.
+
+devrounds-logs, from crates/logs at e2e4f1cafda94805d6e447331980b83fcbab2e72
+  Kept framing, level and storage. Removed query and the grep-* and jiff
+  dependencies. LogLine moved into this crate with its unit field renamed to
+  run. Tests use expect instead of allowing clippy::unwrap_used; the
+  query-based tests were dropped.
+
+Not copied: devlanes-sys (only ProcessInfo was needed) and devlanes-runner-pty
+(Unix-only; Windows terminals wait for a later phase).

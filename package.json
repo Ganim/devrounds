@@ -7,7 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test \"control-plane/src/**/*.test.ts\" \"web/src/**/*.test.ts\"",
+    "test": "node --test \"control-plane/src/**/*.test.ts\" \"web/src/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "test:executor": "cd executor && cargo test --workspace",
+    "lint:executor": "cd executor && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",
     "typecheck": "tsc -p control-plane && tsc -p web",
     "lint": "biome check --error-on-warnings .",
     "gen:errors": "node scripts/gen-error-docs.ts",
@@ -16,6 +18,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
     "@types/node": "24.19.2",
+    "smol-toml": "1.9.1",
     "typescript": "5.9.3"
   }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "devrounds-executor"
+description = "The DevRounds executor: pairing, connection, admission and runs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

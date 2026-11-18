@@ -22,6 +22,7 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 - Never put error text, hint or HTTP status outside `errors/words.ts`. Never renumber a code.
 - Never put a vendor, customer or tool name in engine code. Providers are adapters.
 - Never rerun a flaky test; fix it. Never suppress a lint rule inline.
+- Never start a process in the executor outside `devrounds_sys_windows::spawn`.
 
 ## Always
 
@@ -36,8 +37,13 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.
+- Use the `x5x` block of each range for executor, protocol and run errors: DR150, DR151, DR350, DR351, DR352, DR450,
+  DR451, DR452, DR453, DR550, DR551. The executor emits `DrError::new("DR###", data)` and prints `DR### <data json>`
+  plus `see docs/errors.md`; text and hints stay in `errors/words.ts`.
 
 ## Accepted P0 exceptions
 
 - The web view uses a pasted API token instead of session login. Removed in P1 (Better Auth).
 - The web view polls every 10 s instead of SSE. Removed in P5.
+- `#[allow(unsafe_code)]` on the FFI modules of `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a
+  SAFETY comment.

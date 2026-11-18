@@ -14,6 +14,9 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      smol-toml:
+        specifier: 1.9.1
+        version: 1.9.1
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -707,6 +710,10 @@ packages:
   setprototypeof@1.2.0:
     resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
 
+  smol-toml@1.9.1:
+    resolution: {integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==}
+    engines: {node: '>= 18'}
+
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
 
@@ -1330,6 +1337,8 @@ snapshots:
   set-cookie-parser@3.2.2: {}
 
   setprototypeof@1.2.0: {}
+
+  smol-toml@1.9.1: {}
 
   sonic-boom@4.2.1:
     dependencies:

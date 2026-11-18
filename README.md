@@ -33,3 +33,17 @@ devrounds plan import roadmap/snapshot.yaml
 
 The web view takes the human token. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
 removes the task.
+
+## Executor
+
+The executor is a Rust workspace under `executor/` (Windows 11, toolchain pinned in `executor/rust-toolchain.toml`;
+rustup picks it up only when cargo runs inside `executor/`). Its crates are copied from devlanes;
+`executor/NOTICE` lists the origin and every change.
+
+```
+cd executor && cargo build --release   # target/release/devrounds-executor.exe
+pnpm test:executor                       # cargo test for the whole workspace
+pnpm lint:executor                       # rustfmt check + clippy with -D warnings
+```
+
+The `sh.exe` tests need Git for Windows on `PATH`.

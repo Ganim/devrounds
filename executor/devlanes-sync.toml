@@ -1,0 +1,48 @@
+upstream = "https://github.com/devlanes-run/devlanes"
+
+[[crate]]
+name = "devrounds-core"
+upstream_path = "crates/core"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-sys-windows"
+upstream_path = "crates/sys-windows"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-shell-windows"
+upstream_path = "crates/shell-windows"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-runner-windows"
+upstream_path = "crates/runner-windows"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-start-gate"
+upstream_path = "crates/start-gate"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-metrics"
+upstream_path = "crates/metrics"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-metrics-windows"
+upstream_path = "crates/metrics-windows"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+[[crate]]
+name = "devrounds-logs"
+upstream_path = "crates/logs"
+synced_commit = "e2e4f1cafda94805d6e447331980b83fcbab2e72"
+
+# Upstream commits reviewed since the sync, one per crate they touch:
+# [[reviewed]]
+# commit = "<sha>"
+# crate = "devrounds-<name>"
+# decision = "ported" # or "not_applicable"
+# reason = "<why>"

@@ -14,6 +14,20 @@ import { WORDS } from './words.ts'
 const SRC = fileURLToPath(new URL('..', import.meta.url))
 const DOCS = fileURLToPath(new URL('../../../docs/errors.md', import.meta.url))
 const EMIT = /(fail|new DevRoundsError)\(\s*['"](DR\d{3})['"]/g
+const EXECUTOR = fileURLToPath(new URL('../../../executor', import.meta.url))
+const RUST_EMIT = /DrError::new\(\s*"(DR\d{3})"/g
+
+async function rustFiles(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return entry.name === 'target' ? [] : rustFiles(path)
+      return entry.name.endsWith('.rs') ? [path] : []
+    }),
+  )
+  return nested.flat()
+}
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true })
@@ -31,6 +45,10 @@ async function emittedCodes(): Promise<Set<string>> {
   const codes = new Set<string>()
   for (const file of await sourceFiles(SRC)) {
     for (const match of (await readFile(file, 'utf8')).matchAll(EMIT)) codes.add(match[2])
+  }
+  // The executor shares the code table: its Rust errors need words too.
+  for (const file of await rustFiles(EXECUTOR)) {
+    for (const match of (await readFile(file, 'utf8')).matchAll(RUST_EMIT)) codes.add(match[1])
   }
   return codes
 }

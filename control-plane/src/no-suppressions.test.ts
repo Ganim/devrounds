@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url))
-const SKIP = new Set(['node_modules', '.git', '.superpowers', 'dist'])
+const SKIP = new Set(['node_modules', '.git', '.superpowers', 'dist', 'target'])
 const SOURCE = /\.(ts|tsx|js|jsx|json|jsonc|css)$/
 // Built by concatenation so this file does not match itself.
 const MARKER = `biome-${'ignore'}`
