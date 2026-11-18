@@ -1,5 +1,5 @@
 import type { Kysely, Transaction } from 'kysely'
-import type { Database, MemberKind } from '../db/schema.ts'
+import type { Database, MemberKind, PhaseState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { withTenant } from '../tenancy/scope.ts'
 
@@ -30,7 +30,20 @@ export function run<T>(ctx: TenantCtx, fn: (trx: Trx) => Promise<T>): Promise<T>
 // - phase `for no key update` (deciding delivery, positions) or `for share` (adding open work): delivery and new open
 //   work in the same phase cannot interleave.
 // `no key update` instead of `update` because FK inserts take `key share` on the parent, which `update` would block.
+// A call that locks several phases takes them through lockPhases, in id order.
 export type Lock = 'update' | 'share'
+
+// Locks each phase row in id order (one mode per id) and returns them by id, so two calls locking an overlapping set
+// of phases cannot deadlock on each other.
+export async function lockPhases(trx: Trx, locks: Map<string, Lock>) {
+  const rows = new Map<string, { id: string; key: string; state: PhaseState }>()
+  for (const id of [...locks.keys()].sort()) {
+    const query = trx.selectFrom('phases').select(['id', 'key', 'state']).where('id', '=', id)
+    const locked = locks.get(id) === 'update' ? query.forNoKeyUpdate() : query.forShare()
+    rows.set(id, await locked.executeTakeFirstOrThrow())
+  }
+  return rows
+}
 
 export async function findProject(trx: Trx, key: string, opts: { lock?: boolean } = {}) {
   let query = trx.selectFrom('projects').select(['id', 'key', 'name']).where('key', '=', key)

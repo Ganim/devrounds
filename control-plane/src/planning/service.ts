@@ -8,6 +8,8 @@ import {
   findProject,
   findTarget,
   findTask,
+  type Lock,
+  lockPhases,
   run,
   type Target,
   type Trx,
@@ -445,7 +447,8 @@ export function editTask(
   return run(ctx, async (trx) => {
     requireReason(i.reason)
     const project = await findProject(trx, i.projectKey)
-    // Task before phase (the lock order); the target phase is locked for share like in addTask.
+    // Task before phase (the lock order). The target phase is locked for share like in addTask; the source phase too,
+    // so a concurrent close or delivery of it waits for the move instead of counting the task on a stale read.
     const task = await findTask(trx, project.id, i.taskKey, { lock: true })
     const changes: {
       title?: string
@@ -456,12 +459,16 @@ export function editTask(
     } = {}
     if (i.title !== undefined) changes.title = i.title
     if (i.description !== undefined) changes.description = i.description
-    if (typeof i.phaseKey === 'string') {
-      const phase = await findPhase(trx, project.id, i.phaseKey, { lock: 'share' })
-      if (phase.state === 'delivered' && isBlockerOpen(task.state)) phaseConflict(phase)
-      changes.phase_id = phase.id
+    if (i.phaseKey !== undefined) {
+      const targetId = i.phaseKey === null ? null : (await findPhase(trx, project.id, i.phaseKey)).id
+      const locks = new Map<string, Lock>()
+      if (task.phase_id) locks.set(task.phase_id, 'share')
+      if (targetId) locks.set(targetId, 'share')
+      const phases = await lockPhases(trx, locks)
+      const phase = targetId ? phases.get(targetId) : undefined
+      if (phase?.state === 'delivered' && isBlockerOpen(task.state)) phaseConflict(phase)
+      changes.phase_id = targetId
     }
-    if (i.phaseKey === null) changes.phase_id = null
     if (i.assigneeName !== undefined) changes.assignee_id = i.assigneeName && (await findMember(trx, i.assigneeName)).id
     if (i.estimateHours !== undefined) changes.estimate_hours = i.estimateHours
     if (Object.keys(changes).length > 0) await trx.updateTable('tasks').set(changes).where('id', '=', task.id).execute()

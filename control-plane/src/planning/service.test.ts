@@ -273,6 +273,25 @@ test('closePhase racing automatic delivery: delivered once, the close gets DR306
   assert.equal((await events(ctx)).filter((e) => e.kind === 'deliver_phase').length, 1)
 })
 
+test('closePhase racing a move of its only done task out: no delivery on the stale read', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T01', title: 'A' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'done' })
+  await reopenPhase(ctx, { projectKey, phaseKey: 'P0', reason: 'more work' })
+
+  const results = await race(
+    ctx,
+    'phases',
+    (inner) => editTask(inner, { projectKey, taskKey: 'P0-T01', phaseKey: null, reason: 'unphased' }),
+    () => closePhase(ctx, { projectKey, phaseKey: 'P0' }),
+  )
+
+  assert.deepEqual(results, ['ok', 'DR305'])
+  assert.equal((await getPlan(ctx, projectKey)).phases[0].state, 'open')
+})
+
 test('concurrent criteria on one task get distinct positions', async () => {
   const { ctx } = await setup()
   await addTask(ctx, { projectKey, key: 'P0-T01', title: 'A' })
