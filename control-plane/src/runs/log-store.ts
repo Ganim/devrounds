@@ -22,6 +22,25 @@ export type LogLine = { seq: number; timestampMs: number; text: string; level: s
 /** `nextCursor` is the seq of the first line left out, or null when the page reached the end of the log. */
 export type LogPage = { lines: LogLine[]; nextCursor: bigint | null }
 
+/** What one segment may decompress to. A 1 MiB executor segment is a few MiB of JSON lines at worst. */
+export const SEGMENT_READ_BOUND = 16 * 1024 * 1024
+
+type Warn = { warn(data: Record<string, unknown>, message: string): void }
+const emitWarning: Warn = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) }
+
+/** A segment's path relative to the logs root, as log_segments.path keeps it. Zero-padded, so a listing sorts by seq. */
+function segmentName(tenantId: string, runId: string, firstSeq: number): string {
+  return join('runs', tenantId, runId, `${String(firstSeq).padStart(20, '0')}.zst`)
+}
+
+/**
+ * Where segment `firstSeq` of run `runId` lives. Always derived from the ids and `logsRoot`, never read back from
+ * log_segments.path: the root can move, and a path from the database must never decide which file is removed.
+ */
+export function segmentFile(logsRoot: string, tenantId: string, runId: string, firstSeq: number): string {
+  return join(logsRoot, segmentName(tenantId, runId, firstSeq))
+}
+
 // The executor's LogLine as it serializes it.
 type StoredLine = { seq: number; timestamp_ms: number; text: string; level: string | null }
 
@@ -58,8 +77,7 @@ export async function storeSegment(
       .executeTakeFirst()
     if (known) return
     const bytes = Buffer.from(segment.zstd_base64, 'base64')
-    // Zero-padded so a directory listing sorts like the seqs.
-    const path = join(ctx.logsRoot, 'runs', ctx.tenantId, runId, `${String(segment.first_seq).padStart(20, '0')}.zst`)
+    const path = segmentFile(ctx.logsRoot, ctx.tenantId, runId, segment.first_seq)
     await mkdir(dirname(path), { recursive: true })
     // A rolled-back transaction leaves the file; the resent segment overwrites it with the same name.
     await writeFile(`${path}.part`, bytes)
@@ -73,7 +91,8 @@ export async function storeSegment(
         last_seq: segment.last_seq,
         records: segment.records,
         bytes: bytes.length,
-        path,
+        // For people reading the table; code derives the file with segmentFile.
+        path: segmentName(ctx.tenantId, runId, segment.first_seq),
       })
       .execute()
     await trx
@@ -87,14 +106,17 @@ export async function storeSegment(
 /**
  * The lines of run `runId` from seq `cursor` on (from the start without one), cut at a whole line once they pass
  * `maxBytes` (UTF-8 text plus a newline each); the first line always fits, so paging always moves forward. Segments
- * are read one at a time, so what this holds is one segment plus the page. A segment file already pruned is skipped.
+ * are read one at a time, each bounded by SEGMENT_READ_BOUND, so what this holds is one segment plus the page. A
+ * segment whose file is missing is skipped with a warning to `log`; one that does not decompress within the bound, or
+ * is not JSON lines, is DR503 naming the cursor past it, so a reader can go on.
  * With `projectKey`, a run of another project answers DR201 as if it did not exist.
  */
 export async function readRunLog(
-  ctx: TenantCtx,
+  ctx: LogCtx,
   runId: string,
-  opts: { cursor?: bigint; maxBytes: number; projectKey?: string },
+  opts: { cursor?: bigint; maxBytes: number; projectKey?: string; log?: Warn },
 ): Promise<LogPage> {
+  const log = opts.log ?? emitWarning
   requireRunId(runId)
   const start = opts.cursor ?? 0n
   const segments = await run(ctx, async (trx) => {
@@ -108,7 +130,7 @@ export async function readRunLog(
     if (!found) fail('DR201', { kind: 'run', key: runId })
     return trx
       .selectFrom('log_segments')
-      .select(['first_seq', 'path'])
+      .select(['first_seq', 'last_seq'])
       .where('run_id', '=', runId)
       .where('last_seq', '>=', String(start))
       .orderBy('first_seq')
@@ -117,17 +139,28 @@ export async function readRunLog(
   const lines: LogLine[] = []
   let used = 0
   for (const segment of segments) {
+    const firstSeq = Number(segment.first_seq)
+    const lastSeq = Number(segment.last_seq)
     let compressed: Buffer
     try {
-      compressed = await readFile(segment.path)
+      compressed = await readFile(segmentFile(ctx.logsRoot, ctx.tenantId, runId, firstSeq))
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw err
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      log.warn({ run: runId, firstSeq, lastSeq }, 'log segment file is missing; its lines are skipped')
+      continue
     }
-    const text = (await zstdDecompress(compressed)).toString('utf8')
-    for (const json of text.split('\n')) {
-      if (json === '') continue
-      const line = JSON.parse(json) as StoredLine
+    let stored: StoredLine[]
+    try {
+      const text = (await zstdDecompress(compressed, { maxOutputLength: SEGMENT_READ_BOUND })).toString('utf8')
+      stored = text
+        .split('\n')
+        .filter((json) => json !== '')
+        .map((json) => JSON.parse(json) as StoredLine)
+    } catch (err) {
+      const reason = (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE' ? 'larger than 16 MiB' : String(err)
+      fail('DR503', { run: runId, firstSeq, lastSeq, reason, next: lastSeq + 1 })
+    }
+    for (const line of stored) {
       if (BigInt(line.seq) < start) continue
       const size = Buffer.byteLength(line.text) + 1
       if (lines.length > 0 && used + size > opts.maxBytes) return { lines, nextCursor: BigInt(line.seq) }
@@ -143,18 +176,25 @@ export async function readRunLog(
  * rows of all tenants come from expired_log_segments (0006); each tenant's are deleted inside that tenant, and the
  * files only once the delete committed, so a failed delete never leaves a row without its file.
  */
-export async function pruneLogSegments(db: Kysely<Database>, now: Date, retentionDays: number): Promise<number> {
+export async function pruneLogSegments(
+  db: Kysely<Database>,
+  logsRoot: string,
+  now: Date,
+  retentionDays: number,
+): Promise<number> {
   const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000)
-  const { rows } = await sql<{ tenant_id: string; id: string; path: string }>`
-    select tenant_id, id, path from expired_log_segments(${cutoff})`.execute(db)
+  const { rows } = await sql<{ tenant_id: string; id: string }>`
+    select tenant_id, id from expired_log_segments(${cutoff})`.execute(db)
   const byTenant = new Map<string, string[]>()
   for (const row of rows) byTenant.set(row.tenant_id, [...(byTenant.get(row.tenant_id) ?? []), row.id])
   let pruned = 0
   for (const [tenantId, ids] of byTenant) {
     const deleted = await withTenant(db, tenantId, (trx) =>
-      trx.deleteFrom('log_segments').where('id', 'in', ids).returning('path').execute(),
+      trx.deleteFrom('log_segments').where('id', 'in', ids).returning(['run_id', 'first_seq']).execute(),
     )
-    for (const { path } of deleted) await rm(path, { force: true })
+    for (const row of deleted) {
+      await rm(segmentFile(logsRoot, tenantId, row.run_id, Number(row.first_seq)), { force: true })
+    }
     pruned += deleted.length
   }
   return pruned

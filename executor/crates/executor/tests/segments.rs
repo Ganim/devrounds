@@ -23,7 +23,7 @@ use devrounds_core::{
 };
 use devrounds_executor::{
     admission::{Admission, AdmissionConfig, DEFAULT_MEMORY_NEED},
-    runs::{RunLoop, RunLoopDeps, run_log_options},
+    runs::{RunLoop, RunLoopDeps, SegmentOptions, run_log_options},
 };
 use devrounds_logs::{LogLine, LogOptions};
 use devrounds_protocol::{ClientMessage, Offer, RunEvent, ServerMessage, decode_client};
@@ -73,7 +73,7 @@ struct Harness {
     _connected: watch::Sender<bool>,
 }
 
-async fn harness(log_options: LogOptions) -> Harness {
+async fn harness(log_options: SegmentOptions) -> Harness {
     devrounds_runner_windows::prepare_executor_process().expect("prepare");
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
     let store = Store::open(&home.path().join("executor.db"))
@@ -194,6 +194,18 @@ fn segments(events: &[(u64, RunEvent)]) -> Vec<Segment> {
         .collect()
 }
 
+/// 64 KiB segments: 20000 short lines (about 700 KiB of records) make several.
+fn small_segments() -> SegmentOptions {
+    let production = run_log_options();
+    SegmentOptions {
+        log: LogOptions {
+            segment_bytes: 64 * 1024,
+            ..production.log.clone()
+        },
+        ..production
+    }
+}
+
 /// Segment files (`*.log`, `*.log.zst`) left under `dir`.
 fn segment_files(dir: &Path) -> Vec<PathBuf> {
     match std::fs::read_dir(dir) {
@@ -215,11 +227,7 @@ fn segment_files(dir: &Path) -> Vec<PathBuf> {
 async fn segments_ship_through_the_outbox_and_are_deleted_after_ack() {
     tokio::time::timeout(LIMIT, async {
         // 20000 short lines are about 700 KiB of records: small segments make several.
-        let options = LogOptions {
-            segment_bytes: 64 * 1024,
-            ..run_log_options()
-        };
-        let h = harness(options).await;
+        let h = harness(small_segments()).await;
         h.runs
             .handle(offer("run-s1", &["--print", "20000"], h.home.path()));
         let events = until_finished(&h.store).await;
@@ -262,6 +270,35 @@ async fn segments_ship_through_the_outbox_and_are_deleted_after_ack() {
         while !segment_files(&segment_dir).is_empty() || run_dir.join("stdout.raw").exists() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    })
+    .await
+    .expect("bounded");
+}
+
+#[tokio::test]
+async fn a_segment_that_cannot_ship_keeps_the_run_output_on_disk() {
+    tokio::time::timeout(LIMIT, async {
+        // No segment fits the frame limit: each is lost to the control plane.
+        let h = harness(SegmentOptions {
+            max_event_bytes: 1024,
+            ..small_segments()
+        })
+        .await;
+        h.runs
+            .handle(offer("run-s3", &["--print", "20000"], h.home.path()));
+        let events = until_finished(&h.store).await;
+        assert!(segments(&events).is_empty(), "nothing over the limit ships");
+
+        // Everything is acked and the run is over; its output is the only copy left.
+        let highest = events.last().map(|(seq, _)| *seq).expect("events");
+        h.store.ack_through(highest).await.expect("ack");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let run_dir = h.home.path().join("runs").join("run-s3");
+        assert!(run_dir.join("stdout.raw").exists(), "raw output kept");
+        assert!(
+            !segment_files(&run_dir.join("segments")).is_empty(),
+            "segments kept"
+        );
     })
     .await
     .expect("bounded");

@@ -34,6 +34,16 @@ pub const TAIL_BYTES: usize = 8 * 1024;
 /// holds a blocking thread for long; the final read goes to the end.
 const POLL_BYTES: usize = 1024 * 1024;
 
+/// How a run's output is cut into segments and shipped.
+#[derive(Debug, Clone)]
+pub struct SegmentOptions {
+    pub log: LogOptions,
+    /// The largest `LogSegment` event the connection can send (the
+    /// protocol's frame limit). A segment past it does not ship; the run's
+    /// output then stays on disk.
+    pub max_event_bytes: usize,
+}
+
 /// The task following one run's output. [`OutputTail::finish`] reads what is
 /// left and returns the tail.
 pub struct OutputTail {
@@ -49,7 +59,7 @@ impl OutputTail {
         output: RunOutput,
         store: Store,
         segments: PathBuf,
-        options: LogOptions,
+        options: SegmentOptions,
     ) -> Self {
         let (stop, stopped) = oneshot::channel();
         let mut raw = vec![output.stdout.clone()];
@@ -96,6 +106,9 @@ async fn follow(
     let mut poll = tokio::time::interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last = false;
+    // A segment event the store refused: as with a segment that could not be
+    // made into one, the run's files are then the only copy of its output.
+    let mut unstored = false;
     loop {
         // A dropped sender also means the run is over. Once it is, the final
         // drain goes on without waiting, a few segments per round.
@@ -142,12 +155,16 @@ async fn follow(
                 Ok(seq) => {
                     let _ = reap.send(Reap::Shipped { seq, files });
                 }
-                // Its files stay, as do the raw files: nothing else holds that output.
-                Err(error) => tracing::error!(%run, %error, "log segment not stored"),
+                Err(error) => {
+                    unstored = true;
+                    tracing::error!(%run, %error, "log segment not stored; the run's output stays on disk");
+                }
             }
         }
         if polled.done {
-            if polled.sealed {
+            // Unsealed, the reaper stops with the output task and keeps the
+            // raw files and every segment not deleted yet.
+            if polled.sealed && !unstored {
                 let _ = reap.send(Reap::Sealed);
             }
             return state.tail.lines.into();
@@ -166,7 +183,8 @@ enum Reap {
 /// Deletes each shipped segment's files once its event is acked, then the
 /// segment directory and the raw output files once the run is sealed and its
 /// last segment acked. Ends early, keeping the files, when the output task
-/// ends without sealing (the log failed) or the store goes away.
+/// ends without sealing (the log failed, or a segment did not reach the
+/// outbox) or the store goes away.
 async fn reaper(
     mut acked: watch::Receiver<u64>,
     mut reaps: mpsc::UnboundedReceiver<Reap>,
@@ -277,12 +295,16 @@ struct Polled {
 enum RunLog {
     Pending {
         dir: PathBuf,
-        options: LogOptions,
+        options: SegmentOptions,
     },
     Open {
         log: UnitLog,
         /// `last_seq` of the last segment handed out.
         shipped_through: u64,
+        max_event_bytes: usize,
+        /// A closed segment could not be made into an event: the run's
+        /// files are then its only copy, and the run is never sealed.
+        lost: bool,
     },
     Off,
 }
@@ -292,10 +314,12 @@ impl RunLog {
         let Self::Pending { dir, options } = self else {
             return;
         };
-        *self = match UnitLog::open(&*dir, run, options.clone()) {
+        *self = match UnitLog::open(&*dir, run, options.log.clone()) {
             Ok(log) => Self::Open {
                 log,
                 shipped_through: 0,
+                max_event_bytes: options.max_event_bytes,
+                lost: false,
             },
             Err(error) => {
                 tracing::warn!(%run, %error, "run log not opened; its output does not ship");
@@ -319,6 +343,8 @@ impl RunLog {
         let Self::Open {
             log,
             shipped_through,
+            max_event_bytes,
+            lost,
         } = self
         else {
             return Vec::new();
@@ -329,23 +355,39 @@ impl RunLog {
             if !meta.closed || meta.records == 0 || meta.first_seq <= *shipped_through {
                 continue;
             }
+            // Handed out once either way: a segment that cannot ship is never retried.
             *shipped_through = meta.last_seq;
-            match shipment(&dir, meta, run) {
+            match shipment(&dir, meta, run, *max_event_bytes) {
                 Ok(shipment) => shipments.push(shipment),
-                // Its lines are lost to the control plane; the file stays for inspection.
                 Err(error) => {
-                    tracing::warn!(%run, first_seq = meta.first_seq, %error, "log segment not shipped");
+                    *lost = true;
+                    tracing::error!(%run, first_seq = meta.first_seq, %error, "log segment not shipped; the run's output stays on disk");
                 }
             }
         }
         shipments
     }
+
+    /// Every segment so far made it into an event.
+    fn intact(&self) -> bool {
+        matches!(self, Self::Open { lost: false, .. })
+    }
 }
+
+/// What a `LogSegment` frame holds besides its base64: the envelope, kind,
+/// run id and seqs, generously.
+const FRAME_OVERHEAD: usize = 1024;
 
 /// The segment as zstd-compressed JSON lines, one `LogLine` per record,
 /// base64 in the event. One segment at a time, so what this holds is bounded
-/// by the segment size.
-fn shipment(dir: &Path, meta: &SegmentMetadata, run: &str) -> Result<Shipment, String> {
+/// by the segment size. An event past `max_event_bytes` could never be sent,
+/// so it fails here instead of sitting at the head of the outbox.
+fn shipment(
+    dir: &Path,
+    meta: &SegmentMetadata,
+    run: &str,
+    max_event_bytes: usize,
+) -> Result<Shipment, String> {
     let lines = read_segment(meta, run).map_err(|error| error.to_string())?;
     let mut json = Vec::with_capacity(usize::try_from(meta.uncompressed_bytes).unwrap_or(0));
     for line in &lines {
@@ -353,12 +395,19 @@ fn shipment(dir: &Path, meta: &SegmentMetadata, run: &str) -> Result<Shipment, S
         json.push(b'\n');
     }
     let compressed = zstd::stream::encode_all(json.as_slice(), 3).map_err(|e| e.to_string())?;
+    let zstd_base64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+    if zstd_base64.len() + FRAME_OVERHEAD > max_event_bytes {
+        return Err(format!(
+            "{} bytes as base64, over the {max_event_bytes} byte frame limit",
+            zstd_base64.len()
+        ));
+    }
     let event = RunEvent::LogSegment {
         run: run.to_owned(),
         first_seq: meta.first_seq,
         last_seq: meta.last_seq,
         records: u32::try_from(lines.len()).map_err(|error| error.to_string())?,
-        zstd_base64: base64::engine::general_purpose::STANDARD.encode(compressed),
+        zstd_base64,
     };
     // The metadata name follows devrounds-logs' `<first_seq:020>.meta.json`.
     let files = vec![
@@ -456,7 +505,7 @@ impl State {
             changes,
             segments,
             done: last,
-            sealed: last && matches!(log, RunLog::Open { .. }),
+            sealed: last && log.intact(),
         }
     }
 }

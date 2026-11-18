@@ -21,10 +21,11 @@ const LOG_PAGE_BYTES = 16384
 
 // Job types and runs of one project. Messages to the executor go out only after mutateIdempotent committed, and only
 // when the mutation ran: a replayed Idempotency-Key offers or stops nothing again.
-export const runRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessions: Sessions }> = async (
-  app,
-  { db, sessions },
-) => {
+export const runRoutes: FastifyPluginAsyncTypebox<{
+  db: Kysely<Database>
+  sessions: Sessions
+  logsRoot: string
+}> = async (app, { db, sessions, logsRoot }) => {
   authenticateMembers(app, db)
 
   app.put(
@@ -102,10 +103,11 @@ export const runRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessio
     },
     async (request) => {
       const { cursor } = request.query
-      const page = await readRunLog(memberCtx(db, request), request.params.id, {
+      const page = await readRunLog({ ...memberCtx(db, request), logsRoot }, request.params.id, {
         cursor: cursor === undefined ? undefined : BigInt(cursor),
         maxBytes: LOG_PAGE_BYTES,
         projectKey: request.params.key,
+        log: request.log,
       })
       // Seqs fit a JS number: the protocol refuses any past 2^53 (executor/protocol.ts).
       return { lines: page.lines, nextCursor: page.nextCursor === null ? null : Number(page.nextCursor) }

@@ -26,9 +26,12 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     Sampler,
     admission::{Admission, AdmissionStep, DelayReason},
+    connection::MAX_MESSAGE,
     isolation::{Isolation, NoneIsolation, PrepareError},
     output::OutputTail,
 };
+
+pub use crate::output::SegmentOptions;
 
 /// How often a running run's visible windows are counted.
 const WINDOWS_EVERY: Duration = Duration::from_secs(1);
@@ -44,19 +47,22 @@ pub struct RunLoopDeps {
     /// Each run writes into `<runs_dir>/<run id>`.
     pub runs_dir: PathBuf,
     pub machine_env: BTreeMap<String, String>,
-    /// How each run's output is cut into segments; [`run_log_options`] in
-    /// production.
-    pub log_options: LogOptions,
+    /// How each run's output is cut into segments and shipped;
+    /// [`run_log_options`] in production.
+    pub log_options: SegmentOptions,
 }
 
 /// Segments of at most 1 MiB or 30 s, compressed: a closed segment ships as
 /// one `LogSegment` event, well under the 4 MiB frame limit as base64.
-pub fn run_log_options() -> LogOptions {
-    LogOptions {
-        segment_bytes: 1 << 20,
-        segment_age_ms: 30_000,
-        compress: true,
-        ..LogOptions::default()
+pub fn run_log_options() -> SegmentOptions {
+    SegmentOptions {
+        log: LogOptions {
+            segment_bytes: 1 << 20,
+            segment_age_ms: 30_000,
+            compress: true,
+            ..LogOptions::default()
+        },
+        max_event_bytes: MAX_MESSAGE,
     }
 }
 
@@ -73,7 +79,7 @@ struct Shared {
     connected: watch::Receiver<bool>,
     runs_dir: PathBuf,
     machine_env: Arc<BTreeMap<String, String>>,
-    log_options: LogOptions,
+    log_options: SegmentOptions,
     /// Runs offered and not finished yet, each with its stop flag.
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
     /// Runs with a live process.

@@ -194,6 +194,14 @@ Control plane configuration is invalid: {reason}.
 
 Fix the file named in the message (~/.devrounds/server.json for the server, ~/.devrounds/config.json for the CLI) or the DEVROUNDS_* environment variables, then run it again.
 
+## DR503
+
+Log segment {firstSeq}-{lastSeq} of run {run} cannot be read: {reason}.
+
+### Fix
+
+Read on past it with `devrounds run logs {run} --cursor {next}`; the lines in that segment are not readable.
+
 ## DR550
 
 Executor state at {path} is unusable: {reason}.

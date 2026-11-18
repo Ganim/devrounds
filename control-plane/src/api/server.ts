@@ -97,7 +97,7 @@ export function buildServer(opts: ServerOptions) {
   app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD } })
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
   const logsRoot = opts.logsRoot ?? defaultLogsRoot()
-  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
+  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
   app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot })
 

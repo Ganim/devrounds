@@ -14,7 +14,7 @@ async function serve(): Promise<void> {
   const app = buildServer({ db, logsRoot: config.logsRoot })
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
-    pruneLogSegments(db, new Date(), config.logRetentionDays).catch((err) =>
+    pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
       app.log.error({ err }, 'log segment prune failed'),
     )
   const pruning = setInterval(prune, PRUNE_EVERY_MS)

@@ -167,6 +167,54 @@ async fn a_fresh_store_continues_after_the_control_planes_last_seq() {
 }
 
 #[tokio::test]
+async fn a_backlog_of_large_segments_is_resent_whole_and_in_order() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("store");
+    // About 12 MiB of segments left by a long disconnect: several resend pages.
+    for first in 0..12u64 {
+        let event = RunEvent::LogSegment {
+            run: "r1".to_owned(),
+            first_seq: first * 10 + 1,
+            last_seq: first * 10 + 10,
+            records: 10,
+            zstd_base64: "A".repeat(1024 * 1024),
+        };
+        store.append_event(event).await.expect("append");
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let config = ExecutorConfig {
+        url: format!("http://{}", listener.local_addr().expect("addr")),
+        machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
+    };
+    let connection = Connection::new(store.clone());
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut Quiet).await });
+
+    bounded(async {
+        let mut socket = accept(&listener, 0).await;
+        let mut seen = Vec::new();
+        while seen.len() < 12 {
+            match next(&mut socket).await {
+                Some(ClientMessage::Event(event)) => {
+                    let RunEvent::LogSegment { first_seq, .. } = event.event else {
+                        panic!("unexpected event {:?}", event.event);
+                    };
+                    seen.push((event.seq, first_seq));
+                }
+                other => panic!("expected an Event, got {other:?}"),
+            }
+        }
+        let expected: Vec<(u64, u64)> = (1..=12).map(|seq| (seq, (seq - 1) * 10 + 1)).collect();
+        assert_eq!(seen, expected);
+        nothing_more(&mut socket).await;
+    })
+    .await;
+    client.abort();
+}
+
+#[tokio::test]
 async fn reconnect_replays_unacked_events_in_order() {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
     let store = Store::open(&dir.path().join("executor.db"))

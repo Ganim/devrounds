@@ -255,6 +255,8 @@ export interface LogSegmentsTable {
   last_seq: Int8
   records: number
   bytes: number
+  /** Relative to the logs root, for people reading the table (rows from before it was relative hold an absolute
+   * path); code always derives the file with log-store.ts segmentFile. */
   path: string
   created_at: Timestamp
 }

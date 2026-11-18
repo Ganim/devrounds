@@ -33,7 +33,10 @@ pub const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Matches the control plane's `maxPayload`.
-const MAX_MESSAGE: usize = 4 * 1024 * 1024;
+pub const MAX_MESSAGE: usize = 4 * 1024 * 1024;
+/// What one resend read takes from the outbox: a backlog left by a long
+/// disconnect is sent page by page, never loaded whole.
+const RESEND_PAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Close codes the control plane sends (see `control-plane/src/executor/gateway.ts`).
 const CLOSE_TOKEN: u16 = 4401;
@@ -227,19 +230,25 @@ async fn session<H: Handler>(
     }
 }
 
-/// Sends every outbox frame after `sent`, in seq order, moving `sent` along.
-/// False when the socket failed.
+/// Sends every outbox frame after `sent`, in seq order, moving `sent` along,
+/// one page of at most [`RESEND_PAGE_BYTES`] at a time. False when the socket
+/// failed.
 async fn send_pending<S>(sink: &mut S, store: &Store, sent: &mut u64) -> Result<bool, DrError>
 where
     S: Sink<Message> + Unpin,
 {
-    for (seq, frame) in store.pending_after(*sent).await? {
-        if sink.send(Message::text(frame)).await.is_err() {
-            return Ok(false);
+    loop {
+        let page = store.pending_page(*sent, RESEND_PAGE_BYTES).await?;
+        if page.is_empty() {
+            return Ok(true);
         }
-        *sent = seq;
+        for (seq, frame) in page {
+            if sink.send(Message::text(frame)).await.is_err() {
+                return Ok(false);
+            }
+            *sent = seq;
+        }
     }
-    Ok(true)
 }
 
 fn closed(frame: Option<&CloseFrame>, acked: bool) -> Ended {

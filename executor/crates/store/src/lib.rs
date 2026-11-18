@@ -240,7 +240,40 @@ impl Store {
         Ok(())
     }
 
-    /// The frames still kept after `seq`, in seq order.
+    /// The next frames kept after `seq`, in seq order, holding at most
+    /// `max_bytes` of frame text: what the connection resends after a
+    /// reconnect, a page at a time, so a backlog of segments never sits in
+    /// memory at once. The first frame always comes, even past the budget, so
+    /// paging moves on; empty once nothing is left.
+    pub async fn pending_page(
+        &self,
+        seq: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<(u64, String)>, DrError> {
+        self.call(move |connection| {
+            // Bytes, not characters: a blob's length. The text column is only
+            // fetched for frames that fit, so the stop costs no frame copy.
+            let mut statement = connection.prepare(
+                "select seq, length(cast(message as blob)), message from outbox where seq > ?1 order by seq",
+            )?;
+            let mut rows = statement.query(params![seq])?;
+            let mut page = Vec::new();
+            let mut used = 0usize;
+            while let Some(row) = rows.next()? {
+                let length = usize::try_from(row.get::<_, i64>(1)?)?;
+                if !page.is_empty() && used + length > max_bytes {
+                    break;
+                }
+                used += length;
+                page.push((row.get(0)?, row.get(2)?));
+            }
+            Ok(page)
+        })
+        .await
+    }
+
+    /// Every frame kept after `seq`, in seq order, with no bound: for tests
+    /// and inspection. The connection pages with [`Store::pending_page`].
     pub async fn pending_after(&self, seq: u64) -> Result<Vec<(u64, String)>, DrError> {
         self.call(move |connection| {
             let mut statement = connection

@@ -64,6 +64,44 @@ async fn ack_drops_events_through_seq() {
 }
 
 #[tokio::test]
+async fn pending_pages_stay_within_their_byte_budget_and_cover_every_frame_in_order() {
+    let dir = dir();
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("open");
+    // Twelve frames of about 300 KiB, the size class of a shipped log segment.
+    for first in 0..12u64 {
+        let event = RunEvent::LogSegment {
+            run: "r1".to_owned(),
+            first_seq: first * 10 + 1,
+            last_seq: first * 10 + 10,
+            records: 10,
+            zstd_base64: "A".repeat(300 * 1024),
+        };
+        store.append_event(event).await.expect("append");
+    }
+    const BUDGET: usize = 1024 * 1024;
+    let mut after = 0;
+    let mut seen = Vec::new();
+    let mut pages = 0;
+    loop {
+        let page = store.pending_page(after, BUDGET).await.expect("page");
+        let Some((last, _)) = page.last() else { break };
+        after = *last;
+        pages += 1;
+        let bytes: usize = page.iter().map(|(_, frame)| frame.len()).sum();
+        assert!(bytes <= BUDGET, "page {pages} holds {bytes} bytes");
+        seen.extend(seqs(&page));
+    }
+    assert_eq!(seen, (1..=12).collect::<Vec<u64>>());
+    assert!(pages >= 4, "{pages} pages");
+
+    // A frame larger than the budget still comes, alone, so paging moves on.
+    let alone = store.pending_page(0, 1).await.expect("page");
+    assert_eq!(seqs(&alone), [1]);
+}
+
+#[tokio::test]
 async fn a_store_behind_the_control_plane_moves_its_events_after_last_seq() {
     let dir = dir();
     let store = Store::open(&dir.path().join("executor.db"))

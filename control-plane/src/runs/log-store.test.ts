@@ -1,20 +1,21 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { runCli } from '../cli/commands.ts'
+import type { DevRoundsError } from '../errors/error.ts'
 import { putJobType } from '../job-types/service.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
-import { type LogCtx, pruneLogSegments, readRunLog, type SegmentInput, storeSegment } from './log-store.ts'
+import { type LogCtx, pruneLogSegments, readRunLog, type SegmentInput, segmentFile, storeSegment } from './log-store.ts'
 import { createRun } from './record.ts'
 import { runView } from './view.ts'
 
@@ -96,6 +97,78 @@ const exists = (path: string) =>
     () => false,
   )
 
+const fileOf = (ctx: LogCtx, runId: string, firstSeq: string | number) =>
+  segmentFile(ctx.logsRoot, ctx.tenantId, runId, Number(firstSeq))
+
+type Warning = { data: Record<string, unknown>; message: string }
+function warnings() {
+  const seen: Warning[] = []
+  return { seen, log: { warn: (data: Record<string, unknown>, message: string) => seen.push({ data, message }) } }
+}
+
+test('segment files are found under the logs root they are read from, not a stored absolute path', async () => {
+  const { logCtx, runId, machineId } = await setup()
+  await storeSegment(logCtx, runId, segment(1, 3), { machineId })
+  await storeSegment(logCtx, runId, segment(4, 6), { machineId })
+  for (const row of await segmentRows(runId)) assert.equal(isAbsolute(row.path), false, row.path)
+
+  // The logs root moved (a new disk, a renamed home): the rows still find their files.
+  const moved: LogCtx = { ...logCtx, logsRoot: join(scratch, `moved-${runId}`) }
+  await mkdir(join(moved.logsRoot, 'runs'), { recursive: true })
+  await rename(join(logCtx.logsRoot, 'runs', logCtx.tenantId), join(moved.logsRoot, 'runs', logCtx.tenantId))
+  const read = await readRunLog(moved, runId, { maxBytes: 16384 })
+  assert.deepEqual(
+    read.lines.map((line) => line.seq),
+    [1, 2, 3, 4, 5, 6],
+  )
+
+  await t.admin
+    .updateTable('log_segments')
+    .set({ created_at: new Date(0) })
+    .where('run_id', '=', runId)
+    .execute()
+  await pruneLogSegments(t.db, moved.logsRoot, new Date(), 14)
+  assert.equal(await exists(fileOf(moved, runId, 1)), false)
+  assert.equal(await exists(fileOf(moved, runId, 4)), false)
+})
+
+test('a missing segment file is skipped with a warning naming it', async () => {
+  const { logCtx, runId, machineId } = await setup()
+  await storeSegment(logCtx, runId, segment(1, 3), { machineId })
+  await storeSegment(logCtx, runId, segment(4, 6), { machineId })
+  await rm(fileOf(logCtx, runId, 1))
+
+  const { seen, log } = warnings()
+  const read = await readRunLog(logCtx, runId, { maxBytes: 16384, log })
+  assert.deepEqual(
+    read.lines.map((line) => line.seq),
+    [4, 5, 6],
+  )
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0].data, { run: runId, firstSeq: 1, lastSeq: 3 })
+})
+
+test('a segment that decompresses past the read bound is DR503 naming the cursor past it', async () => {
+  const { logCtx, runId, machineId } = await setup()
+  // A few KiB on the wire, 17 MiB once decompressed.
+  const bomb = segment(1, 1, () => 'a'.repeat(17 * 1024 * 1024))
+  assert.ok(bomb.zstd_base64.length < 64 * 1024, `${bomb.zstd_base64.length}`)
+  await storeSegment(logCtx, runId, bomb, { machineId })
+  await storeSegment(logCtx, runId, segment(2, 3), { machineId })
+
+  await assert.rejects(readRunLog(logCtx, runId, { maxBytes: 16384 }), (err: DevRoundsError) => {
+    assert.equal(err.code, 'DR503')
+    assert.equal(err.data.next, 2)
+    return true
+  })
+  // Reading on from the cursor it names skips the segment.
+  const read = await readRunLog(logCtx, runId, { cursor: 2n, maxBytes: 16384 })
+  assert.deepEqual(
+    read.lines.map((line) => line.seq),
+    [2, 3],
+  )
+})
+
 test('a stored segment reads back by cursor', async () => {
   const { logCtx, runId, machineId } = await setup()
   await storeSegment(logCtx, runId, segment(1, 3), { machineId })
@@ -125,7 +198,9 @@ test('a stored segment reads back by cursor', async () => {
 
   const view = await runView(logCtx, runId)
   assert.equal(view.outcome.logCursor, 6)
-  for (const row of await segmentRows(runId)) assert.ok(await exists(row.path), row.path)
+  for (const row of await segmentRows(runId)) {
+    assert.ok(await exists(fileOf(logCtx, runId, row.first_seq)), row.first_seq)
+  }
 })
 
 test('a duplicate segment is ignored', async () => {
@@ -159,15 +234,15 @@ test('segments older than the retention are pruned with their files', async () =
     .where('id', '=', old.id)
     .execute()
 
-  const pruned = await pruneLogSegments(t.db, now, 14)
+  const pruned = await pruneLogSegments(t.db, logCtx.logsRoot, now, 14)
 
   assert.ok(pruned >= 1, `pruned ${pruned}`)
   assert.deepEqual(
     (await segmentRows(runId)).map((row) => row.id),
     [fresh.id],
   )
-  assert.equal(await exists(old.path), false)
-  assert.equal(await exists(fresh.path), true)
+  assert.equal(await exists(fileOf(logCtx, runId, old.first_seq)), false)
+  assert.equal(await exists(fileOf(logCtx, runId, fresh.first_seq)), true)
   const read = await readRunLog(logCtx, runId, { maxBytes: 16384 })
   assert.deepEqual(
     read.lines.map((line) => line.seq),

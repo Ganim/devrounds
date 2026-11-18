@@ -148,6 +148,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 500,
     keys: ['reason'],
   },
+  DR503: {
+    text: 'Log segment {firstSeq}-{lastSeq} of run {run} cannot be read: {reason}.',
+    hint: 'Read on past it with `devrounds run logs {run} --cursor {next}`; the lines in that segment are not readable.',
+    httpStatus: 500,
+    keys: ['firstSeq', 'lastSeq', 'run', 'reason', 'next'],
+  },
   DR550: {
     text: 'Executor state at {path} is unusable: {reason}.',
     hint: 'Make {path} usable only by the account running the executor (or move it away to start fresh), then try again.',
