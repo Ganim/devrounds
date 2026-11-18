@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { testDb } from '../test-support/db.ts'
 import { type BalanceEvent, computeBalance, getBalance } from './balance.ts'
+import { importPlan } from './import.ts'
+import { parsePlanFile } from './plan-file.ts'
 import { addTask, createProject, transition } from './service.ts'
 
 const timezone = 'America/Sao_Paulo' // UTC-3, no DST
@@ -122,4 +124,29 @@ test('getBalance reads events of the project', async () => {
   const rows = await getBalance(ctx, 'devrounds', { period: 'day', from: now, to: now, now })
   assert.equal(rows.length, 1)
   assert.equal(rows[0]?.opened, 1)
+})
+
+test('tasks moved to done by plan import do not count as done', async () => {
+  const { db, newTenant } = await testDb()
+  const tenant = await newTenant()
+  const ctx = { db, tenantId: tenant.tenantId, actor: { id: tenant.human.id, kind: 'human' as const } }
+  await importPlan(
+    ctx,
+    parsePlanFile(`
+project: { key: devrounds, name: DevRounds }
+phases:
+  - key: P0
+    title: Foundation
+    goal: Plan
+    tasks:
+      - { key: P0-T01, title: Imported, state: done }
+      - { key: P0-T02, title: Worked, state: in_progress }
+`),
+  )
+  await transition(ctx, { projectKey: 'devrounds', taskKey: 'P0-T02', to: 'done' })
+
+  const now = new Date()
+  const [row] = await getBalance(ctx, 'devrounds', { period: 'day', from: now, to: now, now })
+  // Only the done of P0-T02 counts; its start came from the import, so it has no measured cycle or hours.
+  assert.deepEqual([row?.done, row?.avgCycleHours, row?.hoursInProgress], [1, null, 0])
 })

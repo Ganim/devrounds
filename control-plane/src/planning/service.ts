@@ -71,7 +71,7 @@ async function record(
       actor_id: ctx.actor.id,
       kind: e.kind,
       reason: e.reason ?? null,
-      data: JSON.stringify(e.data),
+      data: JSON.stringify(ctx.via ? { ...e.data, via: ctx.via } : e.data),
     })
     .returning('id')
     .executeTakeFirstOrThrow()

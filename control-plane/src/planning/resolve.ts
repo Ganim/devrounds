@@ -6,7 +6,8 @@ import { withTenant } from '../tenancy/scope.ts'
 export type Actor = { id: string; kind: MemberKind }
 
 // With `trx` set every call joins that transaction (import wraps many calls in one); otherwise each call opens its own.
-export type Ctx = { db: Kysely<Database>; tenantId: string; actor: Actor; trx?: Transaction<Database> }
+// `via: 'import'` marks every event the call writes (data.via), so the balance can tell replayed states from work.
+export type Ctx = { db: Kysely<Database>; tenantId: string; actor: Actor; trx?: Transaction<Database>; via?: 'import' }
 
 export type TenantCtx = Omit<Ctx, 'actor'>
 

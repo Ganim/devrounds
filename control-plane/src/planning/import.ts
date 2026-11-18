@@ -40,8 +40,8 @@ export function importPlan(ctx: Ctx, file: PlanFile): Promise<ImportResult> {
   const issue = findIssue(file)
   if (issue) fail('DR101', issue)
   // One transaction: any error (DR103 cycle, DR303 done without evidence…) leaves nothing written.
-  // Every event names ctx.actor, the member who asked for the import.
-  return run(ctx, (trx) => new Importer({ ...ctx, trx }, trx, file).run())
+  // Every event names ctx.actor, the member who asked for the import, and carries `via: import` for the balance.
+  return run(ctx, (trx) => new Importer({ ...ctx, trx, via: 'import' }, trx, file).run())
 }
 
 const textOf = (c: PlanFileCriterion) => (typeof c === 'string' ? c : c.text)

@@ -7,6 +7,7 @@ export type BalanceEvent = {
   at: Date
   from?: string
   to?: string
+  imported?: boolean // written by plan import
 }
 
 export type BalanceRow = {
@@ -74,6 +75,8 @@ function periodStartOf(at: Date, opts: Pick<BalanceOpts, 'timezone' | 'period'>)
 // so a past period never changes after the fact.
 // Hours: each stretch in `in_progress` (from the move in until the next move out, or `now`) is split at local period
 // boundaries. Cycle time: first move into in_progress to a move into done, counted in the period of the done.
+// An imported transition replays a state reached elsewhere: it counts no done or cancelled and starts no stretch or
+// cycle, but it still ends an open stretch, since the task did leave in_progress then.
 export function computeBalance(events: BalanceEvent[], opts: BalanceOpts): BalanceRow[] {
   const last = periodStartOf(opts.to, opts)
   const step = opts.period === 'day' ? 1 : 7
@@ -103,14 +106,16 @@ export function computeBalance(events: BalanceEvent[], opts: BalanceOpts): Balan
       if (row) row.opened++
       continue
     }
-    if (e.to === 'done' && row) {
-      row.done++
+    const counted = e.imported ? undefined : row
+    if (e.to === 'done' && counted) {
+      counted.done++
       const started = firstStart.get(e.taskKey)
-      if (started) row.cycleMs.push(e.at.getTime() - started.getTime())
+      if (started) counted.cycleMs.push(e.at.getTime() - started.getTime())
     }
-    if (e.to === 'cancelled' && row) row.cancelled++
+    if (e.to === 'cancelled' && counted) counted.cancelled++
     const since = open.get(e.taskKey)
     if (e.to === 'in_progress') {
+      if (e.imported) continue
       if (!since) open.set(e.taskKey, e.at)
       if (!firstStart.has(e.taskKey)) firstStart.set(e.taskKey, e.at)
     } else if (since) {
@@ -164,7 +169,14 @@ export function getBalance(
       const data = (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as Record<string, string>
       return r.kind === 'add_task'
         ? { kind: 'add_task', taskKey: data.key as string, at: r.at }
-        : { kind: 'transition', taskKey: data.taskKey as string, at: r.at, from: data.from, to: data.to }
+        : {
+            kind: 'transition',
+            taskKey: data.taskKey as string,
+            at: r.at,
+            from: data.from,
+            to: data.to,
+            imported: data.via === 'import',
+          }
     })
     return computeBalance(events, { ...opts, timezone: tenant.timezone, now: opts.now ?? new Date() })
   })
