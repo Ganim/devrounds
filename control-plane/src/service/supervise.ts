@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
-import { appendFile, mkdir, open } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { isMain } from '../is-main.ts'
+import { KEEP_DAYS, LogWriter, MAX_LOG_BYTES, pruneLogs } from './logs.ts'
 
 // Keeps `main.ts serve` running. Task Scheduler only restarts a task that fails to start, so crash restarts are
 // owned here; the scheduled task's 5-minute trigger (IgnoreNew) only brings this supervisor back if it dies.
@@ -22,44 +22,45 @@ export function nextDelay(previousMs: number | null, uptimeMs: number): number {
 const LOG_DIR = join(homedir(), '.devrounds', 'logs')
 const SERVE = fileURLToPath(new URL('../main.ts', import.meta.url))
 
-// Named by the UTC day a serve spawn (or supervisor line) starts writing: a long-lived serve keeps its spawn-day file,
-// so a file can grow past a day, and old files are never pruned.
-const logFile = (name: string) => join(LOG_DIR, `${name}-${new Date().toISOString().slice(0, 10)}.log`)
+const prune = () => pruneLogs(LOG_DIR, new Date(), KEEP_DAYS)
+// Serve output goes through the supervisor (not straight to a file) so one file cannot grow without bound while a
+// serve lives for weeks: files are named by UTC write day and roll over at MAX_LOG_BYTES.
+const supervisorLog = new LogWriter(LOG_DIR, 'supervisor', MAX_LOG_BYTES, undefined, () => void prune())
+const serveLog = new LogWriter(LOG_DIR, 'serve', MAX_LOG_BYTES, undefined, () => void prune())
 
 async function log(line: string): Promise<void> {
-  await appendFile(logFile('supervisor'), `${new Date().toISOString()} ${line}\n`)
+  await supervisorLog.write(Buffer.from(`${new Date().toISOString()} ${line}\n`))
 }
 
 // Resolves with the uptime when the child exits. The IPC channel ties serve's life to this process (see main.ts).
 async function runServe(): Promise<number> {
-  const out = await open(logFile('serve'), 'a')
   const started = Date.now()
-  try {
-    const child = spawn(process.execPath, [SERVE, 'serve'], {
-      stdio: ['ignore', out.fd, out.fd, 'ipc'],
-      windowsHide: true,
-    })
-    await log(`serve started (pid ${child.pid})`)
-    const reason = await new Promise<string>((resolve) => {
-      child.once('error', (err) => resolve(`failed to start: ${err.message}`))
-      child.once('exit', (code, signal) => resolve(`exited (code ${code}, signal ${signal})`))
-    })
-    const uptime = Date.now() - started
-    await log(`serve ${reason} after ${Math.round(uptime / 1000)} s`)
-    return uptime
-  } finally {
-    await out.close()
-  }
+  const child = spawn(process.execPath, [SERVE, 'serve'], {
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    windowsHide: true,
+  })
+  const pipe = (chunk: Buffer) => void serveLog.write(chunk).catch(() => {})
+  child.stdout?.on('data', pipe)
+  child.stderr?.on('data', pipe)
+  await log(`serve started (pid ${child.pid})`)
+  const reason = await new Promise<string>((resolve) => {
+    child.once('error', (err) => resolve(`failed to start: ${err.message}`))
+    child.once('exit', (code, signal) => resolve(`exited (code ${code}, signal ${signal})`))
+  })
+  const uptime = Date.now() - started
+  await log(`serve ${reason} after ${Math.round(uptime / 1000)} s`)
+  return uptime
 }
 
 async function supervise(): Promise<never> {
-  await mkdir(LOG_DIR, { recursive: true })
+  await prune()
   await log(`supervisor started (pid ${process.pid})`)
   let delay: number | null = null
   for (;;) {
     const uptime = await runServe()
     delay = nextDelay(delay, uptime)
     await log(`restarting serve in ${delay / 1000} s`)
+    await prune()
     await sleep(delay)
   }
 }
