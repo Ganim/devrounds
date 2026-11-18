@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { sql } from 'kysely'
 import { migrateToLatest } from '../db/migrate.ts'
+import { tablesWithoutTenantPolicy } from '../test-support/catalog.ts'
 import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import { withTenant } from './scope.ts'
 
@@ -122,18 +123,34 @@ test('the app role cannot bypass RLS', async () => {
   assert.deepEqual(rows, [{ rolsuper: false, rolbypassrls: false }])
 })
 
-// Why: a new table without forced RLS and the tenant policy leaks every tenant through the app role.
-test('every public table has forced RLS and a tenant policy', async () => {
+test('every public table has forced RLS and the tenant policy', async () => {
   const { admin } = await testDb()
-  const { rows } = await sql<{ table: string }>`
-    select c.relname as table
-    from pg_class c
-    join pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'public' and c.relkind = 'r'
-      and not (c.relrowsecurity and c.relforcerowsecurity
-        and exists (select 1 from pg_policy p where p.polrelid = c.oid and p.polname = 'tenant_isolation'))
-    order by 1`.execute(admin)
-  assert.deepEqual(rows, [])
+  assert.deepEqual(await tablesWithoutTenantPolicy(admin), [])
+})
+
+test('the tenant policy guard flags a policy with the right name and a different expression', async () => {
+  const { admin } = await testDb()
+  const schema = `guard_probe_${randomBytes(4).toString('hex')}`
+  const policy = sql.raw(`create policy tenant_isolation on ${schema}`)
+  const wrong = sql.raw(`using (true) with check (true)`)
+  await sql.raw(`create schema ${schema}`).execute(admin)
+  try {
+    for (const table of ['good', 'wrong_expression', 'wrong_check']) {
+      await sql.raw(`create table ${schema}.${table} (tenant_id uuid not null)`).execute(admin)
+      await sql.raw(`alter table ${schema}.${table} enable row level security`).execute(admin)
+      await sql.raw(`alter table ${schema}.${table} force row level security`).execute(admin)
+    }
+    const tenant = `nullif(current_setting('app.tenant_id', true), '')::uuid`
+    await sql`${policy}.good using (tenant_id = ${sql.raw(tenant)}) with check (tenant_id = ${sql.raw(tenant)})`.execute(
+      admin,
+    )
+    await sql`${policy}.wrong_expression ${wrong}`.execute(admin)
+    await sql`${policy}.wrong_check using (tenant_id = ${sql.raw(tenant)}) with check (true)`.execute(admin)
+
+    assert.deepEqual(await tablesWithoutTenantPolicy(admin, schema), ['wrong_check', 'wrong_expression'])
+  } finally {
+    await sql.raw(`drop schema ${schema} cascade`).execute(admin)
+  }
 })
 
 test('resolve_token ignores temp tables that shadow api_tokens and members', async () => {
