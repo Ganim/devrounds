@@ -224,6 +224,7 @@ export interface RunsTable {
   orphaned_at: NullableTimestamp
   clock_skew_ms: Generated<number>
   trace_id: string | null
+  trace_span_id: string | null
 }
 
 export interface RunStepsTable {

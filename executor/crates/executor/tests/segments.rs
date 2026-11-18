@@ -100,6 +100,7 @@ async fn harness(log_options: SegmentOptions) -> Harness {
         runs_dir: home.path().join("runs"),
         machine_env: std::env::vars().collect::<BTreeMap<_, _>>(),
         log_options,
+        telemetry: None,
     });
     Harness {
         home,

@@ -42,6 +42,7 @@ pub async fn pair(home: &Path, url: &str, code: &str) -> Result<(), DrError> {
         url: url.http(""),
         machine_id: paired.machine_id,
         admission: crate::admission::AdmissionConfig::default(),
+        otlp_endpoint: None,
     };
     save_pairing(home, &config, &paired.token).await
 }

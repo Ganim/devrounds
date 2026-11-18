@@ -104,6 +104,7 @@ async fn harness(config: AdmissionConfig) -> Harness {
         runs_dir: home.path().join("runs"),
         machine_env: std::env::vars().collect::<BTreeMap<_, _>>(),
         log_options: run_log_options(),
+        telemetry: None,
     });
     Harness {
         home,

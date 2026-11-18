@@ -6,8 +6,9 @@ import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import type { Telemetry } from '../telemetry/otel.ts'
 import { learnedNeed } from './learned-need.ts'
-import { createRun, markOffered } from './record.ts'
+import { createRun, markOffered, runTraceParent } from './record.ts'
 import { TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId, runView } from './view.ts'
 
@@ -44,15 +45,17 @@ export async function recordDispatch(
   ctx: Ctx,
   sessions: Sessions,
   i: DispatchInput,
+  telemetry: Telemetry | null = null,
 ): Promise<{ view: RunView; machineId: string; offer: Offer }> {
   const machineId = await connectedMachine(ctx, sessions, i.machineName)
   return run(ctx, async (trx) => {
     const inner = { ...ctx, trx }
     const created = await createRun(inner, i)
-    await markOffered(inner, created.id)
+    const traceParent = telemetry?.runDispatched({ id: created.id, jobType: i.jobTypeKey }) ?? null
+    await markOffered(inner, created.id, traceParent)
     const project = await findProject(trx, i.projectKey)
     const jobType = await findJobType(trx, project.id, i.jobTypeKey)
-    const offered = { id: created.id, project_id: project.id, cwd: i.cwd, machine_id: machineId }
+    const offered = { id: created.id, project_id: project.id, cwd: i.cwd, machine_id: machineId, traceParent }
     const offer = await offerOf(trx, offered, jobType)
     return { view: await loadRunView(trx, created.id), machineId, offer }
   })
@@ -62,7 +65,7 @@ type JobTypeRow = Pick<Selectable<JobTypesTable>, 'id' | 'key' | 'program' | 'ar
 
 async function offerOf(
   trx: Trx,
-  run: { id: string; project_id: string; cwd: string; machine_id: string },
+  run: { id: string; project_id: string; cwd: string; machine_id: string; traceParent: string | null },
   jobType: JobTypeRow,
 ): Promise<Offer> {
   const need = await learnedNeed(trx, run.project_id, jobType.id, run.machine_id)
@@ -79,7 +82,7 @@ async function offerOf(
     },
     // A learned peak is a byte count well under 2^53, so the wire carries it as a JSON number.
     memory_need: Number(need),
-    trace_parent: null,
+    trace_parent: run.traceParent,
   }
 }
 
@@ -98,6 +101,8 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
         'runs.id',
         'runs.project_id',
         'runs.machine_id',
+        'runs.trace_id',
+        'runs.trace_span_id',
         'jobs.cwd',
         'job_types.id as job_type_id',
         'job_types.key',
@@ -111,7 +116,9 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
       .orderBy('runs.offered_at')
       .execute()
     const offers: Offer[] = []
-    for (const row of rows) offers.push(await offerOf(trx, row, { ...row, id: row.job_type_id }))
+    for (const row of rows) {
+      offers.push(await offerOf(trx, { ...row, traceParent: runTraceParent(row) }, { ...row, id: row.job_type_id }))
+    }
     return offers
   })
 }
@@ -120,8 +127,13 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
  * Creates a run on a connected machine and offers it. `ctx` must not carry a transaction: the Offer goes out after
  * the commit. A session lost between the commit and the send leaves the run offered.
  */
-export async function dispatchRun(ctx: Ctx, sessions: Sessions, i: DispatchInput): Promise<RunView> {
-  const { view, machineId, offer } = await recordDispatch(ctx, sessions, i)
+export async function dispatchRun(
+  ctx: Ctx,
+  sessions: Sessions,
+  i: DispatchInput,
+  telemetry: Telemetry | null = null,
+): Promise<RunView> {
+  const { view, machineId, offer } = await recordDispatch(ctx, sessions, i, telemetry)
   sessions.send(machineId, offer)
   return view
 }

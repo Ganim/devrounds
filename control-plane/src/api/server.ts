@@ -13,6 +13,7 @@ import type { Database } from '../db/schema.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { executorRoutes, MAX_PAYLOAD, Sessions } from '../executor/gateway.ts'
 import { PairingLimiter } from '../machines/pairing.ts'
+import type { Telemetry } from '../telemetry/otel.ts'
 import { machineRoutes } from './machine-routes.ts'
 import { projectRoutes } from './routes.ts'
 import { runRoutes } from './run-routes.ts'
@@ -35,6 +36,8 @@ export type ServerOptions = {
   pairingLimiter?: PairingLimiter
   // Where run log segments are written (runs/log-store.ts); `serve` passes the configured one.
   logsRoot?: string
+  // The OpenTelemetry exporter (telemetry/otel.ts); none, the default, means no spans.
+  telemetry?: Telemetry | null
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -97,9 +100,10 @@ export function buildServer(opts: ServerOptions) {
   app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD } })
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
   const logsRoot = opts.logsRoot ?? defaultLogsRoot()
-  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
+  const telemetry = opts.telemetry ?? null
+  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot, telemetry })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
-  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot })
+  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot, telemetry })
 
   const webDir = opts.webDir ?? DEFAULT_WEB_DIR
   app.register(async (instance) => {

@@ -101,6 +101,7 @@ async fn executor(home: &Path) -> Executor {
         runs_dir: home.join("runs"),
         machine_env: std::env::vars().collect::<BTreeMap<_, _>>(),
         log_options: run_log_options(),
+        telemetry: None,
     });
     Executor {
         store,

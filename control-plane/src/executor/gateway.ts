@@ -12,7 +12,8 @@ import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
 import { pendingOffers, runEvents } from '../runs/dispatch.ts'
 import { type LogCtx, storeSegment } from '../runs/log-store.ts'
-import { applyOrphans, applyRunEvent, pendingOrphanStops } from '../runs/record.ts'
+import { applyOrphans, applyRunEvent, pendingOrphanStops, reportFinished } from '../runs/record.ts'
+import type { Telemetry } from '../telemetry/otel.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import {
   type ControlPlaneMessage,
@@ -84,7 +85,13 @@ export class Sessions {
   }
 }
 
-type GatewayOptions = { db: Kysely<Database>; sessions: Sessions; limiter: PairingLimiter; logsRoot: string }
+type GatewayOptions = {
+  db: Kysely<Database>
+  sessions: Sessions
+  limiter: PairingLimiter
+  logsRoot: string
+  telemetry?: Telemetry | null
+}
 
 // Moves machines.last_seq to `seq`, only while it is below: the row lock and condition keep a replaced session still
 // draining frames from applying a seq the newer one already did. False when the seq was applied already.
@@ -122,6 +129,7 @@ async function applyEvent(
   message: EventMessage,
   log: FastifyBaseLogger,
   reply: (message: ControlPlaneMessage) => void,
+  telemetry: Telemetry | null,
 ) {
   try {
     const applied = await withTenant(ctx.db, ctx.tenantId, async (trx) => {
@@ -144,6 +152,10 @@ async function applyEvent(
     for (const message of applied.replies) reply(message)
     // After the commit, so a waiting `GET /runs/:id?wait` reads the new state.
     for (const run of applied.changed) runEvents.emit('changed', run)
+    // Only for a RunFinished applied now, never for a repeat of one already applied.
+    if (telemetry && message.event.kind === 'RunFinished' && applied.changed.length > 0) {
+      await reportFinished(ctx, telemetry, message.event.run, log)
+    }
   } catch (err) {
     if (!(err instanceof DevRoundsError)) throw err
     const run = 'run' in message.event ? message.event.run : undefined
@@ -241,7 +253,7 @@ function serveSession(
     if (message.type === 'Event') {
       const event = message
       const { machineId } = machine
-      await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log, reply))
+      await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log, reply, opts.telemetry ?? null))
     }
     // LogChunk is live output for watchers, and stage 1 has none, so it is dropped; the durable copy arrives as
     // LogSegment events. Unknown types are ignored by design.

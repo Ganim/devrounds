@@ -5,13 +5,15 @@ import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
 import { explain } from './errors/error.ts'
 import { pruneLogSegments } from './runs/log-store.ts'
+import { startTelemetry } from './telemetry/otel.ts'
 
 // The control plane. `serve` never migrates (that needs the owner URL; see `devrounds-admin migrate`) and binds to
 // loopback only: the API is reached locally or through the local reverse proxy.
 async function serve(): Promise<void> {
   const config = await loadServerConfig()
   const db = createDb(config.databaseUrl)
-  const app = buildServer({ db, logsRoot: config.logsRoot })
+  const telemetry = await startTelemetry(config.otlpEndpoint)
+  const app = buildServer({ db, logsRoot: config.logsRoot, telemetry })
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
     pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
@@ -22,6 +24,7 @@ async function serve(): Promise<void> {
     clearInterval(pruning)
     await app.close()
     await db.destroy()
+    await telemetry?.shutdown()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)

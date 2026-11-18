@@ -5,12 +5,14 @@ import { fail } from './errors/error.ts'
 
 // appPassword is the devrounds_app password written by `devrounds-admin init`; migrations set it on the role.
 // logsRoot holds the run log segments (runs/log-store.ts); they are pruned logRetentionDays after they arrive.
+// otlpEndpoint turns the OpenTelemetry exporter on (telemetry/otel.ts); without it nothing of OpenTelemetry loads.
 export type Config = {
   databaseUrl: string
   adminDatabaseUrl: string
   port: number
   logsRoot: string
   logRetentionDays: number
+  otlpEndpoint?: string
   appPassword?: string
 }
 
@@ -41,7 +43,7 @@ async function readConfigFile(path: string): Promise<Partial<Config>> {
   }
 }
 
-export type ServerConfig = Pick<Config, 'databaseUrl' | 'port' | 'logsRoot' | 'logRetentionDays'>
+export type ServerConfig = Pick<Config, 'databaseUrl' | 'port' | 'logsRoot' | 'logRetentionDays' | 'otlpEndpoint'>
 
 function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConfig {
   const databaseUrl = env.DEVROUNDS_DATABASE_URL ?? file.databaseUrl
@@ -56,7 +58,12 @@ function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConf
   if (!Number.isFinite(logRetentionDays) || logRetentionDays <= 0) {
     fail('DR502', { reason: 'logRetentionDays must be a number of days above 0' })
   }
-  return { databaseUrl, port, logsRoot, logRetentionDays }
+  const otlpEndpoint = env.DEVROUNDS_OTLP_ENDPOINT ?? file.otlpEndpoint
+  if (otlpEndpoint === undefined || otlpEndpoint === '') return { databaseUrl, port, logsRoot, logRetentionDays }
+  if (typeof otlpEndpoint !== 'string' || !URL.canParse(otlpEndpoint)) {
+    fail('DR502', { reason: 'otlpEndpoint must be a URL' })
+  }
+  return { databaseUrl, port, logsRoot, logRetentionDays, otlpEndpoint }
 }
 
 // What `serve` loads: the server never holds owner credentials, so the admin URL and app password are neither

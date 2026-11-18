@@ -18,6 +18,7 @@ pub mod runs;
 #[cfg(windows)]
 mod sampler;
 pub mod steps;
+pub mod telemetry;
 
 #[cfg(windows)]
 pub use sampler::{IDLE_INTERVAL, SLOT_INTERVAL, Sampler};

@@ -7,6 +7,7 @@ import { runs } from './0005_runs.ts'
 import { logSegments } from './0006_log_segments.ts'
 import { fkIndexes } from './0007_fk_indexes.ts'
 import { runsOrphanedAt } from './0008_runs_orphaned_at.ts'
+import { runsTraceSpanId } from './0009_runs_trace_span_id.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -22,5 +23,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0006_log_segments': logSegments(options),
     '0007_fk_indexes': fkIndexes,
     '0008_runs_orphaned_at': runsOrphanedAt,
+    '0009_runs_trace_span_id': runsTraceSpanId,
   }
 }

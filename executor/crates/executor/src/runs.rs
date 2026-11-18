@@ -10,7 +10,7 @@ use std::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use devrounds_core::{
@@ -30,6 +30,7 @@ use crate::{
     isolation::{Isolation, NoneIsolation, PrepareError},
     orphans::{OrphanDeps, follow_orphan},
     output::OutputTail,
+    telemetry::{RunTimes, RunTrace, Telemetry},
 };
 
 pub use crate::output::SegmentOptions;
@@ -51,6 +52,8 @@ pub struct RunLoopDeps {
     /// How each run's output is cut into segments and shipped;
     /// [`run_log_options`] in production.
     pub log_options: SegmentOptions,
+    /// Exports each run's spans; `None` (off) unless `otlp_endpoint` is set.
+    pub telemetry: Option<Telemetry>,
 }
 
 /// Segments of at most 1 MiB or 30 s, compressed: a closed segment ships as
@@ -81,6 +84,7 @@ struct Shared {
     runs_dir: PathBuf,
     machine_env: Arc<BTreeMap<String, String>>,
     log_options: SegmentOptions,
+    telemetry: Option<Telemetry>,
     /// Runs offered and not finished yet, each with its stop flag.
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
     /// Runs with a live process.
@@ -134,6 +138,7 @@ impl RunLoop {
                 runs_dir: deps.runs_dir,
                 machine_env: Arc::new(deps.machine_env),
                 log_options: deps.log_options,
+                telemetry: deps.telemetry,
                 active: Mutex::new(HashMap::new()),
                 running: AtomicU32::new(0),
                 live_ack: watch::channel(0).0,
@@ -256,7 +261,28 @@ async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bo
             return;
         }
     }
-    let ending = run_once(&shared, offer, stopped).await;
+    // Only what the spans need, and only when they are exported.
+    let traced = shared
+        .telemetry
+        .as_ref()
+        .map(|_| (offer.trace_parent.clone(), offer.job.job_type.clone()));
+    let mut times = RunTimes {
+        offered: SystemTime::now(),
+        admitted: None,
+        started: None,
+    };
+    let ending = run_once(&shared, offer, stopped, &mut times).await;
+    if let (Some(telemetry), Some((trace_parent, job_type))) = (&shared.telemetry, &traced) {
+        telemetry.export_run(&RunTrace {
+            run: &run,
+            job_type,
+            trace_parent: trace_parent.as_deref(),
+            times,
+            finished: SystemTime::now(),
+            reason: ending.reason,
+            exit_code: ending.exit_code,
+        });
+    }
     let stored = emit(
         &shared.store,
         RunEvent::RunFinished {
@@ -316,7 +342,13 @@ fn usable_run_id(run: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-async fn run_once(shared: &Shared, offer: Offer, mut stopped: watch::Receiver<bool>) -> Ending {
+/// Fills `times` as the run reaches admission and its spawn.
+async fn run_once(
+    shared: &Shared,
+    offer: Offer,
+    mut stopped: watch::Receiver<bool>,
+    times: &mut RunTimes,
+) -> Ending {
     let Offer {
         run,
         job,
@@ -366,6 +398,7 @@ async fn run_once(shared: &Shared, offer: Offer, mut stopped: watch::Receiver<bo
         }
     }
     emit(&shared.store, RunEvent::Admitted { run: run.clone() }).await;
+    times.admitted = Some(SystemTime::now());
 
     let output = spec.output.clone();
     // Not cancellation safe, so never raced against a stop: a stop asked
@@ -378,6 +411,7 @@ async fn run_once(shared: &Shared, offer: Offer, mut stopped: watch::Receiver<bo
             return Ending::before_start(FinishReason::SpawnFailed, Some(summary));
         }
     };
+    times.started = Some(SystemTime::now());
     shared.running.fetch_add(1, Ordering::SeqCst);
     let ending = follow(shared, &run, &job, unit, slot, output, stopped).await;
     shared.running.fetch_sub(1, Ordering::SeqCst);

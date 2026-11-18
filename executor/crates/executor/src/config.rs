@@ -26,7 +26,7 @@ const LOCK_FILE: &str = "executor.lock";
 /// other processes from reading the locked file itself.
 const PID_FILE: &str = "executor.pid";
 
-/// `<home>/config.json`. Later tasks add `otlp_endpoint`.
+/// `<home>/config.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutorConfig {
     /// The control plane base URL, `http(s)://host[:port][/prefix]`.
@@ -35,6 +35,10 @@ pub struct ExecutorConfig {
     /// Admission tuning; the defaults when absent.
     #[serde(default)]
     pub admission: AdmissionConfig,
+    /// The OpenTelemetry collector's OTLP/HTTP base URL; no exporter exists
+    /// without it ([`crate::telemetry::Telemetry::from_config`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<String>,
 }
 
 /// `config.json` and the machine token of a paired home; DR551 when either

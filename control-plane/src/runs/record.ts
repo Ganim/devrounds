@@ -4,6 +4,7 @@ import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import { formatTraceParent, parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
 import { nextRunState, type RunTransition, TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId } from './view.ts'
@@ -75,19 +76,58 @@ async function insertRun(trx: Trx, tenantId: string, jobId: string, attempt: num
   return loadRunView(trx, id)
 }
 
-/** queued → offered, stamped with the control plane clock when the Offer goes out. */
-export async function markOffered(ctx: TenantCtx, runId: string): Promise<void> {
+/**
+ * queued → offered, stamped with the control plane clock when the Offer goes out. `traceParent` is the run.dispatch
+ * span's (telemetry on); its trace and span ids are kept for a re-sent Offer and for run.record.
+ */
+export async function markOffered(ctx: TenantCtx, runId: string, traceParent: string | null = null): Promise<void> {
   requireRunId(runId)
+  const trace = parseTraceParent(traceParent)
   return run(ctx, async (trx) => {
     const row = await trx.selectFrom('runs').select('state').where('id', '=', runId).forNoKeyUpdate().executeTakeFirst()
     if (!row) fail('DR201', { kind: 'run', key: runId })
     const next = nextRunState(row.state, 'offer', runId)
     await trx
       .updateTable('runs')
-      .set({ state: next.state, offered_at: sql<Date>`now()` })
+      .set({
+        state: next.state,
+        offered_at: sql<Date>`now()`,
+        trace_id: trace?.traceId ?? null,
+        trace_span_id: trace?.spanId ?? null,
+      })
       .where('id', '=', runId)
       .execute()
   })
+}
+
+/** The traceparent an Offer of a run carries: its dispatch span's, or null when it was dispatched untraced. */
+export function runTraceParent(row: { trace_id: string | null; trace_span_id: string | null }): string | null {
+  return row.trace_id && row.trace_span_id ? formatTraceParent(row.trace_id, row.trace_span_id) : null
+}
+
+/**
+ * Exports run.record for a run the executor reported finished; call it after the commit. A failure is logged and
+ * changes nothing: telemetry never fails the event that triggered it.
+ */
+export async function reportFinished(
+  ctx: TenantCtx,
+  telemetry: Telemetry,
+  runId: string,
+  log: { warn(data: { err: unknown; run: string }, message: string): void },
+): Promise<void> {
+  try {
+    const { view, traceParent } = await run(ctx, async (trx) => {
+      const row = await trx
+        .selectFrom('runs')
+        .select(['trace_id', 'trace_span_id'])
+        .where('id', '=', runId)
+        .executeTakeFirstOrThrow()
+      return { view: await loadRunView(trx, runId), traceParent: runTraceParent(row) }
+    })
+    telemetry.runFinished(view, traceParent)
+  } catch (err) {
+    log.warn({ err, run: runId }, 'run.record span not exported')
+  }
 }
 
 type PatternLog = { warn(data: { jobType: string; rule: number }, message: string): void }

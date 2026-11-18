@@ -145,6 +145,7 @@ async fn a_fresh_store_continues_after_the_control_planes_last_seq() {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
         admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
     };
     let connection = Connection::new(store.clone());
     let mut connected = connection.connected();
@@ -188,6 +189,7 @@ async fn a_backlog_of_large_segments_is_resent_whole_and_in_order() {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
         admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
     };
     let connection = Connection::new(store.clone());
     let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut Quiet).await });
@@ -232,6 +234,7 @@ async fn reconnect_replays_unacked_events_in_order() {
         url: format!("http://{}", listener.local_addr().expect("addr")),
         machine_id: "m-1".to_owned(),
         admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
     };
     let connection = Connection::new(store.clone());
     let mut connected = connection.connected();

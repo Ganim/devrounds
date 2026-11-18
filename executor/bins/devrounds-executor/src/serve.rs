@@ -14,6 +14,7 @@ use devrounds_executor::{
     connection::{Connection, Handler},
     orphans,
     runs::{RunLoop, RunLoopDeps, run_log_options},
+    telemetry::Telemetry,
 };
 use devrounds_metrics_windows::WindowsPressure;
 use devrounds_protocol::{MachineReport, ServerMessage};
@@ -48,6 +49,7 @@ pub async fn serve() -> Result<(), DrError> {
         runs_dir: home.join("runs"),
         machine_env,
         log_options: run_log_options(),
+        telemetry: Telemetry::from_config(config.otlp_endpoint.as_deref()),
     });
     // Before the session exists, so nothing is offered or admitted ahead of
     // the report; the sweep then skips every orphan, which is still stored.

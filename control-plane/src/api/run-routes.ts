@@ -9,6 +9,7 @@ import { parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
 import { prepareStop, recordDispatch, waitForRun } from '../runs/dispatch.ts'
 import { readRunLog } from '../runs/log-store.ts'
+import type { Telemetry } from '../telemetry/otel.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -25,7 +26,8 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
   db: Kysely<Database>
   sessions: Sessions
   logsRoot: string
-}> = async (app, { db, sessions, logsRoot }) => {
+  telemetry: Telemetry | null
+}> = async (app, { db, sessions, logsRoot, telemetry }) => {
   authenticateMembers(app, db)
 
   app.put(
@@ -62,7 +64,7 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
       const { jobType, machine, cwd, task } = request.body
       const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
         const input = { projectKey: request.params.key, jobTypeKey: jobType, machineName: machine, cwd, taskKey: task }
-        const { view, machineId, offer } = await recordDispatch(ctx, sessions, input)
+        const { view, machineId, offer } = await recordDispatch(ctx, sessions, input, telemetry)
         send = { machineId, message: offer }
         return view
       })

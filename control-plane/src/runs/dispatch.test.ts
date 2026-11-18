@@ -16,6 +16,7 @@ import { putJobType } from '../job-types/service.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
+import type { Telemetry } from '../telemetry/otel.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { dispatchRun, runEvents, stopRun } from './dispatch.ts'
 import { runView } from './view.ts'
@@ -30,12 +31,27 @@ let app: ReturnType<typeof buildServer>
 let host: string
 let scratch: string
 
+// Stands in for the OpenTelemetry exporter (telemetry/otel.ts): a run's trace id is its uuid, the dispatch span id
+// the uuid's first 16 hex digits.
+const finishedRuns: { id: string; state: string; traceParent: string | null }[] = []
+const telemetry: Telemetry = {
+  runDispatched: (run) => {
+    const hex = run.id.replaceAll('-', '')
+    return `00-${hex}-${hex.slice(0, 16)}-01`
+  },
+  runFinished: (view, traceParent) => {
+    finishedRuns.push({ id: view.id, state: view.state, traceParent })
+  },
+  shutdown: async () => {},
+}
+const traceParentOf = (run: string) => telemetry.runDispatched({ id: run, jobType: 'check' })
+
 before(async () => {
   t = await testDb()
   sessions = new Sessions()
   await mkdir(join(REPO_ROOT, '.superpowers', 'tmp'), { recursive: true })
   scratch = await mkdtemp(join(REPO_ROOT, '.superpowers', 'tmp', 'dispatch-'))
-  app = buildServer({ db: t.db, logger: false, sessions, logsRoot: join(scratch, 'logs') })
+  app = buildServer({ db: t.db, logger: false, sessions, logsRoot: join(scratch, 'logs'), telemetry })
   await app.listen({ port: 0, host: '127.0.0.1' })
   host = `127.0.0.1:${(app.server.address() as AddressInfo).port}`
 })
@@ -62,7 +78,7 @@ async function setup() {
   const machine = await redeemPairingCode(t.db, new PairingLimiter(), pairing, { os: 'windows', version: '0.1.0' })
   const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
   const dispatch = () =>
-    dispatchRun(ctx, sessions, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' })
+    dispatchRun(ctx, sessions, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' }, telemetry)
   return { tenant, ctx, machine, token, dispatch }
 }
 
@@ -165,7 +181,7 @@ test('dispatch sends one Offer with memory_need 536870912 without history', asyn
       timeout_s: 600,
     },
     memory_need: 536870912,
-    trace_parent: null,
+    trace_parent: traceParentOf(view.id),
   })
   // The next frame is the Ack of this event, so no second Offer came before it.
   await exec.event({ kind: 'Admitted', run: view.id })
@@ -176,7 +192,11 @@ test('executor events drive the run to finished with timeline and resources', as
   const { ctx, machine, dispatch } = await setup()
   const exec = await executor(machine.token)
   const offered = await dispatch()
-  assert.equal((await exec.next()).type, 'Offer')
+  // The Offer continues the dispatch span's trace, and the run keeps its trace id for run.record.
+  const traceParent = traceParentOf(offered.id)
+  assert.equal((await exec.next()).trace_parent, traceParent)
+  const traced = await t.admin.selectFrom('runs').select('trace_id').where('id', '=', offered.id).executeTakeFirst()
+  assert.equal(traced?.trace_id, offered.id.replaceAll('-', ''))
   await running(exec, offered.id)
   const lines = [1, 2].map((seq) => JSON.stringify({ run: offered.id, seq, timestamp_ms: 0, text: 'ok', level: null }))
   const zstd_base64 = zstdCompressSync(Buffer.from(`${lines.join('\n')}\n`)).toString('base64')
@@ -202,6 +222,11 @@ test('executor events drive the run to finished with timeline and resources', as
   assert.deepEqual(
     view.steps.map((s) => [s.step, s.name, s.outcome]),
     [[0, 'build', 'finished']],
+  )
+  // Once, after the commit, with the run as finished.
+  assert.deepEqual(
+    finishedRuns.filter((r) => r.id === offered.id),
+    [{ id: offered.id, state: 'finished', traceParent }],
   )
   exec.close()
 })
