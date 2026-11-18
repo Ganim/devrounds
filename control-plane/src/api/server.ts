@@ -45,6 +45,10 @@ function inputError(err: FastifyError): DevRoundsError | null {
     const [first] = err.validation
     // Ajv points at the parent object for a missing or unknown field; name the field itself.
     const field = first.params.missingProperty ?? first.params.additionalProperty
+    // An absent reason is the same DR104 the service answers for a blank one.
+    if (err.validationContext === 'body' && first.keyword === 'required' && field === 'reason' && !first.instancePath) {
+      return new DevRoundsError('DR104')
+    }
     const reasons: Record<string, string> = {
       additionalProperties: 'is not a known field',
       enum: `must be one of ${String(first.params.allowedValues).replaceAll(',', ', ')}`,

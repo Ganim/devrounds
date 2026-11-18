@@ -17,10 +17,10 @@ export const WORDS: Record<ErrorCode, Words> = {
     keys: ['key', 'blockedBy'],
   },
   DR104: {
-    text: 'A reason is required to move a task from {from} to {to}.',
-    hint: 'Send a non-empty reason with the request and try again.',
+    text: 'A reason is required for this change.',
+    hint: 'Send a non-empty reason with the request (the CLI takes --reason <text>) and try again.',
     httpStatus: 400,
-    keys: ['from', 'to'],
+    keys: [],
   },
   DR150: {
     text: 'Protocol message {type} is invalid at {path}: {reason}.',

@@ -31,7 +31,7 @@ export function checkTransition(i: {
 }): void {
   const { from, to } = i
   if (!ALLOWED[from].includes(to)) fail('DR301', { from, to })
-  if (NEEDS_REASON(from, to) && (i.reason === undefined || i.reason.trim() === '')) fail('DR104', { from, to })
+  if (NEEDS_REASON(from, to) && (i.reason === undefined || i.reason.trim() === '')) fail('DR104')
   if (to === 'in_progress') {
     if (i.openBlockers.length > 0) fail('DR302', { blockers: i.openBlockers })
     if (i.blockingPhasesOpen.length > 0) fail('DR304', { phases: i.blockingPhasesOpen })

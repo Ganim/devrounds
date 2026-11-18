@@ -20,11 +20,11 @@ Remove one of the existing dependencies between {key} and {blockedBy}, or drop t
 
 ## DR104
 
-A reason is required to move a task from {from} to {to}.
+A reason is required for this change.
 
 ### Fix
 
-Send a non-empty reason with the request and try again.
+Send a non-empty reason with the request (the CLI takes --reason <text>) and try again.
 
 ## DR150
 

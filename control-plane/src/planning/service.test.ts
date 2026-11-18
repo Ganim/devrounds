@@ -400,6 +400,13 @@ test('cancel without reason → DR104', async () => {
   await rejectsWith(transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'cancelled', reason: '  ' }), 'DR104')
 })
 
+test('a phase change without a reason is DR104 like a task change', async () => {
+  const { ctx } = await setup()
+
+  await rejectsWith(editPhase(ctx, { projectKey, phaseKey: 'P0', title: 'New', reason: '  ' }), 'DR104')
+  await rejectsWith(reopenPhase(ctx, { projectKey, phaseKey: 'P0', reason: '' }), 'DR104')
+})
+
 test('block without reason → DR104', async () => {
   const { ctx } = await setup()
   await addTask(ctx, { projectKey, key: 'P0-T01', title: 'Wait' })

@@ -88,6 +88,26 @@ test('domain error carries code, text and hint', async () => {
   assert.deepEqual(res.json(), { code: 'DR306', ...words('DR306', data), data })
 })
 
+test('a missing or blank reason is DR104 on phases and tasks alike, with words for both', async () => {
+  const { auth } = await setup()
+  const post = async (url: string, payload: object, method: 'POST' | 'PATCH' = 'POST') =>
+    await app.inject({ method, url: `/api/projects/alpha${url}`, headers: auth, payload })
+  await post('/tasks', { key: 'P0-T01', title: 'A', phaseKey: 'P0' })
+
+  const answers = [
+    await post('/phases/P0', { title: 'New' }, 'PATCH'),
+    await post('/phases/P0', { title: 'New', reason: '  ' }, 'PATCH'),
+    await post('/phases/P0/reopen', {}),
+    await post('/tasks/P0-T01/transition', { to: 'blocked' }),
+  ]
+  for (const res of answers) {
+    assert.equal(res.statusCode, 400)
+    assert.equal(res.json().code, 'DR104', res.body)
+    assert.deepEqual(res.json().text, explain('DR104').text)
+  }
+  assert.ok(!/task/i.test(explain('DR104').text), 'the words must also fit a phase')
+})
+
 test('schema violations come out as DR101 with the path', async () => {
   const { auth } = await setup()
   const res = await app.inject({

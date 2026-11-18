@@ -26,8 +26,9 @@ export type DeliveringMutation = Mutation & { delivered: string | null }
 // Also the plan file schema pattern, so a bad evidence string fails at parse time with its line and column.
 export const EVIDENCE = /^(commit:[0-9a-f]{7,40}|gate:\S+|url:https?:\/\/\S+|note:.+)$/
 
+// DR104 for every missing reason (task or phase, absent or blank); the HTTP schema layer maps an absent field to it too.
 function requireReason(reason: string | undefined): void {
-  if (reason === undefined || reason.trim() === '') fail('DR101', { path: '/reason', reason: 'a reason is required' })
+  if (reason === undefined || reason.trim() === '') fail('DR104')
 }
 
 function requireNewKey(exists: unknown, kind: string, key: string): void {
