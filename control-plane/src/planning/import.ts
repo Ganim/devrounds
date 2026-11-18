@@ -1,7 +1,7 @@
 import { fail } from '../errors/error.ts'
 import { findIssue, type PlanFile, type PlanFileCriterion, type PlanFileTask } from './plan-file.ts'
 import { type Actor, type Ctx, findProject, run, type Target, type Trx } from './resolve.ts'
-import { ALLOWED, type TaskState } from './rules.ts'
+import { ALLOWED, isPhaseClosable, type TaskState } from './rules.ts'
 import {
   addCriterion,
   addDependency,
@@ -17,7 +17,7 @@ import {
   movePhase,
   transition,
 } from './service.ts'
-import { type CriterionView, getPlan, type PlanView, type TaskView } from './view.ts'
+import { type CriterionView, getPlan, type PhaseView, type PlanView, type TaskView } from './view.ts'
 
 export type ImportResult = {
   created: string[] // project, phase and task keys
@@ -112,6 +112,14 @@ class Importer {
     await this.addEdges(plan)
     plan = await getPlan(this.c, projectKey)
     await this.syncCriteria(plan)
+    // A phase the file delivers that is closable already closes before the task states: no task transition would
+    // deliver it, and a task of a phase it blocks could not start (DR304).
+    await this.deliverPhases((p) =>
+      isPhaseClosable({
+        states: p.tasks.map((t) => t.state),
+        openCriteria: p.criteria.filter((c) => !c.checked).length,
+      }),
+    )
     plan = await getPlan(this.c, projectKey)
     await this.applyTaskStates(plan)
     await this.deliverPhases()
@@ -312,12 +320,13 @@ class Importer {
     }
   }
 
-  // Last, and only for phases the automatic delivery has not already delivered.
-  private async deliverPhases(): Promise<void> {
+  // Last, and only for phases the automatic delivery has not already delivered; `ready` narrows the earlier pass.
+  private async deliverPhases(ready: (phase: PhaseView) => boolean = () => true): Promise<void> {
     const plan = await getPlan(this.c, this.projectKey)
-    const state = new Map(plan.phases.map((p) => [p.key, p.state]))
+    const current = new Map(plan.phases.map((p) => [p.key, p]))
     for (const phase of this.file.phases) {
-      if (phase.state !== 'delivered' || state.get(phase.key) === 'delivered') continue
+      const db = current.get(phase.key)
+      if (phase.state !== 'delivered' || !db || db.state === 'delivered' || !ready(db)) continue
       await closePhase(this.c, { projectKey: this.projectKey, phaseKey: phase.key })
       this.touched.add(phase.key)
     }

@@ -6,7 +6,7 @@ import { exportPlan } from './export.ts'
 import { importPlan } from './import.ts'
 import { parsePlanFile } from './plan-file.ts'
 import type { Ctx } from './resolve.ts'
-import { addCriterion, addPhase } from './service.ts'
+import { addCriterion, addPhase, reopenPhase } from './service.ts'
 import { getPlan, listEvents } from './view.ts'
 
 const projectKey = 'devrounds'
@@ -273,6 +273,34 @@ phases:
   assert.deepEqual(reparsed.phases[0].criteria, [{ text: 'seeded', evidence: 'note:seed imported' }])
   const plan = await getPlan(ctx, projectKey)
   assert.equal(plan.phases[0].state, 'delivered')
+})
+
+test('a delivered phase that is already closable closes before later phases start', async () => {
+  const { ctx } = await setup()
+  const file = (p1State: string) => `
+project: { key: devrounds, name: DevRounds }
+phases:
+  - key: P0
+    title: Foundation
+    goal: Plan
+    state: delivered
+    tasks:
+      - { key: P0-T01, title: A, state: done }
+  - key: P1
+    title: Rounds
+    goal: Run rounds
+    blocked_by: [P0]
+    tasks:
+      - { key: P1-T01, title: B, state: ${p1State} }
+`
+  await importPlan(ctx, parsePlanFile(file('todo')))
+  await reopenPhase(ctx, { projectKey, phaseKey: 'P0', reason: 'regression' })
+
+  const result = await importPlan(ctx, parsePlanFile(file('in_progress')))
+
+  assert.deepEqual(result.updated, ['P0', 'P1-T01'])
+  const plan = await getPlan(ctx, projectKey)
+  assert.deepEqual([plan.phases[0].state, plan.phases[1].tasks[0].state], ['delivered', 'in_progress'])
 })
 
 test('a phase added without a goal survives export then import', async () => {

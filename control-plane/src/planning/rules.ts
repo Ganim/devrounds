@@ -84,10 +84,14 @@ export function phaseProgress(states: TaskState[]): {
 }
 
 // A phase closes only with at least one done task, no task still open and no open phase criterion.
+export function isPhaseClosable(i: { states: TaskState[]; openCriteria: number }): boolean {
+  return !i.states.some(isBlockerOpen) && i.openCriteria === 0 && i.states.includes('done')
+}
+
 export function checkPhaseClose(i: { states: TaskState[]; openCriteria: number }): void {
   const openTasks = i.states.filter(isBlockerOpen).length
   const noDoneTask = !i.states.includes('done')
-  if (openTasks > 0 || i.openCriteria > 0 || noDoneTask) {
+  if (!isPhaseClosable(i)) {
     fail('DR305', { openTasks, openCriteria: i.openCriteria, noDoneTask })
   }
 }
