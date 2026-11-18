@@ -441,6 +441,29 @@ test('checking the last phase criterion delivers the phase', async () => {
   assert.equal((await getPlan(ctx, projectKey)).phases[0].state, 'delivered')
 })
 
+test('moving the last open task out of a phase delivers it', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  await addPhase(ctx, { projectKey, key: 'P1', title: 'Next', goal: '' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T01', title: 'A' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T02', title: 'B' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'done' })
+
+  const result = await editTask(ctx, { projectKey, taskKey: 'P0-T02', phaseKey: 'P1', reason: 'later' })
+
+  assert.equal(result.delivered, 'P0')
+  assert.deepEqual(
+    (await getPlan(ctx, projectKey)).phases.map((p) => [p.key, p.state]),
+    [
+      ['P0', 'delivered'],
+      ['P1', 'open'],
+    ],
+  )
+  const [beforeLast, last] = (await events(ctx)).slice(-2)
+  assert.deepEqual([beforeLast.kind, last.kind, last.phaseKey], ['edit_task', 'deliver_phase', 'P0'])
+})
+
 test('close phase with open task → DR305', async () => {
   const { ctx } = await setup()
   await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })

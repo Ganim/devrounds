@@ -444,13 +444,16 @@ export function editTask(
     estimateHours?: number | null
     reason: string
   },
-): Promise<Mutation> {
+): Promise<DeliveringMutation> {
   return run(ctx, async (trx) => {
     requireReason(i.reason)
     const project = await findProject(trx, i.projectKey)
     // Task before phase (the lock order). The target phase is locked for share like in addTask; the source phase too,
     // so a concurrent close or delivery of it waits for the move instead of counting the task on a stale read.
+    // Moving an open task out may deliver the source phase, so then it is locked for no key update right away: taking
+    // share first and upgrading later would deadlock against another move holding share on it.
     const task = await findTask(trx, project.id, i.taskKey, { lock: true })
+    let source: string | null = null
     const changes: {
       title?: string
       description?: string
@@ -462,8 +465,9 @@ export function editTask(
     if (i.description !== undefined) changes.description = i.description
     if (i.phaseKey !== undefined) {
       const targetId = i.phaseKey === null ? null : (await findPhase(trx, project.id, i.phaseKey)).id
+      if (task.phase_id !== targetId && isBlockerOpen(task.state)) source = task.phase_id
       const locks = new Map<string, Lock>()
-      if (task.phase_id) locks.set(task.phase_id, 'share')
+      if (task.phase_id) locks.set(task.phase_id, source ? 'update' : 'share')
       if (targetId) locks.set(targetId, 'share')
       const phases = await lockPhases(trx, locks)
       const phase = targetId ? phases.get(targetId) : undefined
@@ -480,7 +484,8 @@ export function editTask(
       reason: i.reason,
       data: i,
     })
-    return { eventId }
+    const delivered = await deliverIfClosable(trx, ctx, i.projectKey, project.id, source)
+    return { eventId, delivered }
   })
 }
 
