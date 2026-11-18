@@ -570,3 +570,184 @@ async fn leftover_run_dirs_are_swept_after_the_retention_window() {
     .await
     .expect("bounded");
 }
+
+/// The seq of the latest `Orphans` event in the outbox.
+async fn reported_seq(store: &Store) -> u64 {
+    outbox(store)
+        .await
+        .iter()
+        .rev()
+        .find(|(_, event)| matches!(event, RunEvent::Orphans { .. }))
+        .map(|(seq, _)| *seq)
+        .expect("Orphans reported")
+}
+
+/// Ends what is left of `tree` directly, so a test leaves no process behind.
+fn cleanup(tree: &[ProcessIdentity]) {
+    let runner = WindowsRunner::default();
+    devrounds_runner_windows::stop_orphan(
+        None,
+        runner.runtimes(),
+        tree[0],
+        &tree[1..],
+        Duration::from_millis(100),
+    );
+}
+
+const LINGERING_TREE: [&str; 11] = [
+    "--children",
+    "1",
+    "--print",
+    "2",
+    "--run-ms",
+    "30000",
+    "--linger-ms",
+    "30000",
+    "--ctrl-c",
+    "bye",
+    "--ready",
+];
+
+/// The Orphans event was applied and acked, but the session dropped before
+/// the Stop went out: the next HelloAck acks the report through `last_seq`
+/// with no `Ack` frame. That is no let_finish answer; the Stop the control
+/// plane sends again after that HelloAck still ends the tree.
+#[test]
+fn a_report_acked_through_hello_still_takes_the_stop_sent_after_it() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let stored = crash_after(home.path(), "orphan-4", &LINGERING_TREE, |stored| {
+        stored.identity.is_some() && stored.members.len() >= 2
+    });
+    let tree = identities(&stored);
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime B");
+    runtime.block_on(async {
+        tokio::time::timeout(LIMIT, async {
+            let b = executor(home.path()).await;
+            let orphans = scan_orphans(&b.store).await.expect("scan");
+            b.runs.report_orphans(orphans).await.expect("report");
+            let reported = reported_seq(&b.store).await;
+            // HelloAck: the connection acks through last_seq and hands HelloAck on.
+            b.store.ack_through(reported).await.expect("ack");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert_eq!(alive(&tree).len(), tree.len(), "the tree was touched");
+
+            b.runs.handle(ServerMessage::Stop(Stop {
+                run: "orphan-4".to_owned(),
+                reason: StopReason::OrphanPolicy,
+            }));
+            let left = gone_within(&tree, Duration::from_secs(12)).await;
+            if !left.is_empty() {
+                cleanup(&tree);
+            }
+            assert_eq!(left, [0u32; 0], "the Stop was not honoured");
+        })
+        .await
+        .expect("bounded");
+    });
+}
+
+/// let_finish: the live `Ack` of the report comes with no Stop before it.
+/// The tree keeps running, the output it left ships, and the run is
+/// forgotten once that is acked.
+#[test]
+fn an_ack_with_no_stop_lets_the_orphan_finish_and_forgets_it() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let stored = crash_after(home.path(), "orphan-5", &LINGERING_TREE, |stored| {
+        stored.identity.is_some() && stored.members.len() >= 2
+    });
+    let tree = identities(&stored);
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime B");
+    runtime.block_on(async {
+        tokio::time::timeout(LIMIT, async {
+            let b = executor(home.path()).await;
+            let orphans = scan_orphans(&b.store).await.expect("scan");
+            b.runs.report_orphans(orphans).await.expect("report");
+            let reported = reported_seq(&b.store).await;
+            b.store.ack_through(reported).await.expect("ack");
+            b.runs.handle(ServerMessage::Ack(devrounds_protocol::Ack {
+                seq: reported,
+            }));
+
+            let mut appended = b.store.appended();
+            let lines = loop {
+                let lines = shipped_lines(&outbox(&b.store).await);
+                if lines.iter().any(|line| line == "line 2") {
+                    break lines;
+                }
+                appended.changed().await.expect("store alive");
+            };
+            // The `ready` lines of the leader and its child ship with them.
+            let printed: Vec<&String> = lines
+                .iter()
+                .filter(|line| line.starts_with("line "))
+                .collect();
+            assert_eq!(printed, ["line 1", "line 2"]);
+            ack_all(&b.store).await;
+            forgotten(&b.store, "orphan-5").await;
+            let running = alive(&tree).len();
+            cleanup(&tree);
+            assert_eq!(running, tree.len(), "let_finish touched the tree");
+        })
+        .await
+        .expect("bounded");
+    });
+}
+
+/// Executor B recovers a dead orphan's output and crashes before the ack;
+/// executor C recovers it again. The lines B already put into the log are
+/// not read again under new seqs: by `first_seq`, as the control plane keeps
+/// segments, each line arrives once.
+#[test]
+fn a_second_restart_ships_no_line_twice() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let stored = crash_after(
+        home.path(),
+        "orphan-6",
+        &["--print", "3", "--run-ms", "1500"],
+        |stored| stored.identity.is_some(),
+    );
+    let tree = identities(&stored);
+    let shipped_by = |runtime: &tokio::runtime::Runtime| {
+        runtime.block_on(async {
+            tokio::time::timeout(LIMIT, async {
+                assert_eq!(gone_within(&tree, Duration::from_secs(10)).await, [0u32; 0]);
+                let x = executor(home.path()).await;
+                let orphans = scan_orphans(&x.store).await.expect("scan");
+                x.runs.report_orphans(orphans).await.expect("report");
+                let reported = reported_seq(&x.store).await;
+                // Wait until this executor's shipping is done: a segment after its report.
+                let mut appended = x.store.appended();
+                while !outbox(&x.store).await.iter().any(|(seq, event)| {
+                    *seq > reported && matches!(event, RunEvent::LogSegment { .. })
+                }) {
+                    appended.changed().await.expect("store alive");
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            })
+            .await
+            .expect("bounded");
+        });
+    };
+    let b = tokio::runtime::Runtime::new().expect("runtime B");
+    shipped_by(&b);
+    b.shutdown_timeout(Duration::from_secs(5));
+    let c = tokio::runtime::Runtime::new().expect("runtime C");
+    shipped_by(&c);
+
+    let events = c.block_on(async {
+        let store = Store::open(&home.path().join("executor.db"))
+            .await
+            .expect("store");
+        outbox(&store).await
+    });
+    let mut kept: BTreeMap<u64, (u64, RunEvent)> = BTreeMap::new();
+    for (seq, event) in events {
+        if let RunEvent::LogSegment { first_seq, .. } = &event {
+            kept.entry(*first_seq).or_insert((seq, event));
+        }
+    }
+    let unique: Vec<(u64, RunEvent)> = kept.into_values().collect();
+    assert_eq!(shipped_lines(&unique), ["line 1", "line 2", "line 3"]);
+}

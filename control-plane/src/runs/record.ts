@@ -108,7 +108,7 @@ async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
 async function lockRun(trx: Trx, machineId: string, runId: string) {
   const row = await trx
     .selectFrom('runs')
-    .select(['state', 'clock_skew_ms', 'job_type_id'])
+    .select(['state', 'clock_skew_ms', 'job_type_id', 'orphan_action'])
     .where('id', '=', runId)
     .where('machine_id', '=', machineId)
     .forNoKeyUpdate()
@@ -259,9 +259,9 @@ export const UNSUPERVISED_SUMMARY = 'executor restarted; the run ended while uns
  * Applies an Orphans event of machine `machineId`, the runs a restarted executor found from its previous process,
  * in one transaction, and returns the Stops to send once it commits. An alive run becomes orphaned with class infra:
  * its job type's `kill` policy answers Stop orphan_policy (orphan_action killed), `let_finish` sends nothing. A dead
- * run failed with class infra, stamped like any executor event (see applyRunEvent). An orphan its run cannot take
- * (another machine's, or already ended, as when an executor restarts again before the ack) is logged and skipped,
- * so the others still apply.
+ * run failed with class infra, stamped like any executor event (see applyRunEvent). An alive repeat of a run already
+ * orphaned to be killed answers its Stop again. An orphan its run cannot take (another machine's, already ended, or a
+ * let_finish repeat) is logged and skipped, so the others still apply.
  */
 export async function applyOrphans(
   ctx: TenantCtx,
@@ -287,6 +287,25 @@ export async function applyOrphans(
   })
 }
 
+/**
+ * The Stop of every run of `machineId` orphaned to be killed, for the gateway to send again after each HelloAck,
+ * before any Ack of the session. The executor takes an Ack of its Orphans event with no Stop before it as let_finish,
+ * so a Stop lost with a session that dropped after the commit would otherwise leave the orphan running. The
+ * executor ignores a Stop of a run it no longer follows.
+ */
+export function pendingOrphanStops(ctx: TenantCtx, machineId: string): Promise<StopMessage[]> {
+  return run(ctx, async (trx) => {
+    const rows = await trx
+      .selectFrom('runs')
+      .select('id')
+      .where('machine_id', '=', machineId)
+      .where('state', '=', 'orphaned')
+      .where('orphan_action', '=', 'killed')
+      .execute()
+    return rows.map((row) => ({ type: 'Stop', run: row.id, reason: 'orphan_policy' }) as const)
+  })
+}
+
 // True when the run is to be stopped.
 async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: boolean, at: Date): Promise<boolean> {
   requireRunId(runId)
@@ -304,6 +323,8 @@ async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: bo
     })
     return false
   }
+  // The executor restarted again before it acted on the Stop: it still owes the kill.
+  if (row.state === 'orphaned' && row.orphan_action === 'killed') return true
   const next = nextRunState(row.state, 'orphan', runId)
   const { orphan_policy } = await trx
     .selectFrom('job_types')

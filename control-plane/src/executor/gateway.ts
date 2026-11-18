@@ -12,7 +12,7 @@ import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
 import { pendingOffers, runEvents } from '../runs/dispatch.ts'
 import { type LogCtx, storeSegment } from '../runs/log-store.ts'
-import { applyOrphans, applyRunEvent } from '../runs/record.ts'
+import { applyOrphans, applyRunEvent, pendingOrphanStops } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import {
   type ControlPlaneMessage,
@@ -233,6 +233,8 @@ function serveSession(
       })
       // Offers lost with an earlier session; on the chain, so they go out before any later frame is handled.
       for (const offer of await pendingOffers(ctx, machine.machineId)) reply(offer)
+      // Orphan Stops lost the same way; they must precede this session's first Ack (see pendingOrphanStops).
+      for (const stop of await pendingOrphanStops(ctx, machine.machineId)) reply(stop)
       return
     }
     if (message.type === 'MachineReport') await recordReport(ctx, machine.machineId, message)

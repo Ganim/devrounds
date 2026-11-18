@@ -85,6 +85,10 @@ struct Shared {
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
     /// Runs with a live process.
     running: AtomicU32,
+    /// The highest seq an `Ack` frame of this process acked. Unlike the
+    /// store's ack, it never moves through `HelloAck.last_seq`, which also
+    /// covers an event whose answer went out on a session that dropped.
+    live_ack: watch::Sender<u64>,
 }
 
 /// How a run ended, before it becomes `RunFinished`.
@@ -132,6 +136,7 @@ impl RunLoop {
                 log_options: deps.log_options,
                 active: Mutex::new(HashMap::new()),
                 running: AtomicU32::new(0),
+                live_ack: watch::channel(0).0,
             }),
         }
     }
@@ -165,6 +170,13 @@ impl RunLoop {
                 }
                 None => tracing::debug!(run = %stop.run, "stop of a run not active ignored"),
             },
+            ServerMessage::Ack(ack) => {
+                self.shared.live_ack.send_if_modified(|seq| {
+                    let moved = ack.seq > *seq;
+                    *seq = (*seq).max(ack.seq);
+                    moved
+                });
+            }
             _ => {}
         }
     }
@@ -202,6 +214,7 @@ impl RunLoop {
                     store: &shared.store,
                     runner: &shared.runner,
                     log_options: &shared.log_options,
+                    live_ack: shared.live_ack.subscribe(),
                 };
                 follow_orphan(deps, stored, alive, reported, stopped).await;
                 shared

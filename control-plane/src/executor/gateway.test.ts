@@ -416,3 +416,31 @@ test('an Orphans event with the kill policy answers Stop before its Ack', async 
   }
   session.close()
 })
+
+// The Orphans event committed but the socket closed before the Stop went out: the next session acks it through
+// last_seq, so the Stop must come again after HelloAck or the kill policy is lost.
+test('after HelloAck, the Stop of every run of this machine orphaned to be killed is sent again', async () => {
+  const { tenant, machine } = await paired()
+  const [run] = await offeredRuns(tenant, 'build-01')
+  const session = await helloAcked(machine.token)
+  assert.equal(((await session.next()) as { type: string }).type, 'Offer')
+  const events = [
+    { kind: 'Admitted', run },
+    { kind: 'RunStarted', run, pid: 42, start_time: '1', boot_id: 'boot-1' },
+    { kind: 'Orphans', runs: [{ run, alive: true }] },
+  ]
+  for (const [index, event] of events.entries()) {
+    await session.send({ type: 'Event', seq: index + 1, at: AT, event })
+  }
+  // Whether or not this session's Stop reached the executor, the control plane cannot know it did.
+  const replies = [await session.next(), await session.next(), await session.next(), await session.next()]
+  assert.deepEqual(replies.at(-1), ack(3))
+  session.close()
+  await session.closed
+
+  const again = dial(machine.token)
+  await again.send(HELLO)
+  assert.equal(((await again.next()) as { last_seq: number }).last_seq, 3)
+  assert.deepEqual(await again.next(), { type: 'Stop', run, reason: 'orphan_policy' })
+  again.close()
+})

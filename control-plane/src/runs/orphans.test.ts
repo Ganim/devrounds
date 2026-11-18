@@ -47,11 +47,11 @@ async function setup() {
     })
   }
   // A run of `jobTypeKey` as far as `until`, as its executor reported it before the restart.
-  const runOf = async (jobTypeKey: string, until: 'offered' | 'running') => {
+  const runOf = async (jobTypeKey: string, until: 'offered' | 'admitted' | 'running') => {
     const created = await createRun(ctx, { projectKey, jobTypeKey, machineName: 'build-01', cwd: 'C:\\work' })
     await markOffered(ctx, created.id)
+    if (until !== 'offered') await applyRunEvent(ctx, machineId, { kind: 'Admitted', run: created.id }, AT)
     if (until === 'running') {
-      await applyRunEvent(ctx, machineId, { kind: 'Admitted', run: created.id }, AT)
       const started = { kind: 'RunStarted', run: created.id, pid: 42, start_time: '1', boot_id: 'boot-1' } as const
       await applyRunEvent(ctx, machineId, started, AT)
     }
@@ -87,6 +87,33 @@ test('orphans with the kill policy get a Stop and stay orphaned with class infra
   })
 })
 
+// The executor restarted again before it acted on the Stop: it reports the run alive once more.
+test('an alive repeat of an orphan already killed answers its Stop again', async () => {
+  const { ctx, machineId, runOf, row } = await setup()
+  const runId = await runOf('check', 'running')
+  await applyOrphans(ctx, machineId, orphans([runId, true]), AT)
+  const warned: unknown[] = []
+
+  const replies = await applyOrphans(ctx, machineId, orphans([runId, true]), AT, { warn: (d) => warned.push(d) })
+
+  assert.deepEqual(replies, [{ type: 'Stop', run: runId, reason: 'orphan_policy' }])
+  assert.deepEqual(warned, [])
+  assert.equal((await row(runId)).state, 'orphaned')
+})
+
+// A crash between storing the leader and appending RunStarted: the control plane last saw the run admitted.
+test('an orphan the control plane still has admitted is orphaned or failed all the same', async () => {
+  const { ctx, machineId, runOf, row } = await setup()
+  const alive = await runOf('check', 'admitted')
+  const dead = await runOf('check', 'admitted')
+
+  const replies = await applyOrphans(ctx, machineId, orphans([alive, true], [dead, false]), AT)
+
+  assert.deepEqual(replies, [{ type: 'Stop', run: alive, reason: 'orphan_policy' }])
+  assert.equal((await row(alive)).state, 'orphaned')
+  assert.equal((await row(dead)).state, 'failed')
+})
+
 test('let_finish sends nothing', async () => {
   const { ctx, machineId, runOf, row } = await setup()
   const runId = await runOf('serve', 'running')
@@ -102,21 +129,21 @@ test('a dead orphan fails with class infra, and one the record cannot take does 
   const { ctx, machineId, runOf, row } = await setup()
   const dead = await runOf('check', 'running')
   const neverStarted = await runOf('serve', 'offered')
-  const alreadyOrphaned = await runOf('check', 'running')
-  await applyOrphans(ctx, machineId, orphans([alreadyOrphaned, true]), AT)
+  const letFinish = await runOf('serve', 'running')
+  await applyOrphans(ctx, machineId, orphans([letFinish, true]), AT)
 
   const warned: unknown[] = []
   const replies = await applyOrphans(
     ctx,
     machineId,
-    orphans([alreadyOrphaned, true], [dead, false], [neverStarted, false]),
+    orphans([letFinish, true], [dead, false], [neverStarted, false]),
     AT,
     { warn: (data) => warned.push(data) },
   )
 
-  // The repeat of an orphan already handled is logged and skipped: no second Stop.
+  // The repeat of a let_finish orphan already handled is logged and skipped.
   assert.deepEqual(replies, [])
-  assert.deepEqual(warned, [{ code: 'DR351', machineId, run: alreadyOrphaned }])
+  assert.deepEqual(warned, [{ code: 'DR351', machineId, run: letFinish }])
   for (const runId of [dead, neverStarted]) {
     const after = await row(runId)
     assert.equal(after.state, 'failed')

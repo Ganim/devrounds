@@ -8,6 +8,7 @@ type Move = { from: readonly RunState[]; to: RunState | 'same'; stamp?: RunStamp
 
 // The executor reports Delayed while the offer waits for admission, and may end a run before it starts: a spawn
 // failure or a Stop while admitting. Only a started run can exit 0. Orphaned has no end stamp: nobody saw it end.
+// An admitted run can be orphaned: an executor that crashed after storing the leader, before RunStarted, reports it.
 const MOVES: Record<RunTransition, Move> = {
   offer: { from: ['queued'], to: 'offered', stamp: 'offered_at' },
   delay: { from: ['offered'], to: 'same' },
@@ -16,7 +17,7 @@ const MOVES: Record<RunTransition, Move> = {
   finish: { from: ['running'], to: 'finished', stamp: 'finished_at' },
   fail: { from: ['offered', 'admitted', 'running'], to: 'failed', stamp: 'finished_at' },
   stop: { from: ['offered', 'admitted', 'running'], to: 'stopped', stamp: 'finished_at' },
-  orphan: { from: ['running'], to: 'orphaned' },
+  orphan: { from: ['admitted', 'running'], to: 'orphaned' },
 }
 
 export const TERMINAL: readonly RunState[] = ['finished', 'failed', 'stopped', 'orphaned']

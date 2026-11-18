@@ -165,13 +165,18 @@ pub(crate) struct OrphanDeps<'a> {
     pub store: &'a Store,
     pub runner: &'a WindowsRunner,
     pub log_options: &'a SegmentOptions,
+    /// The run loop's highest seq acked by an `Ack` frame.
+    pub live_ack: watch::Receiver<u64>,
 }
 
 /// Follows one orphan reported as event `reported`. An alive orphan waits
 /// for the control plane's answer: it sends `Stop { orphan_policy }` for the
 /// kill policy before it acks the `Orphans` event, on the same socket, so an
-/// ack with no stop before it means `let_finish` and the orphan is left
-/// running. A stop ends the recorded tree with [`stop_orphan`]. Then the
+/// `Ack` frame with no stop before it means `let_finish` and the orphan is
+/// left running. Only a live `Ack` settles that: a report acked through
+/// `HelloAck.last_seq` may have lost its Stop with the session, and the
+/// control plane sends that Stop again right after the `HelloAck`, before
+/// any `Ack` of the new session. A stop ends the recorded tree with [`stop_orphan`]. Then the
 /// output the run left ships as `LogSegment` events, and the run is
 /// forgotten once every one of them is acked. A segment the store refused
 /// keeps the run, so the next start reports it again.
@@ -184,11 +189,12 @@ pub(crate) async fn follow_orphan(
 ) {
     let run = stored.run_id.clone();
     let mut acked = deps.store.acked();
+    let mut live_ack = deps.live_ack;
     if alive {
         let stop = tokio::select! {
             biased;
             () = stop_asked(&mut stopped) => true,
-            ready = acked.wait_for(|seq| *seq >= reported) => {
+            ready = live_ack.wait_for(|seq| *seq >= reported) => {
                 if ready.is_err() {
                     return;
                 }

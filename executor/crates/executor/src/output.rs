@@ -447,14 +447,18 @@ fn write_offsets(path: &Path, streams: &[Stream]) -> io::Result<()> {
     std::fs::rename(&aside, path)
 }
 
-/// The offset of each stream; a missing file reads as nothing read yet,
-/// which is so: it is written after the first read that found bytes.
-fn read_offsets(path: &Path) -> io::Result<Vec<(String, u64)>> {
+/// The offset of each stream, `None` when there is no file: nothing was read
+/// yet, which is so, as it is written after the first read that found bytes.
+/// An empty file is an error: it is never written empty.
+fn read_offsets(path: &Path) -> io::Result<Option<Vec<(String, u64)>>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
+    if text.is_empty() {
+        return Err(io::Error::other("empty offsets file"));
+    }
     text.lines()
         .map(|line| {
             let (name, offset) = line
@@ -463,7 +467,22 @@ fn read_offsets(path: &Path) -> io::Result<Vec<(String, u64)>> {
             let offset = offset.parse().map_err(io::Error::other)?;
             Ok((name.to_owned(), offset))
         })
-        .collect()
+        .collect::<io::Result<_>>()
+        .map(Some)
+}
+
+/// Where recovery reads `stream` on from. With no offsets file nothing was
+/// read, so from the start. A stream the file lacks counts as unreadable and
+/// is skipped (`u64::MAX`) rather than read again from 0, which could put its
+/// lines into the log twice; a run with stderr merged into stdout has no
+/// stderr to skip.
+fn start_offset(offsets: Option<&[(String, u64)]>, stream: &str) -> u64 {
+    offsets.map_or(0, |offsets| {
+        offsets
+            .iter()
+            .find(|(name, _)| name == stream)
+            .map_or(u64::MAX, |(_, offset)| *offset)
+    })
 }
 
 /// What a previous executor process left of orphan `run`'s output in
@@ -483,13 +502,11 @@ pub(crate) fn recover_orphan_log(
         return Vec::new();
     }
     let segments = run_dir.join("segments");
+    let offsets_path = offsets_file(&segments);
     // Unreadable offsets would repeat or skip lines; the log alone ships then.
-    let offsets = read_offsets(&offsets_file(&segments)).unwrap_or_else(|error| {
+    let offsets = read_offsets(&offsets_path).unwrap_or_else(|error| {
         tracing::warn!(%run, %error, "output offsets unreadable; only the run's log ships");
-        vec![
-            ("stdout".to_owned(), u64::MAX),
-            ("stderr".to_owned(), u64::MAX),
-        ]
+        Some(Vec::new())
     });
     let mut log = match UnitLog::open(&segments, run, options.log.clone()) {
         Ok(log) => log,
@@ -499,13 +516,14 @@ pub(crate) fn recover_orphan_log(
         }
     };
     let now = unix_ms();
+    let mut streams = Vec::new();
     for name in ["stdout", "stderr"] {
-        let offset = offsets
-            .iter()
-            .find(|(stream, _)| stream == name)
-            .map_or(0, |(_, offset)| *offset);
         let mut stream = Stream::new(name, run_dir.join(format!("{name}.raw")));
-        stream.offset = offset;
+        stream.offset = start_offset(offsets.as_deref(), name);
+        streams.push(stream);
+    }
+    for stream in &mut streams {
+        let name = stream.name;
         loop {
             let bytes = match stream.read(POLL_BYTES) {
                 Ok(bytes) => bytes,
@@ -523,8 +541,15 @@ pub(crate) fn recover_orphan_log(
             }
         }
     }
-    if let Err(error) = log.finish(now) {
-        tracing::warn!(%run, %error, "orphan's run log not closed");
+    match log.finish(now) {
+        // What was read is in the closed log now; a later restart that
+        // recovers this run again reads on from here, not from the old offsets.
+        Ok(()) => {
+            if let Err(error) = write_offsets(&offsets_path, &streams) {
+                tracing::warn!(%run, %error, "output offsets not written");
+            }
+        }
+        Err(error) => tracing::warn!(%run, %error, "orphan's run log not closed"),
     }
     log.segments()
         .into_iter()
@@ -636,10 +661,13 @@ impl State {
             // Exposes a waiting prompt as a partial line and rotates by age.
             log.with(run, |log| log.flush_partial(now, false));
         }
-        // After the flush: what the log holds on disk reaches at least these
-        // offsets, so a restarted executor reading on from them repeats no
-        // line. It loses at most each stream's unterminated last line, which
-        // only the log's framer held.
+        // After the flush, so the log's files hold every line before these
+        // offsets: a restarted executor reading on from them adds no line to
+        // the log twice. Neither file is synced, so after a machine crash the
+        // two may disagree. An unterminated last line only the log's framer
+        // held is behind the offsets but not in the log: a restart loses it,
+        // at most one per stream. Segments shipped
+        // before may ship again; the control plane keeps one per `first_seq`.
         if matches!(log, RunLog::Open { .. }) {
             let read: Vec<u64> = streams.iter().map(|stream| stream.offset).collect();
             if offsets_written.as_ref() != Some(&read) {
@@ -699,7 +727,9 @@ fn unix_ms() -> u64 {
 mod tests {
     use std::io::Write;
 
-    use super::{POLL_BYTES, RunLog, State, Stream, TAIL_BYTES, TAIL_LINES, Tail};
+    use super::{
+        POLL_BYTES, RunLog, State, Stream, TAIL_BYTES, TAIL_LINES, Tail, read_offsets, start_offset,
+    };
     use crate::steps::{StepChange, Steps};
 
     #[test]
@@ -767,5 +797,28 @@ mod tests {
         assert_eq!(tail.lines.len(), 1);
         assert!(tail.bytes <= TAIL_BYTES);
         assert!(tail.lines[0].chars().all(|c| c == 'é'));
+    }
+
+    // An empty or partial file is no record of "nothing read": reading on
+    // from 0 would put lines into the log twice.
+    #[test]
+    fn offsets_missing_a_stream_are_unreadable() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        std::fs::create_dir_all(&root).expect("create target/tmp");
+        let dir = tempfile::tempdir_in(root).expect("tempdir");
+        let path = dir.path().join("output.offsets");
+
+        let none = read_offsets(&path).expect("missing file");
+        assert_eq!(start_offset(none.as_deref(), "stdout"), 0);
+        std::fs::write(&path, "").expect("write");
+        assert!(
+            read_offsets(&path).is_err(),
+            "an empty file read as offsets"
+        );
+
+        std::fs::write(&path, "stdout 12\n").expect("write");
+        let read = read_offsets(&path).expect("offsets");
+        assert_eq!(start_offset(read.as_deref(), "stdout"), 12);
+        assert_eq!(start_offset(read.as_deref(), "stderr"), u64::MAX);
     }
 }

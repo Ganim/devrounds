@@ -43,7 +43,15 @@ create table if not exists meta (
     value text not null
 );
 insert or ignore into meta (key, value) values ('schema', '1');
+create index if not exists outbox_run on outbox (json_extract(message, '$.event.run'));
 ";
+
+// Both name the run exactly as `outbox_run` indexes it: SQLite uses an
+// expression index only for the same expression text.
+const KNOWS_RUN: &str = "select exists (select 1 from runs where run_id = ?1)
+    or exists (select 1 from outbox where json_extract(message, '$.event.run') = ?1)";
+const OUTBOX_RUNS: &str = "select distinct json_extract(message, '$.event.run') from outbox
+    where json_extract(message, '$.event.run') is not null";
 
 /// A run the executor started or is about to start, kept until it ends so a
 /// restarted executor can find it again.
@@ -144,8 +152,9 @@ impl Store {
         let seq = self
             .call(move |connection| {
                 let trx = connection.transaction()?;
-                // The seq is the row id, so the frame that names it is written second.
-                trx.execute("insert into outbox (message) values ('')", [])?;
+                // The seq is the row id, so the frame that names it is written second. The
+                // placeholder is JSON for the `outbox_run` index, which reads every message.
+                trx.execute("insert into outbox (message) values ('{}')", [])?;
                 let seq = u64::try_from(trx.last_insert_rowid())?;
                 let message = encode_client(&ClientMessage::Event(Event { seq, at, event }))?;
                 trx.execute(
@@ -366,12 +375,7 @@ impl Store {
     pub async fn knows_run(&self, run: &str) -> Result<bool, DrError> {
         let run = run.to_owned();
         self.call(move |connection| {
-            let known: bool = connection.query_row(
-                "select exists (select 1 from runs where run_id = ?1)
-                     or exists (select 1 from outbox where json_extract(message, '$.event.run') = ?1)",
-                params![run],
-                |row| row.get(0),
-            )?;
+            let known: bool = connection.query_row(KNOWS_RUN, params![run], |row| row.get(0))?;
             Ok(known)
         })
         .await
@@ -380,10 +384,7 @@ impl Store {
     /// The runs named by an event still in the outbox.
     pub async fn outbox_runs(&self) -> Result<BTreeSet<String>, DrError> {
         self.call(|connection| {
-            let mut statement = connection.prepare(
-                "select distinct json_extract(message, '$.event.run') from outbox
-                 where json_extract(message, '$.event.run') is not null",
-            )?;
+            let mut statement = connection.prepare(OUTBOX_RUNS)?;
             let rows = statement.query_map([], |row| row.get(0))?;
             Ok(rows.collect::<Result<_, _>>()?)
         })
@@ -453,4 +454,39 @@ fn stored_run(row: &Row<'_>) -> Result<StoredRun, Failure> {
         run_dir: PathBuf::from(row.get::<_, String>(6)?),
         members: serde_json::from_str(&row.get::<_, String>(7)?)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::{KNOWS_RUN, OUTBOX_RUNS, SCHEMA};
+
+    fn plan(connection: &Connection, sql: &str) -> String {
+        let mut statement = connection
+            .prepare(&format!("explain query plan {sql}"))
+            .expect("prepare");
+        let run = vec!["run"; statement.parameter_count()];
+        let details = statement
+            .query_map(rusqlite::params_from_iter(run), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        details.join("; ")
+    }
+
+    // The outbox holds every event not acked yet, which can be many while the
+    // control plane is unreachable; an Offer and each sweep look runs up in it.
+    #[test]
+    fn outbox_lookups_by_run_use_the_index() {
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+
+        for sql in [KNOWS_RUN, OUTBOX_RUNS] {
+            let plan = plan(&connection, sql);
+            assert!(plan.contains("outbox_run"), "{plan}");
+        }
+    }
 }
