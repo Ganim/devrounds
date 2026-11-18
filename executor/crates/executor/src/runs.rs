@@ -14,11 +14,11 @@ use std::{
 };
 
 use devrounds_core::{
-    JobSpec, LaunchSpec, StopPolicy,
+    DrError, JobSpec, LaunchSpec, StopPolicy,
     gate::{Release, StartSlot},
 };
 use devrounds_logs::LogOptions;
-use devrounds_protocol::{FinishReason, Offer, RunEvent, ServerMessage};
+use devrounds_protocol::{FinishReason, Offer, Orphan, RunEvent, ServerMessage};
 use devrounds_runner_windows::{ExitReport, WindowsRunner, WindowsUnit};
 use devrounds_store::{RunIdentity, Store, StoredRun};
 use tokio::sync::{mpsc, watch};
@@ -28,6 +28,7 @@ use crate::{
     admission::{Admission, AdmissionStep, DelayReason},
     connection::MAX_MESSAGE,
     isolation::{Isolation, NoneIsolation, PrepareError},
+    orphans::{OrphanDeps, follow_orphan},
     output::OutputTail,
 };
 
@@ -141,8 +142,9 @@ impl RunLoop {
     }
 
     /// Acts on one control plane message; returns at once. `Offer` starts a
-    /// run task (a repeated offer of a run still active is ignored), `Stop`
-    /// asks an active run to stop (an unknown run is ignored). Must be called
+    /// run task (a repeated offer of a run still active or known to the
+    /// store is ignored), `Stop` asks an active run or orphan to stop (an
+    /// unknown run is ignored). Must be called
     /// inside a tokio runtime.
     pub fn handle(&self, message: ServerMessage) {
         match message {
@@ -167,6 +169,51 @@ impl RunLoop {
         }
     }
 
+    /// Reports what [`crate::orphans::scan_orphans`] found as one `Orphans`
+    /// event and follows each orphan
+    /// ([`crate::orphans::follow_orphan`]); nothing when there are none. Call
+    /// it once at start, before the session can offer anything. An orphan
+    /// counts as active, so an Offer of it is ignored and a Stop of it applies
+    /// its job type's kill policy.
+    pub async fn report_orphans(&self, orphans: Vec<(StoredRun, bool)>) -> Result<(), DrError> {
+        if orphans.is_empty() {
+            return Ok(());
+        }
+        let runs = orphans
+            .iter()
+            .map(|(stored, alive)| Orphan {
+                run: stored.run_id.clone(),
+                alive: *alive,
+            })
+            .collect();
+        let reported = self
+            .shared
+            .store
+            .append_event(RunEvent::Orphans { runs })
+            .await?;
+        for (stored, alive) in orphans {
+            tracing::warn!(run = %stored.run_id, alive, "run of a previous executor process reported as an orphan");
+            let (stop, stopped) = watch::channel(false);
+            self.active().insert(stored.run_id.clone(), stop);
+            let shared = Arc::clone(&self.shared);
+            tokio::spawn(async move {
+                let run = stored.run_id.clone();
+                let deps = OrphanDeps {
+                    store: &shared.store,
+                    runner: &shared.runner,
+                    log_options: &shared.log_options,
+                };
+                follow_orphan(deps, stored, alive, reported, stopped).await;
+                shared
+                    .active
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&run);
+            });
+        }
+        Ok(())
+    }
+
     fn active(&self) -> std::sync::MutexGuard<'_, HashMap<String, watch::Sender<bool>>> {
         self.shared
             .active
@@ -177,6 +224,25 @@ impl RunLoop {
 
 async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bool>) {
     let run = offer.run.clone();
+    // The control plane re-sends the Offer of every run it still sees
+    // offered after each Hello, so the Offer of a run this store knows (in
+    // flight, or ended with events not applied yet) is a repeat.
+    match shared.store.knows_run(&run).await {
+        Ok(false) => {}
+        known => {
+            if let Err(error) = known {
+                tracing::error!(%run, %error, "offer not checked against the store; ignored");
+            } else {
+                tracing::info!(%run, "offer of a run already known ignored");
+            }
+            shared
+                .active
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&run);
+            return;
+        }
+    }
     let ending = run_once(&shared, offer, stopped).await;
     let stored = emit(
         &shared.store,
@@ -409,7 +475,13 @@ async fn follow(
     .await;
     // Nothing reads the samples yet; the sampler ignores a closed channel.
     let (samples, _) = mpsc::unbounded_channel();
-    let sampler = Sampler::spawn(run, Arc::clone(&unit), Some(slot), samples);
+    let sampler = Sampler::spawn_recording(
+        run,
+        Arc::clone(&unit),
+        Some(slot),
+        samples,
+        shared.store.clone(),
+    );
     let tail = OutputTail::spawn(
         run.to_owned(),
         output,

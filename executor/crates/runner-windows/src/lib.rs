@@ -149,6 +149,12 @@ impl WindowsRunner {
         self
     }
 
+    /// The console helper stops send events through; pass it to
+    /// [`stop_orphan`].
+    pub fn console_helper(&self) -> Option<&ConsoleHelper> {
+        self.helper.as_ref()
+    }
+
     /// Which programs link the MSYS runtime, as this runner has read them;
     /// pass it to [`stop_orphan`] so orphan stops share the answers.
     pub fn runtimes(&self) -> &Runtimes {

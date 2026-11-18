@@ -1,5 +1,5 @@
-//! `devrounds-executor run`: config, home lock, store, connection, admission
-//! and the run loop of one executor process.
+//! `devrounds-executor run`: config, home lock, store, orphans, connection,
+//! admission and the run loop of one executor process.
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -12,6 +12,7 @@ use devrounds_executor::{
     admission::Admission,
     config::{self, HomeLock, STORE_FILE},
     connection::{Connection, Handler},
+    orphans,
     runs::{RunLoop, RunLoopDeps, run_log_options},
 };
 use devrounds_metrics_windows::WindowsPressure;
@@ -40,7 +41,7 @@ pub async fn serve() -> Result<(), DrError> {
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect();
     let runs = RunLoop::new(RunLoopDeps {
-        store,
+        store: store.clone(),
         admission: Arc::new(admission),
         runner: WindowsRunner::default(),
         connected: connection.connected(),
@@ -48,6 +49,11 @@ pub async fn serve() -> Result<(), DrError> {
         machine_env,
         log_options: run_log_options(),
     });
+    // Before the session exists, so nothing is offered or admitted ahead of
+    // the report; the sweep then skips every orphan, which is still stored.
+    let orphans = orphans::scan_orphans(&store).await?;
+    runs.report_orphans(orphans).await?;
+    tokio::spawn(orphans::sweep_forever(store, home.join("runs")));
     let boot_id = tokio::task::spawn_blocking(proc::boot_id)
         .await
         .map_err(|error| internal(&error))?

@@ -208,7 +208,7 @@ function delayCount(run: string) {
 }
 
 const AT = '2026-11-18T12:00:00Z'
-// Changes nothing in the run record (Task 15 handles it), so it needs no run.
+// Names no run, so it changes nothing and needs no run.
 const orphans = (seq: number) => ({ type: 'Event', seq, at: AT, event: { kind: 'Orphans', runs: [] } })
 const ack = (seq: number) => ({ type: 'Ack', seq })
 
@@ -226,6 +226,7 @@ test('an event with seq <= last_seq is acked and not applied twice', async () =>
   const [run] = await offeredRuns(tenant, 'build-01')
   const delayed = (seq: number) => delayedEvent(seq, run)
   const session = await helloAcked(machine.token)
+  assert.equal(((await session.next()) as { type: string }).type, 'Offer')
   await session.send(delayed(1))
   assert.deepEqual(await session.next(), ack(1))
   // The executor resends after a reconnect it thinks lost the ack.
@@ -236,6 +237,8 @@ test('an event with seq <= last_seq is acked and not applied twice', async () =>
   const again = dial(machine.token)
   await again.send(HELLO)
   assert.equal(((await again.next()) as { last_seq: number }).last_seq, 1)
+  // Delayed leaves the run offered, so each session gets its Offer again.
+  assert.equal(((await again.next()) as { type: string }).type, 'Offer')
   await again.send(delayed(1))
   assert.deepEqual(await again.next(), ack(1))
   again.close()
@@ -280,6 +283,7 @@ test('an event answering DR351 is acked and its seq counts as applied', async ()
   const [run] = await offeredRuns(tenant, 'build-01')
   const admitted = (seq: number) => ({ type: 'Event', seq, at: AT, event: { kind: 'Admitted', run } })
   const session = await helloAcked(machine.token)
+  assert.equal(((await session.next()) as { type: string }).type, 'Offer')
   await session.send(admitted(1))
   assert.deepEqual(await session.next(), ack(1))
   // admitted → admitted is illegal; a session that stopped here would get the same event forever.
@@ -302,6 +306,7 @@ test('an event for a run of another machine (DR201) is logged and acked, and the
     const session = dial(machine.token, `127.0.0.1:${(logged.server.address() as AddressInfo).port}`)
     await session.send(HELLO)
     assert.equal(((await session.next()) as { type: string }).type, 'HelloAck')
+    assert.deepEqual(((await session.next()) as { run: string }).run, own)
     await session.send(delayedEvent(1, other))
     assert.deepEqual(await session.next(), ack(1))
     await session.send(delayedEvent(2, own))
@@ -359,4 +364,55 @@ test('Hello with protocol 2 answers DR151 and closes 4400', async () => {
   const session = dial(machine.token)
   await session.send({ ...HELLO, protocol: 2 })
   assert.deepEqual(await session.closed, { code: 4400, reason: 'DR151 {"got":2,"supported":1}' })
+})
+
+// A session that dropped between the dispatch commit and the send lost the Offer; the run would stay offered.
+test('after HelloAck, the Offer of every run of this machine still offered is sent again', async () => {
+  const { tenant, machine } = await paired()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createPairingCode(ctx, 'build-02').then(({ code }) =>
+    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }),
+  )
+  const [offered, admitted] = await offeredRuns(tenant, 'build-01', 'build-01', 'build-02')
+  const session = await helloAcked(machine.token)
+  // Both offers of this machine go out after the HelloAck; the admitted one is the executor's already.
+  const first = (await session.next()) as { type: string; run: string }
+  const second = (await session.next()) as { type: string; run: string }
+  assert.deepEqual([first.type, second.type], ['Offer', 'Offer'])
+  assert.deepEqual([first.run, second.run].sort(), [offered, admitted].sort())
+  await session.send({ type: 'Event', seq: 1, at: AT, event: { kind: 'Admitted', run: admitted } })
+  assert.deepEqual(await session.next(), ack(1))
+  session.close()
+  await session.closed
+
+  const again = await helloAcked(machine.token)
+  assert.deepEqual(await again.next(), {
+    type: 'Offer',
+    run: offered,
+    job: { job_type: 'check', program: 'pnpm', args: ['check'], cwd: 'C:\\w', env_allow: ['PATH'], timeout_s: 600 },
+    memory_need: 536870912,
+    trace_parent: null,
+  })
+  // Nothing else: an event answers its Ack next, with no Offer of the other runs in between.
+  await again.send(orphans(2))
+  assert.deepEqual(await again.next(), ack(2))
+  again.close()
+})
+
+test('an Orphans event with the kill policy answers Stop before its Ack', async () => {
+  const { tenant, machine } = await paired()
+  const [run] = await offeredRuns(tenant, 'build-01')
+  const session = await helloAcked(machine.token)
+  assert.equal(((await session.next()) as { type: string }).type, 'Offer')
+  const events = [
+    { kind: 'Admitted', run },
+    { kind: 'RunStarted', run, pid: 42, start_time: '1', boot_id: 'boot-1' },
+    { kind: 'Orphans', runs: [{ run, alive: true }] },
+  ]
+  for (const [index, event] of events.entries()) {
+    await session.send({ type: 'Event', seq: index + 1, at: AT, event })
+    if (index === 2) assert.deepEqual(await session.next(), { type: 'Stop', run, reason: 'orphan_policy' })
+    assert.deepEqual(await session.next(), ack(index + 1))
+  }
+  session.close()
 })

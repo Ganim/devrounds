@@ -10,9 +10,9 @@ import { DevRoundsError } from '../errors/error.ts'
 import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../machines/pairing.ts'
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
-import { runEvents } from '../runs/dispatch.ts'
+import { pendingOffers, runEvents } from '../runs/dispatch.ts'
 import { type LogCtx, storeSegment } from '../runs/log-store.ts'
-import { applyRunEvent } from '../runs/record.ts'
+import { applyOrphans, applyRunEvent } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import {
   type ControlPlaneMessage,
@@ -112,23 +112,38 @@ async function skipEvent(ctx: TenantCtx, rejected: Rejected, log: FastifyBaseLog
  * Applies one new event and moves machines.last_seq to its seq in one transaction, so after a crash the executor
  * resends exactly what was not applied. An event applyRunEvent rejects with a DevRounds code (DR351, DR201, an input
  * code) rolls back and is skipped (skipEvent); any other failure throws and closes the session 1011, so the executor
- * resends it later. Unknown event kinds advance last_seq and change nothing else.
+ * resends it later. Unknown event kinds advance last_seq and change nothing else. The Stops an Orphans event answers
+ * go out through `reply` after the commit and before the caller's Ack: the executor reads an Ack of its Orphans event
+ * with no Stop before it as the let_finish policy.
  */
-async function applyEvent(ctx: LogCtx, machineId: string, message: EventMessage, log: FastifyBaseLogger) {
+async function applyEvent(
+  ctx: LogCtx,
+  machineId: string,
+  message: EventMessage,
+  log: FastifyBaseLogger,
+  reply: (message: ControlPlaneMessage) => void,
+) {
   try {
     const applied = await withTenant(ctx.db, ctx.tenantId, async (trx) => {
+      const none = { changed: [] as string[], replies: [] as ControlPlaneMessage[] }
       const { event } = message
-      if (!(await advanceLastSeq(trx, machineId, message.seq)) || event.kind === 'Unknown') return undefined
+      if (!(await advanceLastSeq(trx, machineId, message.seq)) || event.kind === 'Unknown') return none
       // A segment changes no run state, so nobody waiting on the run is woken for it.
       if (event.kind === 'LogSegment') {
         await storeSegment({ ...ctx, trx }, event.run, event, { machineId })
-        return undefined
+        return none
       }
-      await applyRunEvent({ ...ctx, trx }, machineId, event, new Date(message.at), log)
-      return 'run' in event ? event.run : undefined
+      const at = new Date(message.at)
+      if (event.kind === 'Orphans') {
+        const replies = await applyOrphans({ ...ctx, trx }, machineId, event, at, log)
+        return { changed: event.runs.map((orphan) => orphan.run), replies }
+      }
+      await applyRunEvent({ ...ctx, trx }, machineId, event, at, log)
+      return { changed: [event.run], replies: [] }
     })
+    for (const message of applied.replies) reply(message)
     // After the commit, so a waiting `GET /runs/:id?wait` reads the new state.
-    if (applied !== undefined) runEvents.emit('changed', applied)
+    for (const run of applied.changed) runEvents.emit('changed', run)
   } catch (err) {
     if (!(err instanceof DevRoundsError)) throw err
     const run = 'run' in message.event ? message.event.run : undefined
@@ -216,13 +231,15 @@ function serveSession(
         machine_id: machine.machineId,
         last_seq: Number(lastSeq),
       })
+      // Offers lost with an earlier session; on the chain, so they go out before any later frame is handled.
+      for (const offer of await pendingOffers(ctx, machine.machineId)) reply(offer)
       return
     }
     if (message.type === 'MachineReport') await recordReport(ctx, machine.machineId, message)
     if (message.type === 'Event') {
       const event = message
       const { machineId } = machine
-      await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log))
+      await sequenced(event.seq, () => applyEvent(ctx, machineId, event, log, reply))
     }
     // LogChunk is live output for watchers, and stage 1 has none, so it is dropped; the durable copy arrives as
     // LogSegment events. Unknown types are ignored by design.

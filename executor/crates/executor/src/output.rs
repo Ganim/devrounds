@@ -3,7 +3,9 @@
 //! run's tail and cuts the output into log segments (`<run dir>/segments`)
 //! that ship as `LogSegment` events through the store outbox. A segment's
 //! local files go once its event is acked; the raw output files go once the
-//! last segment of the run is.
+//! last segment of the run is. How far the raw files were read is kept in
+//! `output.offsets`, so a restarted executor can ship the rest of an
+//! orphan's output.
 
 use std::{
     collections::VecDeque,
@@ -62,7 +64,8 @@ impl OutputTail {
         options: SegmentOptions,
     ) -> Self {
         let (stop, stopped) = oneshot::channel();
-        let mut raw = vec![output.stdout.clone()];
+        let offsets = offsets_file(&segments);
+        let mut raw = vec![output.stdout.clone(), offsets.clone()];
         let mut streams = vec![Stream::new("stdout", output.stdout.clone())];
         if output.stderr != output.stdout {
             raw.push(output.stderr.clone());
@@ -78,6 +81,8 @@ impl OutputTail {
                 dir: segments,
                 options,
             },
+            offsets,
+            offsets_written: None,
             #[cfg(test)]
             largest_read: 0,
         };
@@ -210,6 +215,10 @@ async fn reaper(
                 && error.kind() != io::ErrorKind::NotFound
             {
                 tracing::warn!(path = %segments.display(), %error, "segment directory not removed");
+            }
+            // Only once empty; anything else left is the orphan pass's to sweep.
+            if let Some(run_dir) = segments.parent() {
+                let _ = tokio::fs::remove_dir(run_dir).await;
             }
             return;
         }
@@ -417,11 +426,136 @@ fn shipment(
     Ok(Shipment { event, files })
 }
 
+/// `<run dir>/output.offsets`: how far each raw output file was read into
+/// the run's log, one `<stream> <offset>` line per stream. Pending segment
+/// acks live only in this process, so a restarted executor reads the rest of
+/// an orphan's output on from here ([`recover_orphan_log`]).
+const OFFSETS_FILE: &str = "output.offsets";
+
+fn offsets_file(segments: &Path) -> PathBuf {
+    segments.parent().unwrap_or(segments).join(OFFSETS_FILE)
+}
+
+/// Written aside and renamed, so a crash leaves the old offsets or the new.
+fn write_offsets(path: &Path, streams: &[Stream]) -> io::Result<()> {
+    let text: String = streams
+        .iter()
+        .map(|stream| format!("{} {}\n", stream.name, stream.offset))
+        .collect();
+    let aside = path.with_extension("offsets.tmp");
+    std::fs::write(&aside, text)?;
+    std::fs::rename(&aside, path)
+}
+
+/// The offset of each stream; a missing file reads as nothing read yet,
+/// which is so: it is written after the first read that found bytes.
+fn read_offsets(path: &Path) -> io::Result<Vec<(String, u64)>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    text.lines()
+        .map(|line| {
+            let (name, offset) = line
+                .split_once(' ')
+                .ok_or_else(|| io::Error::other(format!("bad offsets line {line:?}")))?;
+            let offset = offset.parse().map_err(io::Error::other)?;
+            Ok((name.to_owned(), offset))
+        })
+        .collect()
+}
+
+/// What a previous executor process left of orphan `run`'s output in
+/// `run_dir`: reopens the run's log (which recovers its last plain segment),
+/// appends the raw output past the recorded offsets, closes it and returns
+/// every closed segment with records, to ship one at a time with
+/// [`orphan_segment_event`]. Segments shipped before may come again; the
+/// control plane keeps a segment once by its `first_seq`. Blocking. Empty
+/// (warned) when the log cannot be reopened: the files then stay for the
+/// orphan pass to sweep.
+pub(crate) fn recover_orphan_log(
+    run: &str,
+    run_dir: &Path,
+    options: &SegmentOptions,
+) -> Vec<SegmentMetadata> {
+    if !run_dir.exists() {
+        return Vec::new();
+    }
+    let segments = run_dir.join("segments");
+    // Unreadable offsets would repeat or skip lines; the log alone ships then.
+    let offsets = read_offsets(&offsets_file(&segments)).unwrap_or_else(|error| {
+        tracing::warn!(%run, %error, "output offsets unreadable; only the run's log ships");
+        vec![
+            ("stdout".to_owned(), u64::MAX),
+            ("stderr".to_owned(), u64::MAX),
+        ]
+    });
+    let mut log = match UnitLog::open(&segments, run, options.log.clone()) {
+        Ok(log) => log,
+        Err(error) => {
+            tracing::warn!(%run, %error, "orphan's run log not reopened; its output does not ship");
+            return Vec::new();
+        }
+    };
+    let now = unix_ms();
+    for name in ["stdout", "stderr"] {
+        let offset = offsets
+            .iter()
+            .find(|(stream, _)| stream == name)
+            .map_or(0, |(_, offset)| *offset);
+        let mut stream = Stream::new(name, run_dir.join(format!("{name}.raw")));
+        stream.offset = offset;
+        loop {
+            let bytes = match stream.read(POLL_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(%run, path = %stream.path.display(), %error, "orphan's output unreadable");
+                    break;
+                }
+            };
+            if bytes.is_empty() {
+                break;
+            }
+            if let Err(error) = log.ingest_stream(name, &bytes, now) {
+                tracing::warn!(%run, %error, "orphan's run log failed");
+                return Vec::new();
+            }
+        }
+    }
+    if let Err(error) = log.finish(now) {
+        tracing::warn!(%run, %error, "orphan's run log not closed");
+    }
+    log.segments()
+        .into_iter()
+        .filter(|meta| meta.closed && meta.records > 0)
+        .collect()
+}
+
+/// One recovered segment of orphan `run` as its `LogSegment` event. Blocking.
+pub(crate) fn orphan_segment_event(
+    run: &str,
+    run_dir: &Path,
+    meta: &SegmentMetadata,
+    options: &SegmentOptions,
+) -> Result<RunEvent, String> {
+    shipment(
+        &run_dir.join("segments"),
+        meta,
+        run,
+        options.max_event_bytes,
+    )
+    .map(|shipment| shipment.event)
+}
+
 struct State {
     streams: Vec<Stream>,
     tail: Tail,
     steps: Steps,
     log: RunLog,
+    /// [`offsets_file`] of this run, and the offsets last written to it.
+    offsets: PathBuf,
+    offsets_written: Option<Vec<u64>>,
     /// The largest chunk one read returned: with lines handed on per chunk,
     /// it bounds what a poll holds besides the tail.
     #[cfg(test)]
@@ -442,6 +576,8 @@ impl State {
             tail,
             steps,
             log,
+            offsets,
+            offsets_written,
             #[cfg(test)]
             largest_read,
         } = self;
@@ -499,6 +635,21 @@ impl State {
         } else {
             // Exposes a waiting prompt as a partial line and rotates by age.
             log.with(run, |log| log.flush_partial(now, false));
+        }
+        // After the flush: what the log holds on disk reaches at least these
+        // offsets, so a restarted executor reading on from them repeats no
+        // line. It loses at most each stream's unterminated last line, which
+        // only the log's framer held.
+        if matches!(log, RunLog::Open { .. }) {
+            let read: Vec<u64> = streams.iter().map(|stream| stream.offset).collect();
+            if offsets_written.as_ref() != Some(&read) {
+                match write_offsets(offsets, streams) {
+                    Ok(()) => *offsets_written = Some(read),
+                    Err(error) => {
+                        tracing::warn!(path = %offsets.display(), %error, "output offsets not written");
+                    }
+                }
+            }
         }
         let segments = log.closed(run);
         Polled {
@@ -579,6 +730,8 @@ mod tests {
             tail: Tail::default(),
             steps: Steps::default(),
             log: RunLog::Off,
+            offsets: dir.path().join("output.offsets"),
+            offsets_written: None,
             largest_read: 0,
         };
         let polled = state.poll("run", true);

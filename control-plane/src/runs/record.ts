@@ -1,7 +1,7 @@
 import { sql, type Updateable } from 'kysely'
 import type { RunsTable } from '../db/schema.ts'
-import { fail } from '../errors/error.ts'
-import type { RunEvent } from '../executor/protocol.ts'
+import { DevRoundsError, fail } from '../errors/error.ts'
+import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
@@ -104,6 +104,27 @@ async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
   return rows[0]?.latest ?? null
 }
 
+// The run of `machineId`, locked for its update; DR201 for a run of another machine, as for every executor event.
+async function lockRun(trx: Trx, machineId: string, runId: string) {
+  const row = await trx
+    .selectFrom('runs')
+    .select(['state', 'clock_skew_ms', 'job_type_id'])
+    .where('id', '=', runId)
+    .where('machine_id', '=', machineId)
+    .forNoKeyUpdate()
+    .executeTakeFirst()
+  if (!row) fail('DR201', { kind: 'run', key: runId })
+  return row
+}
+
+// The time to stamp for an executor event at `at` and the run's new clock_skew_ms (see applyRunEvent).
+async function clamp(trx: Trx, runId: string, at: Date, skewMs: number) {
+  const floor = await latestStamp(trx, runId)
+  const behind = floor ? floor.getTime() - at.getTime() : 0
+  const stamp = behind > 0 ? (floor as Date) : at
+  return { stamp, clock_skew_ms: Math.min(INT_MAX, Math.max(skewMs, behind)) }
+}
+
 const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
   finished: 'finish',
   failed: 'fail',
@@ -115,8 +136,8 @@ const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
  * timestamp. The executor clock may be behind the control plane's, or step back: a time earlier than the latest one
  * already on the run (offered_at, which the control plane stamped, or any later stamp, step or delay) is clamped to
  * it, and clock_skew_ms keeps the largest gap seen, so no duration is ever negative.
- * LogSegment and Orphans are not run record events and change nothing here: the gateway stores segments
- * (log-store.ts), and Orphans is Task 15's.
+ * LogSegment and Orphans change nothing here: the gateway stores segments (log-store.ts) and applies Orphans with
+ * applyOrphans.
  * `log` gets the one warning a classification that ran out of pattern budget writes.
  */
 export async function applyRunEvent(
@@ -130,18 +151,8 @@ export async function applyRunEvent(
   requireRunId(event.run)
   const runId = event.run
   await run(ctx, async (trx) => {
-    const row = await trx
-      .selectFrom('runs')
-      .select(['state', 'clock_skew_ms', 'job_type_id'])
-      .where('id', '=', runId)
-      .where('machine_id', '=', machineId)
-      .forNoKeyUpdate()
-      .executeTakeFirst()
-    if (!row) fail('DR201', { kind: 'run', key: runId })
-    const floor = await latestStamp(trx, runId)
-    const behind = floor ? floor.getTime() - at.getTime() : 0
-    const stamp = behind > 0 ? (floor as Date) : at
-    const clock_skew_ms = Math.min(INT_MAX, Math.max(row.clock_skew_ms, behind))
+    const row = await lockRun(trx, machineId, runId)
+    const { stamp, clock_skew_ms } = await clamp(trx, runId, at, row.clock_skew_ms)
     const move = (transition: RunTransition): Updateable<RunsTable> => {
       const next = nextRunState(row.state, transition, runId)
       const set: Updateable<RunsTable> = { state: next.state, clock_skew_ms }
@@ -236,4 +247,75 @@ export async function applyRunEvent(
       }
     }
   })
+}
+
+type OrphansEvent = Extract<RunEvent, { kind: 'Orphans' }>
+type StopMessage = Extract<ControlPlaneMessage, { type: 'Stop' }>
+type OrphanLog = { warn(data: { code: string; machineId: string; run: string }, message: string): void }
+
+export const UNSUPERVISED_SUMMARY = 'executor restarted; the run ended while unsupervised'
+
+/**
+ * Applies an Orphans event of machine `machineId`, the runs a restarted executor found from its previous process,
+ * in one transaction, and returns the Stops to send once it commits. An alive run becomes orphaned with class infra:
+ * its job type's `kill` policy answers Stop orphan_policy (orphan_action killed), `let_finish` sends nothing. A dead
+ * run failed with class infra, stamped like any executor event (see applyRunEvent). An orphan its run cannot take
+ * (another machine's, or already ended, as when an executor restarts again before the ack) is logged and skipped,
+ * so the others still apply.
+ */
+export async function applyOrphans(
+  ctx: TenantCtx,
+  machineId: string,
+  event: OrphansEvent,
+  at: Date,
+  log: OrphanLog = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) },
+): Promise<StopMessage[]> {
+  return run(ctx, async (trx) => {
+    const stops: StopMessage[] = []
+    for (const { run: runId, alive } of event.runs) {
+      try {
+        if (await applyOrphan(trx, machineId, runId, alive, at)) {
+          stops.push({ type: 'Stop', run: runId, reason: 'orphan_policy' })
+        }
+      } catch (err) {
+        // Every rejection is raised before the run's update, so the transaction stays usable for the next one.
+        if (!(err instanceof DevRoundsError)) throw err
+        log.warn({ code: err.code, machineId, run: runId }, 'orphan not applied to its run')
+      }
+    }
+    return stops
+  })
+}
+
+// True when the run is to be stopped.
+async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: boolean, at: Date): Promise<boolean> {
+  requireRunId(runId)
+  const row = await lockRun(trx, machineId, runId)
+  const { stamp, clock_skew_ms } = await clamp(trx, runId, at, row.clock_skew_ms)
+  const update = (set: Updateable<RunsTable>) => trx.updateTable('runs').set(set).where('id', '=', runId).execute()
+  if (!alive) {
+    const next = nextRunState(row.state, 'fail', runId)
+    await update({
+      state: next.state,
+      finished_at: stamp,
+      clock_skew_ms,
+      failure_class: 'infra',
+      failure_summary: UNSUPERVISED_SUMMARY,
+    })
+    return false
+  }
+  const next = nextRunState(row.state, 'orphan', runId)
+  const { orphan_policy } = await trx
+    .selectFrom('job_types')
+    .select('orphan_policy')
+    .where('id', '=', row.job_type_id)
+    .executeTakeFirstOrThrow()
+  const kill = orphan_policy === 'kill'
+  await update({
+    state: next.state,
+    clock_skew_ms,
+    failure_class: 'infra',
+    orphan_action: kill ? 'killed' : 'let_finish',
+  })
+  return kill
 }

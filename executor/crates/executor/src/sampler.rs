@@ -1,18 +1,20 @@
 //! Samples one run's job: footprint (private bytes of every member) and CPU,
 //! every second while the run holds its start slot, every 5 s after. Each
 //! sample feeds the slot (so the gate can lower the run's reservation and
-//! apply its settle rule), the run's summary and the caller's channel.
-//! Sampling ends on its own when the run exits.
+//! apply its settle rule), the run's summary and the caller's channel; the
+//! run loop's sampler also records the members in the store. Sampling ends
+//! on its own when the run exits.
 
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
-use devrounds_core::gate::StartSlot;
+use devrounds_core::{ProcessIdentity, gate::StartSlot};
 use devrounds_metrics::{JobTotals, RunSample, RunSummary, RunTracker, Sample, Subject, unix_ms};
 use devrounds_metrics_windows::WindowsSource;
 use devrounds_runner_windows::WindowsUnit;
+use devrounds_store::Store;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -23,6 +25,8 @@ use tokio::{
 pub const SLOT_INTERVAL: Duration = Duration::from_secs(1);
 /// Sampling period otherwise.
 pub const IDLE_INTERVAL: Duration = Duration::from_secs(5);
+/// How often changed members are written to the store.
+pub const MEMBERS_EVERY: Duration = Duration::from_secs(5);
 
 /// The sampling task of one run. Dropping it stops sampling; [`Sampler::finish`]
 /// also returns the run's summary.
@@ -53,7 +57,30 @@ impl Sampler {
         slot: Option<StartSlot>,
         tx: mpsc::UnboundedSender<Sample>,
     ) -> Self {
-        let run = run.into();
+        Self::spawn_inner(run.into(), unit, slot, tx, None)
+    }
+
+    /// [`Sampler::spawn`] that also keeps the run's members in `store`
+    /// ([`Store::record_members`]): on the first reading, then every
+    /// [`MEMBERS_EVERY`] when they changed. A restarted executor stops an
+    /// orphaned run from these, since its job cannot be reopened.
+    pub fn spawn_recording(
+        run: impl Into<String>,
+        unit: Arc<WindowsUnit>,
+        slot: Option<StartSlot>,
+        tx: mpsc::UnboundedSender<Sample>,
+        store: Store,
+    ) -> Self {
+        Self::spawn_inner(run.into(), unit, slot, tx, Some(store))
+    }
+
+    fn spawn_inner(
+        run: String,
+        unit: Arc<WindowsUnit>,
+        slot: Option<StartSlot>,
+        tx: mpsc::UnboundedSender<Sample>,
+        store: Option<Store>,
+    ) -> Self {
         let started_ms = unix_ms(SystemTime::now());
         let mut tracker = RunTracker::default();
         tracker.start(run.clone(), started_ms);
@@ -65,6 +92,7 @@ impl Sampler {
             tx,
             stopped,
             tracker,
+            store,
         ));
         Self {
             run,
@@ -122,12 +150,25 @@ async fn sample_loop(
     tx: mpsc::UnboundedSender<Sample>,
     mut stopped: oneshot::Receiver<()>,
     mut tracker: RunTracker,
+    store: Option<Store>,
 ) -> RunTracker {
     // One source per run: its CPU cache holds only this run's members.
     let source = WindowsSource::new();
     let mut first = true;
+    let mut recorded: Option<(Instant, Vec<ProcessIdentity>)> = None;
     loop {
-        if let Some(reading) = read(&run, &source, &unit).await {
+        if let Some((reading, members)) = read(&run, &source, &unit).await {
+            if let Some(store) = &store {
+                let due = recorded
+                    .as_ref()
+                    .is_none_or(|(at, known)| at.elapsed() >= MEMBERS_EVERY && *known != members);
+                if due {
+                    if let Err(error) = store.record_members(&run, members.clone()).await {
+                        tracing::warn!(%run, %error, "run members not recorded");
+                    }
+                    recorded = Some((Instant::now(), members));
+                }
+            }
             if let Some(slot) = held(&slot) {
                 slot.report_memory(reading.footprint_bytes);
                 // Every member reads 0 CPU on first sight, which must not
@@ -167,9 +208,13 @@ fn held(slot: &Option<StartSlot>) -> Option<&StartSlot> {
     slot.as_ref().filter(|slot| slot.released().is_none())
 }
 
-/// Reads the run's current members; `None` when none is alive or they
-/// cannot be read.
-async fn read(run: &str, source: &WindowsSource, unit: &WindowsUnit) -> Option<RunSample> {
+/// Reads the run's current members, with the identities read; `None` when
+/// none is alive or they cannot be read.
+async fn read(
+    run: &str,
+    source: &WindowsSource,
+    unit: &WindowsUnit,
+) -> Option<(RunSample, Vec<ProcessIdentity>)> {
     let members = match unit.job_members().await {
         Ok(members) => members,
         Err(error) => {
@@ -181,7 +226,13 @@ async fn read(run: &str, source: &WindowsSource, unit: &WindowsUnit) -> Option<R
         return None;
     }
     let source = source.clone();
-    match tokio::task::spawn_blocking(move || source.sample_run(&members)).await {
+    match tokio::task::spawn_blocking(move || {
+        source
+            .sample_run(&members)
+            .map(|reading| (reading, members))
+    })
+    .await
+    {
         Ok(reading) => reading,
         Err(error) => {
             tracing::warn!(run, %error, "run sample failed");

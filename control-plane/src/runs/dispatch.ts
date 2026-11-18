@@ -1,9 +1,11 @@
 import { EventEmitter } from 'node:events'
+import type { Selectable } from 'kysely'
+import type { JobTypesTable } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
-import { type Ctx, findProject, run, type TenantCtx } from '../planning/resolve.ts'
+import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { learnedNeed } from './learned-need.ts'
 import { createRun, markOffered } from './record.ts'
 import { TERMINAL } from './states.ts'
@@ -50,23 +52,67 @@ export async function recordDispatch(
     await markOffered(inner, created.id)
     const project = await findProject(trx, i.projectKey)
     const jobType = await findJobType(trx, project.id, i.jobTypeKey)
-    const need = await learnedNeed(trx, project.id, jobType.id, machineId)
-    const offer: Offer = {
-      type: 'Offer',
-      run: created.id,
-      job: {
-        job_type: jobType.key,
-        program: jobType.program,
-        args: jobType.args as string[],
-        cwd: i.cwd,
-        env_allow: jobType.env_allow,
-        timeout_s: jobType.timeout_s,
-      },
-      // A learned peak is a byte count well under 2^53, so the wire carries it as a JSON number.
-      memory_need: Number(need),
-      trace_parent: null,
-    }
+    const offered = { id: created.id, project_id: project.id, cwd: i.cwd, machine_id: machineId }
+    const offer = await offerOf(trx, offered, jobType)
     return { view: await loadRunView(trx, created.id), machineId, offer }
+  })
+}
+
+type JobTypeRow = Pick<Selectable<JobTypesTable>, 'id' | 'key' | 'program' | 'args' | 'env_allow' | 'timeout_s'>
+
+async function offerOf(
+  trx: Trx,
+  run: { id: string; project_id: string; cwd: string; machine_id: string },
+  jobType: JobTypeRow,
+): Promise<Offer> {
+  const need = await learnedNeed(trx, run.project_id, jobType.id, run.machine_id)
+  return {
+    type: 'Offer',
+    run: run.id,
+    job: {
+      job_type: jobType.key,
+      program: jobType.program,
+      args: jobType.args as string[],
+      cwd: run.cwd,
+      env_allow: jobType.env_allow,
+      timeout_s: jobType.timeout_s,
+    },
+    // A learned peak is a byte count well under 2^53, so the wire carries it as a JSON number.
+    memory_need: Number(need),
+    trace_parent: null,
+  }
+}
+
+/**
+ * The Offer of every run of `machineId` still offered, oldest first, for the gateway to send again after each
+ * HelloAck: an Offer lost with a session that dropped after the dispatch commit would leave its run offered for
+ * good. The executor ignores the Offer of a run it already knows.
+ */
+export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[]> {
+  return run(ctx, async (trx) => {
+    const rows = await trx
+      .selectFrom('runs')
+      .innerJoin('jobs', 'jobs.id', 'runs.job_id')
+      .innerJoin('job_types', 'job_types.id', 'runs.job_type_id')
+      .select([
+        'runs.id',
+        'runs.project_id',
+        'runs.machine_id',
+        'jobs.cwd',
+        'job_types.id as job_type_id',
+        'job_types.key',
+        'job_types.program',
+        'job_types.args',
+        'job_types.env_allow',
+        'job_types.timeout_s',
+      ])
+      .where('runs.machine_id', '=', machineId)
+      .where('runs.state', '=', 'offered')
+      .orderBy('runs.offered_at')
+      .execute()
+    const offers: Offer[] = []
+    for (const row of rows) offers.push(await offerOf(trx, row, { ...row, id: row.job_type_id }))
+    return offers
   })
 }
 

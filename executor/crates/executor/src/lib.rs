@@ -8,6 +8,8 @@ pub mod config;
 pub mod connection;
 pub mod isolation;
 #[cfg(windows)]
+pub mod orphans;
+#[cfg(windows)]
 mod output;
 #[cfg(windows)]
 pub mod pair;

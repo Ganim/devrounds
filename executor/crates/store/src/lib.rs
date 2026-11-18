@@ -8,6 +8,7 @@
 //! arrival order; async callers wait on a `oneshot`, so no SQLite call ever
 //! blocks the tokio runtime.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -355,6 +356,36 @@ impl Store {
                 runs.push(stored_run(row)?);
             }
             Ok(runs)
+        })
+        .await
+    }
+
+    /// Whether this store still knows `run`: it is in flight, or an event of
+    /// it waits in the outbox (a run that ended is forgotten as soon as its
+    /// `RunFinished` is appended, before the control plane applied it).
+    pub async fn knows_run(&self, run: &str) -> Result<bool, DrError> {
+        let run = run.to_owned();
+        self.call(move |connection| {
+            let known: bool = connection.query_row(
+                "select exists (select 1 from runs where run_id = ?1)
+                     or exists (select 1 from outbox where json_extract(message, '$.event.run') = ?1)",
+                params![run],
+                |row| row.get(0),
+            )?;
+            Ok(known)
+        })
+        .await
+    }
+
+    /// The runs named by an event still in the outbox.
+    pub async fn outbox_runs(&self) -> Result<BTreeSet<String>, DrError> {
+        self.call(|connection| {
+            let mut statement = connection.prepare(
+                "select distinct json_extract(message, '$.event.run') from outbox
+                 where json_extract(message, '$.event.run') is not null",
+            )?;
+            let rows = statement.query_map([], |row| row.get(0))?;
+            Ok(rows.collect::<Result<_, _>>()?)
         })
         .await
     }
