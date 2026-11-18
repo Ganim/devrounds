@@ -92,7 +92,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   (`kind`: `machine`, `run`, `job type`).
 - Footprint is private bytes (commit) of the whole tree, never working set (spec §16.5).
 - Budgets: executor ≤ 50 MB private bytes idle (`supervise` + `run` processes), control plane ≤ 300 MB idle (`supervise`
-  + `serve`), checked with 1 MB = 1 000 000 bytes.
+  - `serve`), checked with 1 MB = 1 000 000 bytes.
 - Learned need default 512 MiB (`536870912`, devlanes `DEFAULT_MEMORY_NEED`). Admission never refuses for memory; it
   waits. No per-run memory cap.
 - One Job Object per run, assigned at `CreateProcessW`, no breakaway, no kill-on-close, die-on-unhandled-exception.
@@ -136,30 +136,33 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 1: Build-vs-adopt spike (P1-T02)
 
 **Files:**
+
 - Create: `docs/superpowers/specs/2026-11-18-p1-spike-queue-and-auth.md`
 - Scratch (gitignored): `.superpowers/spike/<candidate>/`
 
 **Interfaces:**
+
 - Produces: a recommendation (one queue/scheduler option, Better Auth yes/no) that the stage-2 re-plan consumes.
 
 - [ ] **Step 1:** For Hatchet, pg-boss, Graphile Worker, DBOS and "own scheduler on the P0 Postgres", record the
-  license (accept MIT/Apache/MPL only; AGPL, SSPL, ELv2, sustainable-use are out), and run each minimal setup against a
-  scratch database `devrounds_spike` on port 15433 (Hatchet: its engine binary or container as documented).
+      license (accept MIT/Apache/MPL only; AGPL, SSPL, ELv2, sustainable-use are out), and run each minimal setup against a
+      scratch database `devrounds_spike` on port 15433 (Hatchet: its engine binary or container as documented).
 - [ ] **Step 2:** Measure idle private bytes of every extra process each option adds after 5 min idle
-  (`Get-Process -Id <pid> | Select PrivateMemorySize64`), and of a `node serve` with the library loaded; record the
-  numbers against the 300 MB control-plane budget.
+      (`Get-Process -Id <pid> | Select PrivateMemorySize64`), and of a `node serve` with the library loaded; record the
+      numbers against the 300 MB control-plane budget.
 - [ ] **Step 3:** Score fit, each with a concrete note: RAM-aware placement (can the scheduler pick a machine by
-  reported free memory and learned need?), executor-dials-out (no worker library on the executor side), P0 schema
-  (`tenant_id` + forced RLS + composite FKs on its tables, or tables outside our schema), `depends_on` DAG (spec §11.2).
+      reported free memory and learned need?), executor-dials-out (no worker library on the executor side), P0 schema
+      (`tenant_id` + forced RLS + composite FKs on its tables, or tables outside our schema), `depends_on` DAG (spec §11.2).
 - [ ] **Step 4:** Better Auth: organizations plugin mapped to `tenants`/`members`, session tables under RLS, coexistence
-  with P0 API tokens; idle cost when loaded in `serve`.
+      with P0 API tokens; idle cost when loaded in `serve`.
 - [ ] **Step 5:** Write the doc: table per need, measurements, recommendation, what the stage-2 re-plan must cover. The controller
-  rules on the recommendation (Guilherme pre-approved, 17/11) and records it as `note:` evidence.
+      rules on the recommendation (Guilherme pre-approved, 17/11) and records it as `note:` evidence.
 - [ ] **Step 6:** Commit "P1 spike: queue/scheduler and auth build-vs-adopt".
 
 ### Task 2: Executor workspace from copied devlanes crates (P1-T03)
 
 **Files:**
+
 - Create: `executor/Cargo.toml`, `executor/rust-toolchain.toml`, `executor/LICENSE`, `executor/NOTICE`,
   `executor/devlanes-sync.toml`, `executor/crates/{core,sys-windows,shell-windows,runner-windows,start-gate,metrics,metrics-windows,logs}/**`,
   `executor/crates/core/src/{error.rs,job.rs}`, `executor/crates/executor/{Cargo.toml,src/lib.rs}` (empty library the
@@ -169,6 +172,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   `control-plane/src/errors/errors.test.ts`, `AGENTS.md`, `README.md`
 
 **Interfaces:**
+
 - Produces: crates `devrounds-core` (`LaunchSpec`, `Runner`, `Unit`, `StopPolicy`, `StopSignal`, `ProcessIdentity`,
   `ExitOutcome`, `clock::{Clock, TokioClock, ManualClock}`, `gate::{StartGate, StartRequest, Release, HoldReason,
   GateSnapshot, PressureSource, PressureSample, DEFAULT_MEMORY_NEED}`, `DrError { code: &'static str, data:
@@ -183,38 +187,40 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   --workspace --all-targets -- -D warnings`; `test` glob gains `"scripts/**/*.test.ts"`.
 
 - [ ] **Step 1: Failing guard tests** in `control-plane/src/executor-guards.test.ts`:
-  `NOTICE names every crate of devlanes-sync.toml with its upstream path and commit` (parse the toml with `smol-toml`;
-  for each crate `assert.match(notice, new RegExp(\`${name}.*${upstreamPath}.*e2e4f1ca\`, 's'))`);
-  `rust code allows lints only in the accepted list` (walk `executor/**/*.rs` skipping `target`; any `#[allow(`,
-  `#![allow(` or `#[expect(` outside `executor/crates/sys-windows/src/lib.rs` fails). Extend `errors.test.ts`: emitted
-  codes also come from `executor/**/*.rs` via `/DrError::new\(\s*"(DR\d{3})"/g`. Add `target` to the
-  `no-suppressions.test.ts` SKIP set.
+      `NOTICE names every crate of devlanes-sync.toml with its upstream path and commit` (parse the toml with `smol-toml`;
+      for each crate `assert.match(notice, new RegExp(\`${name}._${upstreamPath}.*e2e4f1ca\`, 's'))`);
+  `rust code allows lints only in the accepted list`(walk`executor/**/*.rs`skipping`target`; any `#[allow(`,
+  `#![allow(`or`#[expect(`outside`executor/crates/sys-windows/src/lib.rs`fails). Extend`errors.test.ts`: emitted
+  codes also come from `executor/**/_.rs`via`/DrError::new\(\s*"(DR\d{3})"/g`. Add `target`to the
+ `no-suppressions.test.ts` SKIP set.
 - [ ] **Step 2:** Run `pnpm test` → the two new tests FAIL (no `executor/`).
 - [ ] **Step 3:** Copy the eight crates from `C:\Users\Guilherme\Code\Clickmax\devlanes\crates` at the sync commit,
-  rename, and trim: `core` keeps `clock`, `gate`, `runtime`, `stop` (drop `color`, `contrib`, `env`, `paths`, `ports`,
-  `redact`, `refs`, lane/project ids); `sys-windows` drops `cert`, `conpty`, `net`, `pipe`, `power`, `registry`,
-  `shell_execute`; `runner-windows` drops `foreground`, `terminal` (ConPTY), `listening_ports`, `set_power`, and its
-  `devlanes-sys` dependency (move `ProcessInfo` into `core`); `metrics` keeps `ring`, `sketch`, `run` (subject = run
-  id); `logs` keeps `framing`, `level`, `storage`, moves `LogLine` in (field `unit` → `run`), drops `query` and the
-  `grep-*`/`jiff` deps, replaces `#![allow(clippy::unwrap_used)]` in its tests with `expect`. `sys` and `runner-pty`
-  are not copied (`runner-pty` is Unix-only; ConPTY waits for P4 terminals). Keep the copied tests that still apply.
-  Write `NOTICE` and `devlanes-sync.toml` (one `[[crate]]` per copied crate, `synced_commit` = the sync commit).
-  Binary `devrounds-executor` answers `version` and routes `__console-ctrl` to `console_ctrl_main`. Gitignore
-  `executor/target/` and `executor/.devlanes-cache/`; Biome excludes `executor/target`.
+      rename, and trim: `core` keeps `clock`, `gate`, `runtime`, `stop` (drop `color`, `contrib`, `env`, `paths`, `ports`,
+      `redact`, `refs`, lane/project ids); `sys-windows` drops `cert`, `conpty`, `net`, `pipe`, `power`, `registry`,
+      `shell_execute`; `runner-windows` drops `foreground`, `terminal` (ConPTY), `listening_ports`, `set_power`, and its
+      `devlanes-sys` dependency (move `ProcessInfo` into `core`); `metrics` keeps `ring`, `sketch`, `run` (subject = run
+      id); `logs` keeps `framing`, `level`, `storage`, moves `LogLine` in (field `unit` → `run`), drops `query` and the
+      `grep-*`/`jiff` deps, replaces `#![allow(clippy::unwrap_used)]` in its tests with `expect`. `sys` and `runner-pty`
+      are not copied (`runner-pty` is Unix-only; ConPTY waits for P4 terminals). Keep the copied tests that still apply.
+      Write `NOTICE` and `devlanes-sync.toml` (one `[[crate]]` per copied crate, `synced_commit` = the sync commit).
+      Binary `devrounds-executor` answers `version` and routes `__console-ctrl` to `console_ctrl_main`. Gitignore
+      `executor/target/` and `executor/.devlanes-cache/`; Biome excludes `executor/target`.
 - [ ] **Step 4:** `AGENTS.md`: under Always, the `x5x` error block; under Never, "start a process in the executor
-  outside `devrounds_sys_windows::spawn`"; under accepted exceptions, "`#[allow(unsafe_code)]` on the FFI modules of
-  `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a SAFETY comment". README: build and test the
-  executor.
+      outside `devrounds_sys_windows::spawn`"; under accepted exceptions, "`#[allow(unsafe_code)]` on the FFI modules of
+      `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a SAFETY comment". README: build and test the
+      executor.
 - [ ] **Step 5:** Run `pnpm test`, `pnpm test:executor`, `pnpm lint`, `pnpm lint:executor`, `pnpm typecheck` → all PASS.
 - [ ] **Step 6:** Commit "Executor workspace from copied devlanes crates".
 
 ### Task 3: devlanes-sync check (P1-T37)
 
 **Files:**
+
 - Create: `scripts/devlanes-sync.ts`, `scripts/devlanes-sync.test.ts`
 - Modify: `package.json` (`devlanes-sync` = `node scripts/devlanes-sync.ts`), `README.md`
 
 **Interfaces:**
+
 - Consumes: `executor/devlanes-sync.toml` (Task 2).
 - Produces: `pendingUpstream(opts: { cacheDir: string; config: SyncConfig; ref: string }): Promise<Pending[]>` where
   `Pending = { commit: string; subject: string; crate: string }`; CLI `pnpm devlanes-sync [--fetch]`: `--fetch` runs
@@ -223,27 +229,29 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   (`<sha> <crate> <subject>`) and `next: port it or add a [[reviewed]] entry, then advance synced_commit`.
 
 - [ ] **Step 1: Failing tests** (fixture: a bare repo built in the test dir with `git` via async `execFile`, commits
-  touching `crates/logs/src/a.rs` and `README.md`):
-  `lists upstream commits since synced_commit that touch a mapped path` (one entry, crate `logs`);
-  `a commit recorded as reviewed is not pending`; `commits outside mapped paths are ignored`;
-  `the real check passes against the cached fetch` (runs on `executor/.devlanes-cache`; when the cache is missing the
-  test fails with `run pnpm devlanes-sync --fetch`).
+      touching `crates/logs/src/a.rs` and `README.md`):
+      `lists upstream commits since synced_commit that touch a mapped path` (one entry, crate `logs`);
+      `a commit recorded as reviewed is not pending`; `commits outside mapped paths are ignored`;
+      `the real check passes against the cached fetch` (runs on `executor/.devlanes-cache`; when the cache is missing the
+      test fails with `run pnpm devlanes-sync --fetch`).
 - [ ] **Step 2:** Run `node --test scripts/devlanes-sync.test.ts` → FAIL.
 - [ ] **Step 3:** Implement with `git log --format=%H%x09%s <synced_commit>..<ref> -- <upstream_path>` per crate, async
-  `execFile` only; `ref` = `refs/remotes/upstream/main` in the cache.
+      `execFile` only; `ref` = `refs/remotes/upstream/main` in the cache.
 - [ ] **Step 4:** `pnpm devlanes-sync --fetch` once (populates the cache), then `pnpm test` → PASS. Any upstream commit
-  already pending is ported or marked `not_applicable` with a reason in this task.
+      already pending is ported or marked `not_applicable` with a reason in this task.
 - [ ] **Step 5:** Commit "devlanes-sync check for copied crates".
 
 ### Task 4: Job Object supervision with run-owned output (P1-T04)
 
 **Files:**
+
 - Create: `executor/crates/test-fixtures/{Cargo.toml,src/bin/tree-fixture.rs}`,
   `executor/crates/runner-windows/tests/supervision.rs`
 - Modify: `executor/crates/core/src/runtime.rs`, `executor/crates/runner-windows/src/{spawn.rs,unit.rs,lib.rs}`,
   `executor/crates/sys-windows/src/proc.rs`, `executor/NOTICE`
 
 **Interfaces:**
+
 - Produces: `LaunchSpec { program, args, cwd, env, output: RunOutput }` with `RunOutput { stdout: PathBuf, stderr:
   PathBuf }` (files opened append + share-read and inherited as the child's handles; stdin is `NUL`);
   `RunIdentity { leader: ProcessIdentity, boot_id: String }`; `WindowsRunner::spawn_unit(spec) ->
@@ -257,57 +265,61 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   (prints `::devrounds::step-start name=<n>` then `::devrounds::step-end name=<n> outcome=finished` per name).
 
 - [ ] **Step 1: Failing tests** in `supervision.rs`:
-  `every_descendant_is_a_job_member` (`--children 2 --depth 2 --linger-ms 5000` → `job_members().len() == 7` within 3 s);
-  `breakaway_is_refused` (`--breakaway` → stdout file contains `breakaway: denied`);
-  `graceful_stop_lets_ctrl_c_handlers_run` (`--ctrl-c bye` → `stop.escalated == false`, stdout contains `bye`);
-  `stop_ends_the_tree_within_grace` (`--children 3 --ctrl-c ignore` → `escalated == true`, elapsed < 12 s, no recorded
-  identity still matches);
-  `dropping_the_handles_leaves_the_run_running` (drop every `Arc<WindowsUnit>` → leader still matches after 1 s);
-  `leader_exit_sweeps_lingering_members` (`--children 2 --linger-ms 60000 --exit 3` → `outcome.code == Some(3)`,
-  `swept.len() == 2`);
-  `output_goes_to_run_owned_files` (`--print 100`, handles dropped before exit → stdout file has 100 lines);
-  `identity_carries_boot_id` (`run_identity().boot_id == proc::boot_id()?`).
+      `every_descendant_is_a_job_member` (`--children 2 --depth 2 --linger-ms 5000` → `job_members().len() == 7` within 3 s);
+      `breakaway_is_refused` (`--breakaway` → stdout file contains `breakaway: denied`);
+      `graceful_stop_lets_ctrl_c_handlers_run` (`--ctrl-c bye` → `stop.escalated == false`, stdout contains `bye`);
+      `stop_ends_the_tree_within_grace` (`--children 3 --ctrl-c ignore` → `escalated == true`, elapsed < 12 s, no recorded
+      identity still matches);
+      `dropping_the_handles_leaves_the_run_running` (drop every `Arc<WindowsUnit>` → leader still matches after 1 s);
+      `leader_exit_sweeps_lingering_members` (`--children 2 --linger-ms 60000 --exit 3` → `outcome.code == Some(3)`,
+      `swept.len() == 2`);
+      `output_goes_to_run_owned_files` (`--print 100`, handles dropped before exit → stdout file has 100 lines);
+      `identity_carries_boot_id` (`run_identity().boot_id == proc::boot_id()?`).
 - [ ] **Step 2:** `cargo test --manifest-path executor/Cargo.toml -p devrounds-runner-windows --test supervision` → FAIL.
 - [ ] **Step 3:** Implement: replace the output pipes in `spawn.rs` with the two run-owned file handles; keep
-  `JobOptions { kill_on_close: false, die_on_unhandled_exception: true }`; add `run_identity` and `job_members`
-  (`Job::members` + start times). Record the change in `NOTICE`.
+      `JobOptions { kill_on_close: false, die_on_unhandled_exception: true }`; add `run_identity` and `job_members`
+      (`Job::members` + start times). Record the change in `NOTICE`.
 - [ ] **Step 4:** Run the tests → PASS; `pnpm lint:executor` → PASS.
 - [ ] **Step 5:** Commit "Job Object supervision with run-owned output files".
 
 ### Task 5: Every spawn hidden (P1-T05)
 
 **Files:**
+
 - Create: `executor/crates/runner-windows/tests/hidden.rs`
 - Modify: `executor/crates/runner-windows/src/{spawn.rs,ctrl.rs,unit.rs}`, `control-plane/src/executor-guards.test.ts`
 
 **Interfaces:**
+
 - Produces: `WindowsUnit::visible_windows() -> Result<u32, Error>` (top-level visible windows owned by job members,
   from `window::visible_windows()`); every run spawn uses `CreationFlags { no_window: true, new_process_group: true,
   ..Default::default() }`, the console-ctrl helper `no_window: true`.
 
 - [ ] **Step 1: Failing tests** in `hidden.rs` (each polls `visible_windows()` every 100 ms while the run lives and
-  asserts every reading is 0):
-  `nested_console_children_stay_hidden` (`cmd.exe /c <tree-fixture> --children 2 --linger-ms 2000`);
-  `cmd_wrapper_gets_exact_arguments_and_stays_hidden` (a test-written `echo-args.cmd` = `@echo off` +
-  `for %%a in (%*) do echo [%%~a]`, args `["a b", "c&d", "é"]` → stdout lines `[a b]`, `[c&d]`, `[é]`);
-  `console_ctrl_helper_is_hidden` (`stop_with_report` on `--ctrl-c bye` while polling).
-  Guard in `executor-guards.test.ts`: `executor starts processes only through sys-windows spawn` (no
-  `std::process::Command`, `tokio::process::Command` or `Command::new(` in `executor/**/src/**/*.rs`, except
-  `crates/test-fixtures`).
+      asserts every reading is 0):
+      `nested_console_children_stay_hidden` (`cmd.exe /c <tree-fixture> --children 2 --linger-ms 2000`);
+      `cmd_wrapper_gets_exact_arguments_and_stays_hidden` (a test-written `echo-args.cmd` = `@echo off` +
+      `for %%a in (%*) do echo [%%~a]`, args `["a b", "c&d", "é"]` → stdout lines `[a b]`, `[c&d]`, `[é]`);
+      `console_ctrl_helper_is_hidden` (`stop_with_report` on `--ctrl-c bye` while polling).
+      Guard in `executor-guards.test.ts`: `executor starts processes only through sys-windows spawn` (no
+      `std::process::Command`, `tokio::process::Command` or `Command::new(` in `executor/**/src/**/*.rs`, except
+      `crates/test-fixtures`).
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement `visible_windows`; set the flags; route any remaining std spawns through
-  `devrounds_sys_windows::spawn::spawn`.
+      `devrounds_sys_windows::spawn::spawn`.
 - [ ] **Step 4:** `cargo test ... -p devrounds-runner-windows --test hidden` and `pnpm test` → PASS.
 - [ ] **Step 5:** Commit "Every executor spawn is hidden".
 
 ### Task 6: Footprint by private bytes (P1-T17)
 
 **Files:**
+
 - Create: `executor/crates/metrics-windows/tests/footprint.rs`, `executor/crates/executor/src/sampler.rs`
 - Modify: `executor/crates/sys-windows/src/{usage.rs,job.rs}`, `executor/crates/metrics-windows/src/collector.rs`,
   `executor/crates/metrics/src/run.rs`, `executor/NOTICE`
 
 **Interfaces:**
+
 - Produces: `ProcessUsage.private_bytes: u64` (`PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage`);
   `Job::peak_memory() -> io::Result<u64>` (`PeakJobMemoryUsed`); `WindowsSource::sample_run(members:
   &[ProcessIdentity]) -> RunSample { footprint_bytes: u64, cpu_percent: f64 }` (sum of members' private bytes);
@@ -317,13 +329,13 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   `slot.report_memory(footprint)` and `slot.report_cpu(cpu)`; `self_private_bytes() -> io::Result<u64>`.
 
 - [ ] **Step 1: Failing tests** in `footprint.rs`:
-  `footprint_counts_commit_not_working_set` (`--alloc-mb 256` without `--touch` → `footprint_bytes >= 256 << 20` while
-  the process working set < `64 << 20`);
-  `tree_footprint_sums_members` (`--children 2 --alloc-mb 100 --linger-ms 3000` → `>= 200 << 20`);
-  `peak_is_exact_between_samples` (allocates 300 MB for 200 ms then frees; 5 s cadence → `summary.footprint.peak >=
+      `footprint_counts_commit_not_working_set` (`--alloc-mb 256` without `--touch` → `footprint_bytes >= 256 << 20` while
+      the process working set < `64 << 20`);
+      `tree_footprint_sums_members` (`--children 2 --alloc-mb 100 --linger-ms 3000` → `>= 200 << 20`);
+      `peak_is_exact_between_samples` (allocates 300 MB for 200 ms then frees; 5 s cadence → `summary.footprint.peak >=
   300_000_000`);
-  in `metrics` unit tests: `summary_reports_p50_p95_peak` (samples 100..=200 MiB step 1 MiB → `p95` within 1% of
-  195 MiB, `peak == 200 MiB`).
+      in `metrics` unit tests: `summary_reports_p50_p95_peak` (samples 100..=200 MiB step 1 MiB → `p95` within 1% of
+      195 MiB, `peak == 200 MiB`).
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement; the collector's footprint switches from private working set to private bytes (`NOTICE`).
 - [ ] **Step 4:** `cargo test ... -p devrounds-metrics-windows -p devrounds-metrics -p devrounds-executor` → PASS.
@@ -332,10 +344,12 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 7: Start-gate admission with AIMD (P1-T06)
 
 **Files:**
+
 - Create: `executor/crates/executor/src/admission.rs`, `executor/crates/executor/tests/admission.rs`
 - Modify: `executor/crates/start-gate/src/{lib.rs,engine.rs}`, `executor/crates/executor/src/lib.rs`
 
 **Interfaces:**
+
 - Consumes: `gate::*`, `WindowsPressure` (Task 2), `Sampler` (Task 6).
 - Produces: `AdmissionConfig { initial_window: usize = 4, max_window: usize = 16, target_cpu: f64 = 80.0,
   slot_timeout: Duration = 60 s }` (executor config `admission.*`, wired in Task 13); `Admission::new(config, pressure: Arc<dyn
@@ -346,12 +360,12 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   The slot is released by the gate's settle rule, the run's exit, or `slot_timeout`.
 
 - [ ] **Step 1: Failing tests** (`ManualClock` + a fake `PressureSource`):
-  `memory_hold_reports_delayed_memory_then_admits` (available 1 GiB, need 2 GiB → `Delayed{Memory}`; available 4 GiB +
-  advance one sample → `Admitted`);
-  `full_window_reports_delayed_concurrency` (window 1, one slot held → `Delayed{Concurrency, position: 1}`);
-  `aimd_halves_on_high_cpu_and_grows_by_one` (window 8; CPU 98% for `high_for` → 4; CPU 50% for `grow_every` → 5);
-  `dropping_admitting_leaves_the_queue` (snapshot `queued` empty after drop);
-  `need_defaults_to_512_mib` (`DEFAULT_MEMORY_NEED == 536_870_912`).
+      `memory_hold_reports_delayed_memory_then_admits` (available 1 GiB, need 2 GiB → `Delayed{Memory}`; available 4 GiB +
+      advance one sample → `Admitted`);
+      `full_window_reports_delayed_concurrency` (window 1, one slot held → `Delayed{Concurrency, position: 1}`);
+      `aimd_halves_on_high_cpu_and_grows_by_one` (window 8; CPU 98% for `high_for` → 4; CPU 50% for `grow_every` → 5);
+      `dropping_admitting_leaves_the_queue` (snapshot `queued` empty after drop);
+      `need_defaults_to_512_mib` (`DEFAULT_MEMORY_NEED == 536_870_912`).
 - [ ] **Step 2:** `cargo test ... -p devrounds-executor --test admission` → FAIL.
 - [ ] **Step 3:** Implement over `AdaptiveGate` with the pressure reading; copied start-gate tests stay green.
 - [ ] **Step 4:** Run → PASS.
@@ -360,9 +374,11 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 8: isolation/none (P1-T12)
 
 **Files:**
+
 - Create: `executor/crates/executor/src/isolation.rs`, `executor/crates/executor/tests/isolation.rs`
 
 **Interfaces:**
+
 - Consumes: `devrounds_core::JobSpec` (Task 2), `LaunchSpec`/`RunOutput` (Task 4).
 - Produces: `trait Isolation { fn prepare(&self, run: &str, job: &JobSpec, run_dir: &Path, machine_env:
   &BTreeMap<String, String>) -> Result<LaunchSpec, PrepareError>; }`, `NoneIsolation`, `PrepareError::Environment {
@@ -370,20 +386,22 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   case kept) plus `DEVROUNDS_RUN_ID`. `cwd` must be absolute and exist.
 
 - [ ] **Step 1: Failing tests:** `only_allowlisted_variables_reach_the_child` (executor env has `PATH` and
-  `SECRET_TOKEN=s3cr3t`, allowlist `["path"]`; `tree-fixture --print-env` output contains `PATH=` and `DEVROUNDS_RUN_ID=`,
-  not `s3cr3t`); `missing_cwd_is_an_environment_failure` (`PrepareError::Environment` naming the path);
-  `relative_cwd_is_an_environment_failure`.
+      `SECRET_TOKEN=s3cr3t`, allowlist `["path"]`; `tree-fixture --print-env` output contains `PATH=` and `DEVROUNDS_RUN_ID=`,
+      not `s3cr3t`); `missing_cwd_is_an_environment_failure` (`PrepareError::Environment` naming the path);
+      `relative_cwd_is_an_environment_failure`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit "isolation/none: launch spec from job spec through the env allowlist".
 
 ### Task 9: Protocol Hello, features and seq (P1-T07)
 
 **Files:**
+
 - Create: `executor/crates/protocol/{Cargo.toml,src/lib.rs,tests/fixtures.rs,fixtures/*.json}`,
   `control-plane/src/executor/protocol.ts`, `control-plane/src/executor/protocol.test.ts`
 - Modify: `control-plane/src/errors/{codes.ts,words.ts}`, `docs/errors.md`
 
 **Interfaces:**
+
 - Produces (Rust, mirrored 1:1 in TypeBox): `PROTOCOL: u32 = 1`; `FEATURES = ["seq", "steps", "log-segments",
   "orphans", "trace-context"]`; envelope field `type`.
   Executor → control plane: `Hello { protocol, version, features, boot_id }`, `MachineReport { total_memory,
@@ -407,9 +425,9 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   supported; this control plane speaks {supported}.` (hints: update the older side).
 
 - [ ] **Step 1: Failing tests:** Rust `every_fixture_round_trips` (each `fixtures/*.json` decodes and re-encodes to the
-  same JSON value), `every_message_type_has_a_fixture`, `unknown_type_and_kind_are_ignored`, `negotiate_keeps_shared_features`;
-  TS `every fixture validates against the TypeBox schema`, `a known type with a bad field answers DR150 at its path`,
-  `an unknown type parses as Unknown`, `SeqTracker answers new, duplicate and one gap`.
+      same JSON value), `every_message_type_has_a_fixture`, `unknown_type_and_kind_are_ignored`, `negotiate_keeps_shared_features`;
+      TS `every fixture validates against the TypeBox schema`, `a known type with a bad field answers DR150 at its path`,
+      `an unknown type parses as Unknown`, `SeqTracker answers new, duplicate and one gap`.
 - [ ] **Step 2:** Run `cargo test ... -p devrounds-protocol` and `pnpm test` → FAIL.
 - [ ] **Step 3:** Implement both sides; add DR150/DR151 to words; `pnpm gen:errors`.
 - [ ] **Step 4:** Run → PASS.
@@ -418,6 +436,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 10: Machine pairing and executor session (P1-T10)
 
 **Files:**
+
 - Create: `control-plane/src/db/migrations/0004_machines.ts`, `control-plane/src/machines/{pairing.ts,service.ts,pairing.test.ts}`,
   `control-plane/src/executor/{gateway.ts,gateway.test.ts}`, `control-plane/src/api/machine-routes.ts`,
   `executor/crates/executor/src/{config.rs,pair.rs,connection.rs}`, `executor/crates/executor/tests/connection.rs`
@@ -426,6 +445,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   `control-plane/package.json` (`@fastify/websocket`), `docs/errors.md`, `AGENTS.md`, `executor/bins/devrounds-executor/src/main.rs`
 
 **Interfaces:**
+
 - Tables: `machines(id, tenant_id, name, compute_provider text default 'local', lifecycle text check in
   ('persistent','ephemeral') default 'persistent', token_hash bytea unique, os text, executor_version text, paired_at,
   revoked_at null, last_seen_at null, last_report jsonb null, last_seq bigint default 0, unique (tenant_id, id))` with a
@@ -458,28 +478,30 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   {reason}.`
 
 - [ ] **Step 1: Failing tests** (TS with the global `WebSocket` client; Rust with a fake server on `127.0.0.1:0`):
-  `a pairing code works once and expires after 10 minutes`; `the machine token is stored only as its SHA-256`;
-  `five failed redemptions lock pairing for 10 minutes (DR451)`; `an agent token cannot create a pairing code (DR453)`;
-  `connect without a valid machine token closes with 4401 and DR452`; `revoking a machine closes its live session`;
-  `a second session for the same machine replaces the first (close 4409)`; `Hello with protocol 2 answers DR151 and
+      `a pairing code works once and expires after 10 minutes`; `the machine token is stored only as its SHA-256`;
+      `five failed redemptions lock pairing for 10 minutes (DR451)`; `an agent token cannot create a pairing code (DR453)`;
+      `connect without a valid machine token closes with 4401 and DR452`; `revoking a machine closes its live session`;
+      `a second session for the same machine replaces the first (close 4409)`; `Hello with protocol 2 answers DR151 and
   closes 4400`; `a machine of another tenant is not found (DR201)`; Rust `ws_to_a_non_loopback_host_is_refused`,
-  `pair_writes_an_owner_only_token_file` (`check_private_file` passes), `a_second_executor_on_the_same_home_fails_with_dr352`,
-  `hello_then_machine_report_reach_the_server`.
+      `pair_writes_an_owner_only_token_file` (`check_private_file` passes), `a_second_executor_on_the_same_home_fails_with_dr352`,
+      `hello_then_machine_report_reach_the_server`.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement; `AGENTS.md` lists `devrounds machine pair-code --name <machine>` (parsed by
-  `agent-docs.test.ts`); `pnpm gen:errors`.
+      `agent-docs.test.ts`); `pnpm gen:errors`.
 - [ ] **Step 4:** `pnpm test`, `pnpm test:executor`, `pnpm lint`, `pnpm lint:executor`, `pnpm typecheck` → PASS.
 - [ ] **Step 5:** Commit "Machine pairing and executor session".
 
 ### Task 11: Run record (P1-T38)
 
 **Files:**
+
 - Create: `control-plane/src/db/migrations/0005_runs.ts`, `control-plane/src/job-types/{file.ts,service.ts,job-types.test.ts}`,
   `control-plane/src/runs/{states.ts,classify.ts,record.ts,view.ts,learned-need.ts}`,
   `control-plane/src/runs/{classify.test.ts,record.test.ts}`
 - Modify: `control-plane/src/db/{schema.ts,migrations/index.ts}`, `control-plane/src/errors/{codes.ts,words.ts}`, `docs/errors.md`
 
 **Interfaces:**
+
 - Tables: `job_types(id, tenant_id, project_id, key, program text, args jsonb, env_allow text[] default '{}',
   timeout_s int default 3600, orphan_policy text check in ('kill','let_finish') default 'kill', classify jsonb default
   '[]', updated_at, unique (project_id, key), unique (tenant_id, id))`; `jobs(id, tenant_id, project_id, job_type_id,
@@ -520,13 +542,13 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 - [ ] **Step 1: Failing tests:** `classify.test.ts` (table): exit 0 → finished; exit 1 with rule `{class: check_red,
   exit_codes: [1]}` → check_red; tail `ERR_PNPM_NO_LOCKFILE` with rule `{class: environment, log_pattern:
   'ERR_PNPM_'}` → environment and summary is that line; exit 3221225495 → memory; reason timeout → timeout; reason
-  stopped → stopped/cancelled; exit 7 without rules → unclassified; a 10 000-line tail gives a summary ≤ 4096 bytes.
-  `record.test.ts`: `a run moves queued → offered → admitted → running → finished and stamps each time`; `an illegal
+      stopped → stopped/cancelled; exit 7 without rules → unclassified; a 10 000-line tail gives a summary ≤ 4096 bytes.
+      `record.test.ts`: `a run moves queued → offered → admitted → running → finished and stamps each time`; `an illegal
   transition answers DR351 and changes nothing`; `durations are never negative when the executor clock is behind`
-  (RunStarted `at` 5 s before `offered_at` → `admissionDelayMs >= 0`, `clock_skew_ms == 5000`); `a retry is a new run
+      (RunStarted `at` 5 s before `offered_at` → `admissionDelayMs >= 0`, `clock_skew_ms == 5000`); `a retry is a new run
   of the same job with attempt 2`; `steps and delays are recorded with the run`; `learned need is the median of the
   last 10 peaks, 536870912 without history`; `a run of another tenant is not found (DR201)`. `job-types.test.ts`:
-  `an unknown failure class is refused with DR101 at /classify/0/class`.
+      `an unknown failure class is refused with DR101 at /classify/0/class`.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement; `pnpm gen:errors`.
 - [ ] **Step 4:** `pnpm test`, `pnpm lint`, `pnpm typecheck` → PASS.
@@ -535,11 +557,13 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 12: Executor store and outbox (P1-T40)
 
 **Files:**
+
 - Create: `executor/crates/store/{Cargo.toml,src/lib.rs,tests/store.rs}`, `executor/crates/executor/tests/replay.rs`
 - Modify: `executor/crates/executor/src/connection.rs`, `control-plane/src/executor/gateway.ts`,
   `control-plane/src/executor/gateway.test.ts`
 
 **Interfaces:**
+
 - Produces: `Store::open(path) -> Result<Store, DrError>` (one `std::thread` owning a `rusqlite::Connection`; requests
   over `std::sync::mpsc` with `tokio::sync::oneshot` replies; DR550 when the file is unusable). Tables `runs(run_id
   primary key, job_json, state, leader_pid, leader_start_time, boot_id, run_dir, members_json)`, `outbox(seq integer
@@ -556,9 +580,9 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   event answering DR351 is logged and acked.
 
 - [ ] **Step 1: Failing tests:** `events_survive_reopening_the_store` (append 3, drop, reopen → `pending_after(0)` has
-  seqs 1, 2, 3); `ack_drops_events_through_seq`; `env_values_never_reach_the_store_file` (raw bytes of the db file do
-  not contain the value of an allowlisted variable); `reconnect_replays_unacked_events_in_order` (fake server acks
-  through 2 of 5, drops the socket, answers `HelloAck { last_seq: 2 }` → receives 3, 4, 5 once); TS `an event with seq
+      seqs 1, 2, 3); `ack_drops_events_through_seq`; `env_values_never_reach_the_store_file` (raw bytes of the db file do
+      not contain the value of an allowlisted variable); `reconnect_replays_unacked_events_in_order` (fake server acks
+      through 2 of 5, drops the socket, answers `HelloAck { last_seq: 2 }` → receives 3, 4, 5 once); TS `an event with seq
   <= last_seq is acked and not applied twice`; `a gap gets exactly one Resync`; `last_seq survives a control plane
   restart` (new `buildServer` on the same DB → `HelloAck.last_seq` equals the last applied seq).
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
@@ -567,12 +591,14 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 13: Direct dispatch and the executor run loop (P1-T39)
 
 **Files:**
+
 - Create: `control-plane/src/runs/{dispatch.ts,dispatch.test.ts}`, `control-plane/src/api/run-routes.ts`,
   `executor/crates/executor/src/{runs.rs,steps.rs,output.rs}`, `executor/crates/executor/tests/run_loop.rs`
 - Modify: `control-plane/src/api/server.ts`, `control-plane/src/executor/gateway.ts`, `control-plane/src/cli/commands.ts`,
   `control-plane/src/errors/{codes.ts,words.ts}`, `docs/errors.md`, `AGENTS.md`, `executor/bins/devrounds-executor/src/main.rs`
 
 **Interfaces:**
+
 - Consumes: `createRun`, `markOffered`, `applyRunEvent`, `runView`, `learnedNeed` (Task 11); `Sessions` (Task 10);
   `Admission` (Task 7); `NoneIsolation` (Task 8); `WindowsRunner` (Task 4); `Sampler` (Task 6); `Store` (Task 12).
 - Produces (control plane): `dispatchRun(ctx, sessions, { jobTypeKey, machineName, cwd, taskKey? }) -> RunView` (no
@@ -601,11 +627,11 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   a live session answers DR350 and writes no run`; `dispatch sends one Offer with memory_need 536870912 without
   history`; `executor events drive the run to finished with timeline and resources`; `stop of a finished run answers
   DR351`; `run show --wait returns as soon as the run is terminal`. Rust (`run_loop.rs`, in-process channel instead of
-  a socket, real runner + `tree-fixture`): `an_offer_reports_admitted_started_finished_in_seq_order` (and
-  `visible_windows == 0`); `stop_while_delayed_never_spawns` (window full → `Stop` → `RunFinished { reason: stopped }`
-  with no `RunStarted`); `timeout_stops_the_tree_and_reports_timeout` (`timeout_s: 1`, `--linger-ms 60000`);
-  `step_markers_become_step_events` (`--steps build,test` → two `StepStarted`/`StepFinished` pairs);
-  `missing_program_reports_spawn_failed_with_a_summary`.
+      a socket, real runner + `tree-fixture`): `an_offer_reports_admitted_started_finished_in_seq_order` (and
+      `visible_windows == 0`); `stop_while_delayed_never_spawns` (window full → `Stop` → `RunFinished { reason: stopped }`
+      with no `RunStarted`); `timeout_stops_the_tree_and_reports_timeout` (`timeout_s: 1`, `--linger-ms 60000`);
+      `step_markers_become_step_events` (`--steps build,test` → two `StepStarted`/`StepFinished` pairs);
+      `missing_program_reports_spawn_failed_with_a_summary`.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement; AGENTS.md quotes `devrounds run show <id> --wait`; `pnpm gen:errors`.
 - [ ] **Step 4:** `pnpm test`, `pnpm test:executor`, `pnpm lint`, `pnpm lint:executor`, `pnpm typecheck` → PASS.
@@ -614,6 +640,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 14: Log segments (P1-T09)
 
 **Files:**
+
 - Create: `control-plane/src/db/migrations/0006_log_segments.ts`, `control-plane/src/runs/{log-store.ts,log-store.test.ts}`,
   `executor/crates/executor/tests/segments.rs`
 - Modify: `executor/crates/executor/src/{output.rs,runs.rs}`, `control-plane/src/executor/gateway.ts`,
@@ -621,6 +648,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   `control-plane/src/cli/commands.ts`, `control-plane/src/db/{schema.ts,migrations/index.ts}`
 
 **Interfaces:**
+
 - Executor: per run `UnitLog::open(<run dir>/segments, run, LogOptions { segment_bytes: 1 << 20, segment_age_ms:
   30_000, compress: true, ..Default::default() })` fed by `OutputTail` (`ingest_stream("stdout"|"stderr", ..)`); each
   closed segment → `LogSegment` event through the outbox; `finish` at run end seals the last one before
@@ -637,9 +665,9 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   <id> [--cursor <n>]` (16 KiB budget, `truncated; more: devrounds run logs <id> --cursor <n>`).
 
 - [ ] **Step 1: Failing tests:** Rust `segments_ship_through_the_outbox_and_are_deleted_after_ack` (`--print 20000`
-  → ≥ 2 segments, every seq 1..=20000 shipped once, run dir has no segments after acks);
-  `partial_last_line_and_invalid_utf8_are_kept` (output `ok\n\xff\xfepartial` without newline → last two records
-  present). TS `a stored segment reads back by cursor`; `a duplicate segment is ignored`; `segments older than the
+      → ≥ 2 segments, every seq 1..=20000 shipped once, run dir has no segments after acks);
+      `partial_last_line_and_invalid_utf8_are_kept` (output `ok\n\xff\xfepartial` without newline → last two records
+      present). TS `a stored segment reads back by cursor`; `a duplicate segment is ignored`; `segments older than the
   retention are pruned with their files`; `run logs pages at 16384 bytes with an exact --cursor continuation`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** All suites, lint, typecheck → PASS.
 - [ ] **Step 5:** Commit "Log segments owned by the run, stored and pruned by the control plane".
@@ -647,12 +675,14 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 15: Orphans (P1-T11)
 
 **Files:**
+
 - Create: `executor/crates/executor/src/orphans.rs`, `executor/crates/executor/tests/orphans.rs`,
   `control-plane/src/runs/orphans.test.ts`
 - Modify: `executor/crates/executor/src/{runs.rs,sampler.rs}`, `control-plane/src/executor/gateway.ts`,
   `control-plane/src/runs/record.ts`
 
 **Interfaces:**
+
 - Executor: the sampler calls `record_members` every 5 s. At start, before admitting anything, `scan_orphans(store) ->
   Vec<(StoredRun, alive: bool)>` (`alive` = same `boot_id` and `proc::matches(leader pid, start_time)`) → one
   `Orphans` event. Orphans are never re-adopted: no sampler, no tail; their remaining raw output is shipped as segments
@@ -663,9 +693,9 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   `failed`/`infra`, summary `executor restarted; the run ended while unsupervised`.
 
 - [ ] **Step 1: Failing tests:** Rust `restart_reports_a_surviving_run_as_orphaned_and_never_readopts` (executor A runs
-  `--linger-ms 30000`; A's runtime is dropped without stopping; executor B on the same home sends `Orphans [{alive:
+      `--linger-ms 30000`; A's runtime is dropped without stopping; executor B on the same home sends `Orphans [{alive:
   true}]` and no `RunStarted`/sampling for it); `kill_policy_ends_the_orphan_tree` (B gets `Stop` → no recorded
-  identity matches within 12 s); `a_run_that_ended_while_down_is_reported_dead`. TS `orphans with the kill policy get a
+      identity matches within 12 s); `a_run_that_ended_while_down_is_reported_dead`. TS `orphans with the kill policy get a
   Stop and stay orphaned with class infra`; `let_finish sends nothing`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit "Orphans reported on executor restart, handled by job type policy".
@@ -673,12 +703,14 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
 ### Task 16: OpenTelemetry exporter, off by default (P1-T14)
 
 **Files:**
+
 - Create: `control-plane/src/telemetry/{otel.ts,otel.test.ts}`, `executor/crates/executor/src/telemetry.rs`,
   `executor/crates/executor/tests/telemetry.rs`
 - Modify: `control-plane/src/config.ts`, `control-plane/src/main.ts`, `control-plane/src/runs/{dispatch.ts,record.ts}`,
   `control-plane/package.json`, `executor/crates/executor/src/runs.rs`
 
 **Interfaces:**
+
 - Control plane: `startTelemetry(endpoint: string | undefined, load = (m: string) => import(m)) -> Promise<Telemetry |
   null>`; `null` without an endpoint and `load` never called. `Telemetry.runDispatched(run) -> traceParent` (span
   `run.dispatch`, `runs.trace_id` set, `traceparent` sent in `Offer`); `Telemetry.runFinished(view)` (span `run.record`
@@ -690,20 +722,22 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   children of the offer's `trace_parent`.
 
 - [ ] **Step 1: Failing tests:** TS `without an endpoint no OpenTelemetry module is loaded` (spy `load` never called);
-  `with an endpoint a dispatched run exports run.dispatch carrying the run id` (HTTP receiver on `127.0.0.1:0`,
-  `/v1/traces`). Rust `no_exporter_without_endpoint`; `run_spans_continue_the_offer_trace` (fake receiver; exported
-  trace id equals the one in `trace_parent`).
+      `with an endpoint a dispatched run exports run.dispatch carrying the run id` (HTTP receiver on `127.0.0.1:0`,
+      `/v1/traces`). Rust `no_exporter_without_endpoint`; `run_spans_continue_the_offer_trace` (fake receiver; exported
+      trace id equals the one in `trace_parent`).
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit "OpenTelemetry exporter on both sides, off by default".
 
 ### Task 17: Executor login service, end-to-end proof and footprint budgets (P1-T42)
 
 **Files:**
+
 - Create: `executor/crates/executor/src/{service.rs,supervise.rs}`, `scripts/footprint.ts`,
   `scripts/e2e/executor.e2e.ts`, `roadmap/fixtures/job-types/{synthetic.yaml,lint.yaml}`
 - Modify: `executor/bins/devrounds-executor/src/main.rs`, `package.json` (`footprint`, `e2e`), `README.md`, `AGENTS.md`
 
 **Interfaces:**
+
 - `devrounds-executor service install|uninstall`: scheduled task `DevRoundsExecutor` with the P0 shape (at logon +
   every 5 min, `MultipleInstances IgnoreNew`, no time limit, interactive limited principal), action `conhost.exe
   --headless "<exe>" supervise`, PowerShell run through the hidden spawn; uninstall stops `supervise`/`run` by command
@@ -721,25 +755,25 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   sets the two job types, dispatches and asserts (below).
 
 - [ ] **Step 1: Failing tests:** Rust `register_script_runs_supervise_under_headless_conhost`,
-  `next_delay_matches_the_control_plane_supervisor`; the e2e script's assertions:
-  synthetic (`tree-fixture --children 3 --linger-ms 60000 --print 1000 --steps build,test --exit 0`): state
-  `finished`, every timeline stamp set, every duration ≥ 0, `swept_processes == 3`, `visible_windows == 0`, two steps
-  finished, `run logs` returns 1000 lines, `peak_private_bytes > 0`, no swept PID alive afterwards;
-  lint (`pnpm lint`, cwd = repo root, env allowlist `PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA,
+      `next_delay_matches_the_control_plane_supervisor`; the e2e script's assertions:
+      synthetic (`tree-fixture --children 3 --linger-ms 60000 --print 1000 --steps build,test --exit 0`): state
+      `finished`, every timeline stamp set, every duration ≥ 0, `swept_processes == 3`, `visible_windows == 0`, two steps
+      finished, `run logs` returns 1000 lines, `peak_private_bytes > 0`, no swept PID alive afterwards;
+      lint (`pnpm lint`, cwd = repo root, env allowlist `PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA,
   LOCALAPPDATA, TEMP, TMP`): state `finished`, `visible_windows == 0`;
-  orphan: executor killed (`taskkill /F` on `run`) during a `--linger-ms 60000` run, restarted → run `orphaned`,
-  `orphan_action == 'killed'`, tree gone.
+      orphan: executor killed (`taskkill /F` on `run`) during a `--linger-ms 60000` run, restarted → run `orphaned`,
+      `orphan_action == 'killed'`, tree gone.
 - [ ] **Step 2:** Run `pnpm e2e` → FAIL (no service, fixtures missing).
 - [ ] **Step 3:** Implement the service, `footprint.ts`, the e2e script and the two job type files.
 - [ ] **Step 4:** `pnpm e2e` → PASS; `pnpm test`, `pnpm test:executor`, `pnpm lint`, `pnpm lint:executor`,
-  `pnpm typecheck`, `pnpm devlanes-sync` → PASS.
+      `pnpm typecheck`, `pnpm devlanes-sync` → PASS.
 - [ ] **Step 5:** On Guilherme's machine: `devrounds machine pair-code --name guilherme-pc`, `devrounds-executor pair
   …`, `devrounds-executor service install`; run the synthetic job once through `devrounds run start`; after 60 s idle
-  `pnpm footprint` → PASS. Check the P1 exit criteria "Executor stays at or under 50 MB private bytes idle", "Control
-  plane stays at or under 300 MB private bytes idle" and "A job runs end to end on the executor with every spawn hidden
-  and supervised" with `commit:` and `note:` evidence (the footprint output).
+      `pnpm footprint` → PASS. Check the P1 exit criteria "Executor stays at or under 50 MB private bytes idle", "Control
+      plane stays at or under 300 MB private bytes idle" and "A job runs end to end on the executor with every spawn hidden
+      and supervised" with `commit:` and `note:` evidence (the footprint output).
 - [ ] **Step 6:** README: pair, service install, footprint, e2e. Commit "Executor login service, end-to-end proof and
-  footprint budgets".
+      footprint budgets".
 
 ---
 

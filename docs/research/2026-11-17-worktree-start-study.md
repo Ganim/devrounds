@@ -8,11 +8,11 @@ store, turbo cache). Nothing in the monorepo was changed. Feeds P2-T09, P2-T15, 
 A base checkout with trunk installed and built; each new worktree uses the same pnpm store (node_modules files are
 hardlinks) and one shared turbo local cache folder.
 
-| Round | Install per worktree | Build (`build-deps`) | From cache |
-|-|-|-|-|
-| 2 in parallel | ~310 s | 67-74 s | 122-136 of 170 |
-| 3 in parallel | 413-432 s | 28-40 s | 170 of 170 |
-| 4 in parallel, 1 file edited each | 541-572 s | 51-170 s | 90-92 of 170 |
+| Round                             | Install per worktree | Build (`build-deps`) | From cache     |
+| --------------------------------- | -------------------- | -------------------- | -------------- |
+| 2 in parallel                     | ~310 s               | 67-74 s              | 122-136 of 170 |
+| 3 in parallel                     | 413-432 s            | 28-40 s              | 170 of 170     |
+| 4 in parallel, 1 file edited each | 541-572 s            | 51-170 s             | 90-92 of 170   |
 
 - Round of 4: each worktree compiled its own version of the edited file (`libs/slug-utils/src/index.ts`); only that
   package and its dependents rebuilt (~78 tasks), the rest came from the base through the cache. The base stayed
