@@ -33,12 +33,14 @@ export function run<T>(ctx: TenantCtx, fn: (trx: Trx) => Promise<T>): Promise<T>
 // A call that locks several phases takes them through lockPhases, in id order.
 export type Lock = 'update' | 'share'
 
+export type PhaseRow = { id: string; key: string; state: PhaseState; position: number }
+
 // Locks each phase row in id order (one mode per id) and returns them by id, so two calls locking an overlapping set
 // of phases cannot deadlock on each other.
 export async function lockPhases(trx: Trx, locks: Map<string, Lock>) {
-  const rows = new Map<string, { id: string; key: string; state: PhaseState }>()
+  const rows = new Map<string, PhaseRow>()
   for (const id of [...locks.keys()].sort()) {
-    const query = trx.selectFrom('phases').select(['id', 'key', 'state']).where('id', '=', id)
+    const query = trx.selectFrom('phases').select(['id', 'key', 'state', 'position']).where('id', '=', id)
     const locked = locks.get(id) === 'update' ? query.forNoKeyUpdate() : query.forShare()
     rows.set(id, await locked.executeTakeFirstOrThrow())
   }

@@ -10,6 +10,7 @@ import {
   findTask,
   type Lock,
   lockPhases,
+  type PhaseRow,
   run,
   type Target,
   type Trx,
@@ -549,15 +550,21 @@ export function transition(
     const project = await findProject(trx, i.projectKey)
     // Row lock: of two concurrent moves the second waits, then sees the new state and fails DR301.
     const task = await findTask(trx, project.id, i.taskKey, { lock: true })
-    // Phase lock (after the task): a reopen cannot slip past a concurrent delivery of the same phase.
-    const phase = task.phase_id
-      ? await trx
-          .selectFrom('phases')
-          .select(['key', 'state'])
-          .where('id', '=', task.phase_id)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow()
-      : null
+    // Phase locks (after the task): a reopen cannot slip past a concurrent delivery of the same phase, and a start
+    // reads its blocking phases under a share lock, so a concurrent reopen of one either waits for the start or is
+    // seen by it (DR304).
+    const blockerIds =
+      task.phase_id && i.to === 'in_progress'
+        ? await trx
+            .selectFrom('phase_dependencies')
+            .select('blocked_by_phase_id as id')
+            .where('phase_id', '=', task.phase_id)
+            .execute()
+        : []
+    const locks = new Map<string, Lock>(blockerIds.map((b) => [b.id, 'share']))
+    if (task.phase_id) locks.set(task.phase_id, 'update')
+    const phases = await lockPhases(trx, locks)
+    const phase = task.phase_id ? (phases.get(task.phase_id) ?? null) : null
     const blockers = await trx
       .selectFrom('task_dependencies as d')
       .innerJoin('tasks as b', 'b.id', 'd.blocked_by_task_id')
@@ -571,16 +578,10 @@ export function transition(
       .where('task_id', '=', task.id)
       .where('checked_at', 'is', null)
       .executeTakeFirstOrThrow()
-    const blockingPhases = task.phase_id
-      ? await trx
-          .selectFrom('phase_dependencies as d')
-          .innerJoin('phases as b', 'b.id', 'd.blocked_by_phase_id')
-          .select('b.key')
-          .where('d.phase_id', '=', task.phase_id)
-          .where('b.state', '<>', 'delivered')
-          .orderBy('b.position')
-          .execute()
-      : []
+    const blockingPhases = blockerIds
+      .map((b) => phases.get(b.id) as PhaseRow)
+      .filter((p) => p.state !== 'delivered')
+      .sort((a, b) => a.position - b.position)
     const from = task.state
     checkTransition({
       from,

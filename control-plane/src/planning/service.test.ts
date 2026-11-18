@@ -292,6 +292,39 @@ test('closePhase racing a move of its only done task out: no delivery on the sta
   assert.equal((await getPlan(ctx, projectKey)).phases[0].state, 'open')
 })
 
+test('start racing a reopen of its blocking phase: DR304 or a start against the delivered blocker, never both', async () => {
+  const { ctx } = await setup()
+  await addPhase(ctx, { projectKey, key: 'P0', title: 'Foundation', goal: '' })
+  await addPhase(ctx, { projectKey, key: 'P1', title: 'Next', goal: '' })
+  await addPhaseDependency(ctx, { projectKey, phaseKey: 'P1', blockedByKey: 'P0' })
+  await addTask(ctx, { projectKey, phaseKey: 'P0', key: 'P0-T01', title: 'A' })
+  await addTask(ctx, { projectKey, phaseKey: 'P1', key: 'P1-T01', title: 'B' })
+  await addTask(ctx, { projectKey, phaseKey: 'P1', key: 'P1-T02', title: 'C' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'in_progress' })
+  await transition(ctx, { projectKey, taskKey: 'P0-T01', to: 'done' })
+  const reopen = (inner: Ctx) => reopenPhase(inner, { projectKey, phaseKey: 'P0', reason: 'regression' })
+
+  const reopenFirst = await race(ctx, 'phases', reopen, () =>
+    transition(ctx, { projectKey, taskKey: 'P1-T01', to: 'in_progress' }),
+  )
+  await closePhase(ctx, { projectKey, phaseKey: 'P0' })
+  const startFirst = await race(
+    ctx,
+    'phases',
+    (inner) => transition(inner, { projectKey, taskKey: 'P1-T02', to: 'in_progress' }),
+    () => reopen(ctx),
+  )
+
+  assert.deepEqual(
+    [reopenFirst, startFirst],
+    [
+      ['ok', 'DR304'],
+      ['ok', 'ok'],
+    ],
+  )
+  assert.deepEqual([(await taskOf(ctx, 'P1-T01')).state, (await taskOf(ctx, 'P1-T02')).state], ['todo', 'in_progress'])
+})
+
 test('concurrent criteria on one task get distinct positions', async () => {
   const { ctx } = await setup()
   await addTask(ctx, { projectKey, key: 'P0-T01', title: 'A' })
