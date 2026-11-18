@@ -1,6 +1,7 @@
 //! Live runs of the Windows runner against `cmd` scripts and Git's `sh.exe`.
 //! The upstream stop, orphan and tree tests drove devlanes' `fixture-server`,
-//! which was not copied; they come back on DevRounds' own tree fixture (see
+//! which was not copied; the ones covering job supervision came back in
+//! `tests/supervision.rs` on DevRounds' own tree fixture (see
 //! `executor/NOTICE`).
 #![cfg(windows)]
 
@@ -12,11 +13,10 @@ use std::{
     time::Duration,
 };
 
-use devrounds_core::{Error, ExitOutcome, LaunchSpec, OutputChunk, OutputStream, Unit};
+use devrounds_core::{Error, ExitOutcome, LaunchSpec, RunOutput, Unit};
 use devrounds_runner_windows::{
-    ConsoleHelper, HELPER_ARG, StderrMode, WindowsRunner, WindowsUnit, console_ctrl_main,
+    ConsoleHelper, HELPER_ARG, WindowsRunner, WindowsUnit, console_ctrl_main,
 };
-use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 /// Upper bound for each test body.
 const LIMIT: Duration = Duration::from_secs(60);
@@ -78,15 +78,31 @@ fn env(dirs: &[&Path]) -> BTreeMap<String, String> {
     env
 }
 
-/// A pipe-mode spec started in `cwd`.
-/// A spec started in `cwd`.
-fn spec(program: &str, args: &[&str], cwd: &Path, env: BTreeMap<String, String>) -> LaunchSpec {
+/// A spec started in `cwd` that writes `stdout.raw` and `stderr.raw` in a
+/// fresh run directory under `runs`.
+fn spec(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    env: BTreeMap<String, String>,
+    runs: &Path,
+) -> LaunchSpec {
+    let run = tempfile::tempdir_in(runs).expect("run dir").keep();
     LaunchSpec {
         program: program.into(),
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
         cwd: cwd.to_path_buf(),
         env,
+        output: RunOutput {
+            stdout: run.join("stdout.raw"),
+            stderr: run.join("stderr.raw"),
+        },
     }
+}
+
+/// The contents of a run output file; empty when the run never opened it.
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
 }
 
 /// The code of the runner's refusal inside `error`, if it is one.
@@ -113,65 +129,44 @@ impl Drop for Cleanup {
     }
 }
 
-/// Every chunk until the channel closes.
-async fn drain(mut output: Receiver<OutputChunk>) -> Vec<OutputChunk> {
-    let mut chunks = Vec::new();
-    loop {
-        match output.recv().await {
-            Ok(chunk) => chunks.push(chunk),
-            Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => return chunks,
-        }
-    }
-}
-
-/// The text of `chunks` from `stream`.
-fn text(chunks: &[OutputChunk], stream: OutputStream) -> String {
-    chunks
-        .iter()
-        .filter(|chunk| chunk.stream == stream)
-        .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
-        .collect()
-}
-
 /// Runs `body` with the test's time limit.
 async fn bounded(body: impl Future<Output = ()>) {
     tokio::time::timeout(LIMIT, body).await.expect("bounded");
 }
 
-/// stdout and stderr arrive tagged, or merged as stdout, and the exit code is
-/// reported. The script is found on `PATH` through `PATHEXT`.
+/// stdout and stderr land in their own files, or in one file when both name
+/// it, and the exit code is reported. The script is found on `PATH` through
+/// `PATHEXT`.
 #[tokio::test]
 async fn output_and_exit_code() {
     bounded(async {
         let dir = tempdir();
+        let runs = tempdir();
         script(
             dir.path(),
             "talk.cmd",
             &["@echo out", "@>&2 echo err", "@exit /b 3"],
         );
-        let spec = || spec("talk", &[], dir.path(), env(&[dir.path()]));
+        let spec = || spec("talk", &[], dir.path(), env(&[dir.path()]), runs.path());
 
-        let unit = runner().spawn_unit(spec()).await.expect("spawn");
+        let separate = spec();
+        let output = separate.output.clone();
+        let unit = runner().spawn_unit(separate).await.expect("spawn");
         let _cleanup = Cleanup(unit.clone());
-        let chunks = drain(unit.output()).await;
         let report = unit.wait_report().await.expect("report");
         assert_eq!(report.outcome.code, Some(3));
         assert_eq!(report.stop, None);
-        assert!(text(&chunks, OutputStream::Stdout).contains("out"));
-        assert!(text(&chunks, OutputStream::Stderr).contains("err"));
+        assert_eq!(read(&output.stdout).trim(), "out");
+        assert_eq!(read(&output.stderr).trim(), "err");
 
-        let merged = runner()
-            .with_stderr(StderrMode::Merged)
-            .spawn_unit(spec())
-            .await
-            .expect("spawn");
-        let _cleanup = Cleanup(merged.clone());
-        let chunks = drain(merged.output()).await;
-        assert!(chunks.iter().all(|c| c.stream == OutputStream::Stdout));
-        let all = text(&chunks, OutputStream::Stdout);
+        let mut merged = spec();
+        merged.output.stderr = merged.output.stdout.clone();
+        let output = merged.output.clone();
+        let unit = runner().spawn_unit(merged).await.expect("spawn");
+        let _cleanup = Cleanup(unit.clone());
+        assert_eq!(unit.wait().await.expect("exit").code, Some(3));
+        let all = read(&output.stdout);
         assert!(all.contains("out") && all.contains("err"), "{all}");
-        assert_eq!(merged.wait().await.expect("exit").code, Some(3));
     })
     .await;
 }
@@ -182,20 +177,20 @@ async fn output_and_exit_code() {
 async fn batch_arguments_are_escaped_or_refused() {
     bounded(async {
         let dir = tempdir();
+        let runs = tempdir();
         // `%1` keeps the quotes the escaping added; `%~1` would strip them and
         // let the script itself run what follows the `&`.
         script(dir.path(), "args.cmd", &["@echo [%1]"]);
         let env = || env(&[dir.path()]);
-        let unit = runner()
-            .spawn_unit(spec("args", &["a&echo injected"], dir.path(), env()))
-            .await
-            .expect("spawn");
+        let injected = spec("args", &["a&echo injected"], dir.path(), env(), runs.path());
+        let stdout = injected.output.stdout.clone();
+        let unit = runner().spawn_unit(injected).await.expect("spawn");
         let _cleanup = Cleanup(unit.clone());
-        let output = text(&drain(unit.output()).await, OutputStream::Stdout);
-        assert_eq!(output.trim(), r#"["a&echo injected"]"#);
+        unit.wait().await.expect("exit");
+        assert_eq!(read(&stdout).trim(), r#"["a&echo injected"]"#);
 
         let error = runner()
-            .spawn_unit(spec("args", &["a\nb"], dir.path(), env()))
+            .spawn_unit(spec("args", &["a\nb"], dir.path(), env(), runs.path()))
             .await
             .expect_err("refused");
         assert_eq!(refusal(&error), Some("unsafe_batch_argument"), "{error:?}");
@@ -211,8 +206,16 @@ async fn batch_arguments_are_escaped_or_refused() {
 async fn spawn_failures_are_typed() {
     bounded(async {
         let dir = tempdir();
+        let runs = tempdir();
+        let runs = runs.path();
         let missing = runner()
-            .spawn_unit(spec("no-such-tool", &[], dir.path(), env(&[dir.path()])))
+            .spawn_unit(spec(
+                "no-such-tool",
+                &[],
+                dir.path(),
+                env(&[dir.path()]),
+                runs,
+            ))
             .await
             .expect_err("missing program");
         assert!(
@@ -225,14 +228,14 @@ async fn spawn_failures_are_typed() {
         let tool = tool.to_string_lossy().into_owned();
         let gone = dir.path().join("gone");
         let error = runner()
-            .spawn_unit(spec(&tool, &[], &gone, env(&[])))
+            .spawn_unit(spec(&tool, &[], &gone, env(&[]), runs))
             .await
             .expect_err("missing directory");
         assert!(matches!(error, Error::Io(_)), "{error:?}");
 
         let long = dir.path().join("x".repeat(300));
         let error = runner()
-            .spawn_unit(spec(&tool, &[], &long, env(&[])))
+            .spawn_unit(spec(&tool, &[], &long, env(&[]), runs))
             .await
             .expect_err("long directory");
         assert_eq!(refusal(&error), Some("cwd_too_long"), "{error:?}");
@@ -240,7 +243,13 @@ async fn spawn_failures_are_typed() {
 
         let error = runner()
             .with_shell(None)
-            .spawn_unit(spec("/bin/sh", &["-c", "exit 0"], dir.path(), env(&[])))
+            .spawn_unit(spec(
+                "/bin/sh",
+                &["-c", "exit 0"],
+                dir.path(),
+                env(&[]),
+                runs,
+            ))
             .await
             .expect_err("no shell");
         assert_eq!(refusal(&error), Some("shell_missing"), "{error:?}");
@@ -258,20 +267,23 @@ async fn run_strings_find_git_tools() {
             .await
             .expect("Git for Windows' sh.exe");
         let dir = tempdir();
+        let runs = tempdir();
+        let tools = spec(
+            "/bin/sh",
+            &["-c", "sleep 0 && basename /a/tool"],
+            dir.path(),
+            env(&[]),
+            runs.path(),
+        );
+        let stdout = tools.output.stdout.clone();
         let unit = runner()
             .with_shell(Some(shell))
-            .spawn_unit(spec(
-                "/bin/sh",
-                &["-c", "sleep 0 && basename /a/tool"],
-                dir.path(),
-                env(&[]),
-            ))
+            .spawn_unit(tools)
             .await
             .expect("spawn");
         let _cleanup = Cleanup(unit.clone());
-        let output = text(&drain(unit.output()).await, OutputStream::Stdout);
-        assert_eq!(output, "tool\n");
         assert_eq!(unit.wait().await.expect("exit").code, Some(0));
+        assert_eq!(read(&stdout), "tool\n");
     })
     .await;
 }
@@ -286,17 +298,25 @@ async fn run_strings_go_through_git_sh() {
             .await
             .expect("Git for Windows' sh.exe");
         let dir = tempdir();
+        let runs = tempdir();
         let script = r#"printf '[%s]\n' 'a\b' "q\"q" "$MSYS_NO_PATHCONV" /c/x
 exit 4"#;
+        let quoted = spec(
+            "/bin/sh",
+            &["-c", script],
+            dir.path(),
+            env(&[]),
+            runs.path(),
+        );
+        let stdout = quoted.output.stdout.clone();
         let unit = runner()
             .with_shell(Some(shell.clone()))
-            .spawn_unit(spec("/bin/sh", &["-c", script], dir.path(), env(&[])))
+            .spawn_unit(quoted)
             .await
             .expect("spawn");
         let _cleanup = Cleanup(unit.clone());
-        let output = text(&drain(unit.output()).await, OutputStream::Stdout);
-        assert_eq!(output, "[a\\b]\n[q\"q]\n[1]\n[/c/x]\n");
         assert_eq!(unit.wait().await.expect("exit").code, Some(4));
+        assert_eq!(read(&stdout), "[a\\b]\n[q\"q]\n[1]\n[/c/x]\n");
 
         let unit = runner()
             .with_shell(Some(shell.clone()))
@@ -305,6 +325,7 @@ exit 4"#;
                 &["-c", "kill -INT $$"],
                 dir.path(),
                 env(&[]),
+                runs.path(),
             ))
             .await
             .expect("spawn");
@@ -320,18 +341,18 @@ exit 4"#;
         // An explicit list naming Git's `sh.exe` gets its arguments exactly:
         // `*` is not expanded against the folder's files.
         std::fs::write(dir.path().join("acme.txt"), "").expect("file");
-        let unit = runner()
-            .spawn_unit(spec(
-                &shell.to_string_lossy(),
-                &["-c", r#"printf '%s\n' "$1""#, "sh", "*"],
-                dir.path(),
-                env(&[]),
-            ))
-            .await
-            .expect("spawn");
+        let star = spec(
+            &shell.to_string_lossy(),
+            &["-c", r#"printf '%s\n' "$1""#, "sh", "*"],
+            dir.path(),
+            env(&[]),
+            runs.path(),
+        );
+        let stdout = star.output.stdout.clone();
+        let unit = runner().spawn_unit(star).await.expect("spawn");
         let _cleanup = Cleanup(unit.clone());
-        let output = text(&drain(unit.output()).await, OutputStream::Stdout);
-        assert_eq!(output, "*\n");
+        unit.wait().await.expect("exit");
+        assert_eq!(read(&stdout), "*\n");
     })
     .await;
 }

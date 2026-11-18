@@ -54,7 +54,6 @@ name = "devrounds-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "serde",
  "serde_json",
  "thiserror",
@@ -116,10 +115,10 @@ name = "devrounds-runner-windows"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "devrounds-core",
  "devrounds-shell-windows",
  "devrounds-sys-windows",
+ "devrounds-test-fixtures",
  "tempfile",
  "thiserror",
  "tokio",
@@ -150,6 +149,13 @@ dependencies = [
  "tempfile",
  "thiserror",
  "windows-sys",
+]
+
+[[package]]
+name = "devrounds-test-fixtures"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

@@ -26,7 +26,10 @@ devrounds-core, from crates/core at e2e4f1cafda94805d6e447331980b83fcbab2e72
   ProcessInfo moved here from devlanes-sys. StartRequest is
   { run, job_type, order, memory_need } instead of lane/unit, and
   GateSnapshot::find takes a run id. Added DrError (error.rs) and JobSpec
-  (job.rs).
+  (job.rs). Run output goes to files the run owns: LaunchSpec has an output
+  field (RunOutput { stdout, stderr }), and StderrMode, OutputStream,
+  OutputChunk, Unit::output and the bytes dependency are gone. Added
+  RunIdentity (leader identity plus boot id).
 
 devrounds-sys-windows, from crates/sys-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Removed cert, conpty, net, pipe, power, registry and shell_execute with their
@@ -46,11 +49,21 @@ devrounds-shell-windows, from crates/shell-windows at e2e4f1cafda94805d6e4473319
 devrounds-runner-windows, from crates/runner-windows at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Removed foreground (spawn_foreground, shell_exit_code), terminal (ConPTY
   units, batch-prompt answers), listening_ports, set_power/freezing,
-  with_exit_sweep and the devlanes-sys dependency. output.rs is kept without
-  terminal sizing until run output moves to run-owned files. The integration
-  tests that drove devlanes-testing's fixture-server (stops, orphans, process
-  trees, freezing, throttling) and the pseudo-console tests were not copied;
-  the cmd and sh.exe tests were.
+  with_exit_sweep and the devlanes-sys dependency. The leader writes to the
+  run's output files instead of pipes: output.rs (pipe readers and the
+  broadcast channel), with_stderr, with_output_capacity, the drain timeout
+  and the bytes dependency are gone. The files are opened for writing at
+  their end, not append-only, which MSYS programs refuse. Once the leader
+  exits, members still running get a 10 s exit grace before the sweep (it
+  used to wait only for the pipes' end of file); a stop requested meanwhile
+  shortens it. ExitReport lost left_running, always empty on Windows. Added
+  WindowsUnit::run_identity and job_members. The integration tests that drove
+  devlanes-testing's fixture-server were not copied; the stop, escalation,
+  process tree, exit sweep and keep-on-drop ones came back in
+  tests/supervision.rs on DevRounds' tree-fixture (crates/test-fixtures).
+  The orphan, MSYS Ctrl-Break, freezing, throttling and pseudo-console tests
+  did not. The cmd and sh.exe tests were copied and now read the output
+  files.
 
 devrounds-start-gate, from crates/start-gate at e2e4f1cafda94805d6e447331980b83fcbab2e72
   Requests carry run and job_type instead of lane and unit.

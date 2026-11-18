@@ -12,18 +12,18 @@ use std::{
 
 use async_trait::async_trait;
 use devrounds_core::{
-    Error, ExitOutcome, LaunchSpec, OutputChunk, ProcessIdentity, ProcessInfo, StopPolicy,
+    Error, ExitOutcome, LaunchSpec, ProcessIdentity, ProcessInfo, RunIdentity, StopPolicy,
     StopSignal, Unit, WindowsStop,
 };
 use devrounds_sys_windows::{
     console::CtrlEvent,
     job::Job,
-    proc::{Held, ProcessEntry},
+    proc::{self, Held, ProcessEntry},
     spawn::Child,
     window::close_windows,
 };
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task,
     time::{self, Instant, MissedTickBehavior},
 };
@@ -31,7 +31,6 @@ use tokio::{
 use crate::{
     ConsoleHelper, WindowsRunner,
     exit::{self, Leader},
-    output::{self, Slot},
     runtime::Runtimes,
     spawn::{self, is_console_host},
     stop::{Ask, StopPlan},
@@ -55,12 +54,11 @@ pub struct ExitReport {
     pub outcome: ExitOutcome,
     /// Present when an explicit stop ended the unit.
     pub stop: Option<StopOutcome>,
-    /// Processes still running after the leader that the final sweep ended.
+    /// Members still running after the leader's exit and its grace (the
+    /// stop's, or [`WindowsRunner::exit_grace`]) that the final sweep ended.
     pub swept: Vec<ProcessInfo>,
     /// Processes still running after the sweep's timeout.
     pub escaped: Vec<ProcessInfo>,
-    /// Always empty on Windows: nothing a unit started may outlive it.
-    pub left_running: Vec<ProcessInfo>,
 }
 
 /// How an explicit stop ended.
@@ -81,6 +79,8 @@ pub struct WindowsUnit {
 /// State shared between handles and the supervisor task.
 struct Inner {
     identity: ProcessIdentity,
+    /// The boot the unit started in, read once at spawn.
+    boot_id: String,
     /// What the leader is, which decides how its exit code reads.
     leader_kind: Leader,
     /// The runner terminated the job while the leader still ran.
@@ -90,9 +90,6 @@ struct Inner {
     job: Job,
     /// Held so the leader's PID stays its own until the unit is dropped.
     leader: Arc<Child>,
-    slot: Arc<Slot>,
-    /// Created before the first read, for the first subscriber.
-    first: Mutex<Option<broadcast::Receiver<OutputChunk>>>,
     /// Live members other than the console host, as of the last refresh.
     members: Mutex<Vec<ProcessInfo>>,
     /// Members seen at a refresh that had not exited then, each held open:
@@ -112,15 +109,15 @@ struct Inner {
 #[derive(Debug, Clone, Copy)]
 struct Timing {
     track_interval: Duration,
-    drain_timeout: Duration,
+    exit_grace: Duration,
     sweep_timeout: Duration,
 }
 
 impl Timing {
-    /// Upper bound for a stop beyond its policy timeout: the sweep, both output
-    /// drains and slack for a loaded machine.
+    /// Upper bound for a stop beyond its policy timeout: the sweep and slack
+    /// for a loaded machine.
     fn stop_margin(&self) -> Duration {
-        self.sweep_timeout + self.drain_timeout * 2 + Duration::from_secs(5)
+        self.sweep_timeout + Duration::from_secs(5)
     }
 }
 
@@ -146,37 +143,35 @@ struct Sweep {
     escaped: Vec<ProcessInfo>,
 }
 
-/// Launches the leader, starts its output readers and waiter, then its supervisor.
+/// Launches the leader, starts its waiter, then its supervisor.
 pub(crate) async fn spawn(
     runner: &WindowsRunner,
     spec: LaunchSpec,
 ) -> Result<Arc<WindowsUnit>, Error> {
-    let stderr = runner.stderr;
     let shell = runner.shell.clone();
     let runtimes = runner.runtimes.clone();
-    let launched =
-        blocking(move || spawn::launch(spec, stderr, shell.as_deref(), &runtimes)).await??;
+    let (boot_id, launched) = blocking(move || {
+        // Read first: a failure here must not leave an untracked leader.
+        let boot_id = proc::boot_id()?;
+        let launched = spawn::launch(spec, shell.as_deref(), &runtimes)?;
+        Ok::<_, Error>((boot_id, launched))
+    })
+    .await??;
     let identity = ProcessIdentity {
         pid: launched.child.pid(),
         sid: 0,
         start_time: launched.child.start_time(),
     };
-    let (sender, first) = broadcast::channel(runner.output_capacity);
-    let slot = Arc::new(Slot::new(sender));
-    let (done_tx, done_rx) = watch::channel(false);
     let leader = Arc::new(launched.child);
     let (exit_tx, exit_rx) = oneshot::channel();
     let waiting = Arc::clone(&leader);
-    let started = output::start(launched.pipes, Arc::clone(&slot), done_tx).and_then(|()| {
-        std::thread::Builder::new()
-            .name("unit-wait".into())
-            .spawn(move || {
-                let _ = exit_tx.send(waiting.wait());
-            })
-            .map(drop)
-    });
+    let started = std::thread::Builder::new()
+        .name("unit-wait".into())
+        .spawn(move || {
+            let _ = exit_tx.send(waiting.wait());
+        });
     if let Err(error) = started {
-        // Unread pipes would stall it and nothing would see it exit.
+        // Nothing would see it exit.
         let _ = launched.job.terminate(TERMINATED);
         return Err(error.into());
     }
@@ -184,13 +179,12 @@ pub(crate) async fn spawn(
     let (stops, requests) = mpsc::unbounded_channel();
     let inner = Arc::new(Inner {
         identity,
+        boot_id,
         leader_kind: launched.leader_kind,
         terminated: AtomicBool::new(false),
         runtimes: runner.runtimes.clone(),
         job: launched.job,
         leader,
-        slot,
-        first: Mutex::new(Some(first)),
         members: Mutex::new(Vec::new()),
         held: Mutex::new(Vec::new()),
         leader_exited: AtomicBool::new(false),
@@ -199,7 +193,7 @@ pub(crate) async fn spawn(
         exit: watch::channel(None).0,
         timing: Timing {
             track_interval: runner.track_interval,
-            drain_timeout: runner.drain_timeout,
+            exit_grace: runner.exit_grace,
             sweep_timeout: runner.sweep_timeout,
         },
         helper: runner.helper.clone(),
@@ -207,25 +201,19 @@ pub(crate) async fn spawn(
     // The guard is an argument, not a local, so it is dropped (and publishes) even if
     // the task is cancelled before its first poll.
     let publish = PublishOnDrop(Arc::clone(&inner));
-    tokio::spawn(supervise(
-        Arc::clone(&inner),
-        publish,
-        requests,
-        exit_rx,
-        done_rx,
-    ));
+    tokio::spawn(supervise(Arc::clone(&inner), publish, requests, exit_rx));
     Ok(Arc::new(WindowsUnit { inner }))
 }
 
 /// Owns the unit lifecycle: the leader's exit, membership refreshes, stop
-/// escalation and the final drain and sweep. Stops run here so a cancelled
-/// `stop()` caller cannot abandon an escalation halfway.
+/// escalation, the grace for members outliving the leader and the final
+/// sweep. Stops run here so a cancelled `stop()` caller cannot abandon an
+/// escalation halfway.
 async fn supervise(
     inner: Arc<Inner>,
     _publish: PublishOnDrop,
     mut requests: mpsc::UnboundedReceiver<StopRequest>,
     mut exited: oneshot::Receiver<io::Result<u32>>,
-    mut output_done: watch::Receiver<bool>,
 ) {
     let timing = inner.timing;
     let mut tick = time::interval(timing.track_interval);
@@ -239,18 +227,7 @@ async fn supervise(
             _ = tick.tick() => {
                 inner.track().await;
             }
-            Some(request) = requests.recv() => {
-                let deadline = Instant::now() + request.timeout;
-                match &mut stopping {
-                    // A repeated stop can only shorten the grace period; it
-                    // sends no second event.
-                    Some(current) => current.deadline = current.deadline.min(deadline),
-                    None => {
-                        inner.begin_stop(request.signal, deadline);
-                        stopping = Some(Stopping { signal: request.signal, deadline, escalated: false });
-                    }
-                }
-            }
+            Some(request) = requests.recv() => inner.request_stop(&mut stopping, request),
             () = until(deadline) => {
                 inner.terminate_job();
                 if let Some(current) = &mut stopping {
@@ -261,24 +238,29 @@ async fn supervise(
     };
     inner.leader_exited.store(true, Ordering::Release);
 
-    if let Some(current) = &mut stopping {
-        // Members that outlive the leader get the rest of the grace period. The
-        // console host stays until its last client is gone and is not waited for.
-        while !current.escalated && !inner.live_members().await.is_empty() {
-            if Instant::now() >= current.deadline {
+    // The run ended with its leader. Members that outlive it get the rest of
+    // a stop's grace period, or the exit grace; a stop requested meanwhile
+    // can only shorten it. At the deadline a stop escalates, and without one
+    // the sweep below ends them. The console host stays until its last
+    // client is gone and is not waited for.
+    let mut deadline = stopping.map_or(Instant::now() + timing.exit_grace, |s| s.deadline);
+    while !stopping.is_some_and(|s| s.escalated) && !inner.live_members().await.is_empty() {
+        if Instant::now() >= deadline {
+            if let Some(current) = &mut stopping {
                 inner.terminate_job();
                 current.escalated = true;
-            } else {
-                time::sleep(EXIT_POLL).await;
+            }
+            break;
+        }
+        tokio::select! {
+            () = time::sleep(EXIT_POLL) => {}
+            Some(request) = requests.recv() => {
+                inner.request_stop(&mut stopping, request);
+                deadline = deadline.min(stopping.map_or(deadline, |s| s.deadline));
             }
         }
-    } else {
-        // Leftover processes holding a pipe would block end of file forever.
-        let _ = time::timeout(timing.drain_timeout, output_done.wait_for(|done| *done)).await;
     }
     let sweep = inner.sweep().await;
-    // Collect the last output of processes the sweep just ended.
-    let _ = time::timeout(timing.drain_timeout, output_done.wait_for(|done| *done)).await;
     let stop = stopping.map(|s| StopOutcome {
         signal: s.signal,
         escalated: s.escalated,
@@ -297,7 +279,6 @@ async fn supervise(
         stop,
         swept: sweep.swept,
         escaped: sweep.escaped,
-        left_running: Vec::new(),
     });
 }
 
@@ -327,7 +308,6 @@ impl Drop for PublishOnDrop {
                 stop: None,
                 swept: Vec::new(),
                 escaped: Vec::new(),
-                left_running: Vec::new(),
             });
         }
     }
@@ -417,6 +397,23 @@ impl Inner {
         let tracked = blocking(move || inner.refresh_blocking().map(drop)).await;
         if let Ok(Err(error)) | Err(error) = tracked {
             tracing::warn!(%error, pid = self.identity.pid, "reading the unit's job failed");
+        }
+    }
+
+    /// Handles a stop request: the first one begins the stop; a repeated stop
+    /// can only shorten the grace period and sends no second event.
+    fn request_stop(self: &Arc<Self>, stopping: &mut Option<Stopping>, request: StopRequest) {
+        let deadline = Instant::now() + request.timeout;
+        match stopping {
+            Some(current) => current.deadline = current.deadline.min(deadline),
+            None => {
+                self.begin_stop(request.signal, deadline);
+                *stopping = Some(Stopping {
+                    signal: request.signal,
+                    deadline,
+                    escalated: false,
+                });
+            }
         }
     }
 
@@ -569,9 +566,8 @@ impl Inner {
         )
     }
 
-    /// Publishes the report and closes the subscription source.
+    /// Publishes the report and forgets the members.
     fn finish(&self, report: ExitReport) {
-        self.slot.close();
         lock(&self.members).clear();
         lock(&self.held).clear();
         self.exit.send_replace(Some(report));
@@ -585,11 +581,31 @@ impl WindowsUnit {
         self.inner.identity
     }
 
+    /// The leader's identity and the boot it started in; persist it to find
+    /// the run again after an executor restart.
+    pub fn run_identity(&self) -> RunIdentity {
+        RunIdentity {
+            leader: self.inner.identity,
+            boot_id: self.inner.boot_id.clone(),
+        }
+    }
+
     /// Reads the job and returns its live processes, the leader included while
     /// it runs and the console host left out.
     pub async fn processes(&self) -> Result<Vec<ProcessInfo>, Error> {
         let inner = Arc::clone(&self.inner);
         blocking(move || inner.refresh_blocking()).await?
+    }
+
+    /// [`WindowsUnit::processes`] as identities: every live job member with
+    /// its start time, read from the job now.
+    pub async fn job_members(&self) -> Result<Vec<ProcessIdentity>, Error> {
+        Ok(self
+            .processes()
+            .await?
+            .iter()
+            .map(ProcessInfo::identity)
+            .collect())
     }
 
     /// Ends every process of the unit at once by terminating its job, without
@@ -603,7 +619,8 @@ impl WindowsUnit {
         self.inner.exit.borrow().clone()
     }
 
-    /// Waits for the leader's exit, the output drain and the final sweep.
+    /// Waits for the leader's exit, the grace for members outliving it and
+    /// the final sweep.
     pub async fn wait_report(&self) -> Result<ExitReport, Error> {
         let mut exit = self.inner.exit.subscribe();
         let report = exit
@@ -670,7 +687,6 @@ impl WindowsUnit {
             }),
             swept: Vec::new(),
             escaped: Vec::new(),
-            left_running: Vec::new(),
         };
         // The crash report is itself a placeholder; anything else is real.
         let crashed = self.inner.crashed.load(Ordering::SeqCst);
@@ -681,7 +697,6 @@ impl WindowsUnit {
             *exit = Some(report);
             true
         });
-        self.inner.slot.close();
         self.wait_report().await
     }
 }
@@ -706,16 +721,6 @@ impl Unit for WindowsUnit {
     /// See [`WindowsUnit::wait_report`].
     async fn wait(&self) -> Result<ExitOutcome, Error> {
         Ok(self.wait_report().await?.outcome)
-    }
-
-    /// The first call returns a receiver created before the first read, so it sees
-    /// all output since launch; later calls see output from the moment they subscribe.
-    /// After exit, new receivers report `Closed` immediately.
-    fn output(&self) -> broadcast::Receiver<OutputChunk> {
-        if let Some(first) = lock(&self.inner.first).take() {
-            return first;
-        }
-        self.inner.slot.subscribe()
     }
 
     /// Live members as of the supervisor's last refresh. Never reads the job, so

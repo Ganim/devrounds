@@ -2,19 +2,19 @@
 
 use std::{
     collections::BTreeMap,
-    io::{self, PipeReader},
-    os::windows::{ffi::OsStrExt, io::AsHandle},
+    fs::{File, OpenOptions},
+    io::{self, Seek, SeekFrom},
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsHandle},
     path::{Path, PathBuf},
 };
 
-use devrounds_core::{LaunchSpec, OutputStream};
+use devrounds_core::{LaunchSpec, RunOutput};
 use devrounds_sys_windows::{
     job::{Job, JobOptions},
     spawn::{self as win, Child, CreationFlags, EnvError, Environment, Spawn, Stdio, Stream},
 };
 
 use crate::{
-    StderrMode,
     command::{self, CommandError},
     exit::Leader,
     runtime::Runtimes,
@@ -58,7 +58,7 @@ pub enum SpawnError {
     /// The environment cannot be passed to a Windows process.
     #[error(transparent)]
     Environment(#[from] EnvError),
-    /// Creating the job, the pipes or the process failed.
+    /// Opening the output files, creating the job or the process failed.
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -117,25 +117,59 @@ impl From<SpawnError> for devrounds_core::Error {
     }
 }
 
-/// A started leader and the parent's ends of its output pipes.
+/// A started leader in its job.
 pub(crate) struct Launched {
     pub child: Child,
     pub job: Job,
-    pub pipes: Vec<(OutputStream, PipeReader)>,
     /// What the leader is, which decides how its exit code reads.
     pub leader_kind: Leader,
+}
+
+/// `FILE_SHARE_READ`: log readers may open the output files while the run
+/// writes them; nobody else may write or delete them meanwhile.
+const FILE_SHARE_READ: u32 = 0x1;
+
+/// Opens one run output file for appending, creating it when missing.
+///
+/// Not an append-only handle (`FILE_APPEND_DATA` without `FILE_WRITE_DATA`):
+/// MSYS programs, Git's `sh.exe` among them, write nothing to one and exit
+/// with 1. A write handle positioned at the end appends just as well: the
+/// leader and every descendant inherit this one handle, so they share its
+/// file position, and Windows serialises their writes on it.
+fn open_output(path: &Path) -> io::Result<File> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)?;
+    file.seek(SeekFrom::End(0))?;
+    Ok(file)
+}
+
+/// The run's stdout and stderr files; one file for both when the paths are
+/// equal (a second open would violate the first one's sharing).
+fn open_outputs(output: &RunOutput) -> io::Result<(File, Option<File>)> {
+    let stdout = open_output(&output.stdout)?;
+    let stderr = if output.stderr == output.stdout {
+        None
+    } else {
+        Some(open_output(&output.stderr)?)
+    };
+    Ok((stdout, stderr))
 }
 
 /// Starts `spec`'s leader in a new job. Blocking: call from `spawn_blocking`.
 ///
 /// The job lets no process leave, ends a crashing member at once, and does
-/// not end its members when closed, so units outlive the executor. Nothing
-/// that fails before `CreateProcessW` succeeded leaves a job or a process
-/// behind. The leader is [`Leader::Msys`] when `runtimes` says the resolved
-/// program links the MSYS runtime, else [`Leader::Native`].
+/// not end its members when closed, so units outlive the executor. The
+/// leader gets `NUL` as stdin and the run's output files as stdout and
+/// stderr; this process closes its copies once the leader holds them, so it
+/// never sits between the run and its output. Nothing that fails before
+/// `CreateProcessW` succeeded leaves a job or a process behind (the output
+/// files may exist by then). The leader is [`Leader::Msys`] when `runtimes`
+/// says the resolved program links the MSYS runtime, else [`Leader::Native`].
 pub(crate) fn launch(
     spec: LaunchSpec,
-    stderr: StderrMode,
     shell: Option<&Path>,
     runtimes: &Runtimes,
 ) -> Result<Launched, SpawnError> {
@@ -164,9 +198,7 @@ pub(crate) fn launch(
         Leader::Native
     };
     let environment = Environment::new(&env)?;
-    let merged = stderr == StderrMode::Merged;
-    let (reader, writer) = win::pipe()?;
-    let errors = if merged { None } else { Some(win::pipe()?) };
+    let (stdout, stderr) = open_outputs(&spec.output)?;
     let job = Job::create(JobOptions {
         kill_on_close: false,
         die_on_unhandled_exception: true,
@@ -178,12 +210,8 @@ pub(crate) fn launch(
         cwd: Some(&spec.cwd),
         stdio: Stdio::Handles {
             stdin: Stream::Null,
-            stdout: Stream::Handle(writer.as_handle()),
-            stderr: Stream::Handle(
-                errors
-                    .as_ref()
-                    .map_or(writer.as_handle(), |(_, writer)| writer.as_handle()),
-            ),
+            stdout: Stream::Handle(stdout.as_handle()),
+            stderr: Stream::Handle(stderr.as_ref().unwrap_or(&stdout).as_handle()),
         },
         inherit: &[],
         job: Some(&job),
@@ -192,17 +220,11 @@ pub(crate) fn launch(
             ..CreationFlags::default()
         },
     })?;
-    // Only the child may hold the write ends, or the readers never see EOF.
-    drop(writer);
-    let mut pipes = vec![(OutputStream::Stdout, reader)];
-    if let Some((reader, writer)) = errors {
-        drop(writer);
-        pipes.push((OutputStream::Stderr, reader));
-    }
+    // The run owns its output from here; the files close on our side as
+    // `stdout` and `stderr` drop.
     Ok(Launched {
         child,
         job,
-        pipes,
         leader_kind,
     })
 }

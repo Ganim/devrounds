@@ -3,9 +3,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 use crate::{Error, StopSignal};
 
@@ -16,6 +14,26 @@ pub struct LaunchSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    pub output: RunOutput,
+}
+
+/// Files the run writes its output to, normally `<run dir>/stdout.raw` and
+/// `<run dir>/stderr.raw`. The runner opens them for appending, hands the
+/// handles to the leader and closes its own copies, so output never waits on
+/// the executor and survives it. The same path twice gives one shared file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutput {
+    pub stdout: PathBuf,
+    pub stderr: PathBuf,
+}
+
+/// What tells a run's leader apart from any other process, across PID reuse
+/// and reboots: a recorded identity whose `boot_id` differs from the current
+/// one belongs to a run that ended with the previous boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunIdentity {
+    pub leader: ProcessIdentity,
+    pub boot_id: String,
 }
 
 /// Signal and escalation delay for an explicit stop request.
@@ -33,16 +51,6 @@ impl Default for StopPolicy {
             timeout: Duration::from_secs(10),
         }
     }
-}
-
-/// How units deliver stderr.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StderrMode {
-    /// Separate pipes; chunks are tagged `Stdout` or `Stderr`.
-    #[default]
-    Separate,
-    /// One shared pipe preserving write order; every chunk is tagged `Stdout`.
-    Merged,
 }
 
 /// OS identity used to reject PID reuse during reconciliation and signalling.
@@ -88,20 +96,6 @@ pub struct ExitOutcome {
     pub signal: Option<i32>,
 }
 
-/// Source of raw output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputStream {
-    Stdout,
-    Stderr,
-}
-
-/// One bounded output chunk. Lagging consumers must recover from a snapshot/log.
-#[derive(Debug, Clone)]
-pub struct OutputChunk {
-    pub stream: OutputStream,
-    pub bytes: Bytes,
-}
-
 /// Why a Windows runner did not start a unit, before any process existed.
 /// Runners return it as the source of an [`Error::Io`], so the executor can
 /// name the case in its `spawn_failed` error without depending on the runner.
@@ -132,8 +126,6 @@ pub trait Unit: Send + Sync {
     async fn stop(&self, policy: StopPolicy) -> Result<(), Error>;
     /// Waits idempotently for exit. Implementations must support concurrent waiters.
     async fn wait(&self) -> Result<ExitOutcome, Error>;
-    /// Subscribes to future raw output without blocking process output draining.
-    fn output(&self) -> broadcast::Receiver<OutputChunk>;
     /// Returns the leader and known descendants with PID-reuse-resistant identities.
     async fn subjects(&self) -> Result<Vec<ProcessIdentity>, Error>;
 }
