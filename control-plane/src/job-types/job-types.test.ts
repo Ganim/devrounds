@@ -42,6 +42,11 @@ test('a job type file round-trips through the project', async () => {
     classify: [],
   })
   await assert.rejects(
+    putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),
+    (err: unknown) =>
+      err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === '/classify/0/log_pattern',
+  )
+  await assert.rejects(
     getJobType(ctx, 'devrounds', 'lint'),
     (err: unknown) => err instanceof DevRoundsError && err.code === 'DR201' && err.data.kind === 'job type',
   )

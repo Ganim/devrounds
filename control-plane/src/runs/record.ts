@@ -90,6 +90,20 @@ export async function markOffered(ctx: TenantCtx, runId: string): Promise<void> 
   })
 }
 
+type PatternLog = { warn(data: { jobType: string; rule: number }, message: string): void }
+
+// Every stamp already on the run; greatest() skips nulls, so a run offered a moment ago answers offered_at.
+async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
+  const { rows } = await sql<{ latest: Date | null }>`
+    select greatest(
+      r.offered_at, r.admitted_at, r.started_at, r.finished_at,
+      (select max(greatest(s.started_at, s.finished_at)) from run_steps s where s.run_id = r.id),
+      (select max(d.at) from run_delays d where d.run_id = r.id)
+    ) as latest
+    from runs r where r.id = ${runId}`.execute(trx)
+  return rows[0]?.latest ?? null
+}
+
 const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
   finished: 'finish',
   failed: 'fail',
@@ -98,25 +112,34 @@ const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
 
 /**
  * Applies one executor event of machine `machineId` to its run, in one transaction. `at` is the event's executor
- * timestamp. The executor clock may be behind the control plane's: a time earlier than offered_at (which the control
- * plane stamped) is clamped to it, and clock_skew_ms keeps the largest gap seen, so durations are never negative.
+ * timestamp. The executor clock may be behind the control plane's, or step back: a time earlier than the latest one
+ * already on the run (offered_at, which the control plane stamped, or any later stamp, step or delay) is clamped to
+ * it, and clock_skew_ms keeps the largest gap seen, so no duration is ever negative.
  * LogSegment and Orphans are not run record events: Tasks 14 and 15 handle them, and here they change nothing.
+ * `log` gets the one warning a classification that ran out of pattern budget writes.
  */
-export async function applyRunEvent(ctx: TenantCtx, machineId: string, event: RunEvent, at: Date): Promise<void> {
+export async function applyRunEvent(
+  ctx: TenantCtx,
+  machineId: string,
+  event: RunEvent,
+  at: Date,
+  log: PatternLog = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) },
+): Promise<void> {
   if (event.kind === 'LogSegment' || event.kind === 'Orphans') return
   requireRunId(event.run)
   const runId = event.run
   await run(ctx, async (trx) => {
     const row = await trx
       .selectFrom('runs')
-      .select(['state', 'offered_at', 'clock_skew_ms', 'job_type_id'])
+      .select(['state', 'clock_skew_ms', 'job_type_id'])
       .where('id', '=', runId)
       .where('machine_id', '=', machineId)
       .forNoKeyUpdate()
       .executeTakeFirst()
     if (!row) fail('DR201', { kind: 'run', key: runId })
-    const behind = row.offered_at ? row.offered_at.getTime() - at.getTime() : 0
-    const stamp = behind > 0 ? (row.offered_at as Date) : at
+    const floor = await latestStamp(trx, runId)
+    const behind = floor ? floor.getTime() - at.getTime() : 0
+    const stamp = behind > 0 ? (floor as Date) : at
     const clock_skew_ms = Math.min(INT_MAX, Math.max(row.clock_skew_ms, behind))
     const move = (transition: RunTransition): Updateable<RunsTable> => {
       const next = nextRunState(row.state, transition, runId)
@@ -157,14 +180,19 @@ export async function applyRunEvent(ctx: TenantCtx, machineId: string, event: Ru
           boot_id: event.boot_id,
         })
         return
-      case 'StepStarted':
+      case 'StepStarted': {
         requireRunning()
         await update({ clock_skew_ms })
-        await trx
+        const inserted = await trx
           .insertInto('run_steps')
           .values({ tenant_id: ctx.tenantId, run_id: runId, step: event.step, name: event.name, started_at: stamp })
-          .execute()
+          .onConflict((oc) => oc.columns(['run_id', 'step']).doNothing())
+          .returning('id')
+          .executeTakeFirst()
+        // A step starts once; a repeat is an illegal change like any other, not a raw unique violation.
+        if (!inserted) fail('DR351', { run: runId, state: row.state })
         return
+      }
       case 'StepFinished': {
         requireRunning()
         await update({ clock_skew_ms })
@@ -180,12 +208,16 @@ export async function applyRunEvent(ctx: TenantCtx, machineId: string, event: Ru
       case 'RunFinished': {
         const jobType = await trx
           .selectFrom('job_types')
-          .select('classify')
+          .select(['key', 'classify'])
           .where('id', '=', row.job_type_id)
           .executeTakeFirstOrThrow()
-        const result = classifyRun(
+        const result = await classifyRun(
           { reason: event.reason, exitCode: event.exit_code, tail: event.tail, summary: event.summary },
           jobType.classify as ClassifyRule[],
+          {
+            onPatternTimeout: (rule) =>
+              log.warn({ jobType: jobType.key, rule }, 'classify rule pattern ran out of time and counts as no match'),
+          },
         )
         await update({
           ...move(END[result.state]),

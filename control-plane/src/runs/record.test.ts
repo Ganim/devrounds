@@ -167,7 +167,8 @@ test('durations are never negative when the executor clock is behind', async () 
   const created = await start()
   await markOffered(ctx, created.id)
   const offered = await offeredAt(t, created.id)
-  await applyRunEvent(ctx, machineId, { kind: 'Admitted', run: created.id }, offered)
+  // Both executor stamps are 5 s before the control plane's offer; without the clamp admission would be -5000 ms.
+  await applyRunEvent(ctx, machineId, { kind: 'Admitted', run: created.id }, later(offered, -5 * SECOND))
   await applyRunEvent(
     ctx,
     machineId,
@@ -175,7 +176,8 @@ test('durations are never negative when the executor clock is behind', async () 
     later(offered, -5 * SECOND),
   )
   const view = await runView(ctx, created.id)
-  assert.ok((view.durations.admissionDelayMs ?? -1) >= 0)
+  assert.equal(view.durations.admissionDelayMs, 0)
+  assert.deepEqual(view.timeline.admittedAt, offered)
   assert.deepEqual(view.timeline.startedAt, offered)
   const row = await t.admin
     .selectFrom('runs')
@@ -183,6 +185,49 @@ test('durations are never negative when the executor clock is behind', async () 
     .where('id', '=', created.id)
     .executeTakeFirstOrThrow()
   assert.equal(row.clock_skew_ms, 5000)
+})
+
+test('durations are never negative when the executor clock steps back', async () => {
+  const { t, ctx, machineId, start } = await setup()
+  const created = await start()
+  await markOffered(ctx, created.id)
+  const offered = await offeredAt(t, created.id)
+  const event = (e: RunEvent, ms: number) => applyRunEvent(ctx, machineId, e, later(offered, ms))
+  await event({ kind: 'Admitted', run: created.id }, SECOND)
+  await event({ kind: 'RunStarted', run: created.id, pid: 1, start_time: '1', boot_id: 'b' }, 5 * SECOND)
+  await event({ kind: 'StepStarted', run: created.id, step: 1, name: 'build' }, 6 * SECOND)
+  await event({ kind: 'StepFinished', run: created.id, step: 1, outcome: 'finished' }, 4 * SECOND)
+  await event(finished(created.id, 0), 3 * SECOND)
+
+  const view = await runView(ctx, created.id)
+  assert.ok((view.durations.runTimeMs ?? -1) >= 0, `runTimeMs ${view.durations.runTimeMs}`)
+  for (const step of view.steps) {
+    assert.ok((step.finishedAt?.getTime() ?? 0) - step.startedAt.getTime() >= 0, `step ${step.step}`)
+  }
+  assert.deepEqual(view.timeline.finishedAt, later(offered, 6 * SECOND))
+  const row = await t.admin
+    .selectFrom('runs')
+    .select('clock_skew_ms')
+    .where('id', '=', created.id)
+    .executeTakeFirstOrThrow()
+  assert.equal(row.clock_skew_ms, 3000)
+})
+
+test('a step that starts twice answers DR351', async () => {
+  const { ctx, machineId, start } = await setup()
+  const created = await start()
+  await markOffered(ctx, created.id)
+  const at = new Date(Date.now() + SECOND)
+  await applyRunEvent(ctx, machineId, { kind: 'Admitted', run: created.id }, at)
+  await applyRunEvent(
+    ctx,
+    machineId,
+    { kind: 'RunStarted', run: created.id, pid: 1, start_time: '1', boot_id: 'b' },
+    at,
+  )
+  const step: RunEvent = { kind: 'StepStarted', run: created.id, step: 1, name: 'build' }
+  await applyRunEvent(ctx, machineId, step, at)
+  await assert.rejects(applyRunEvent(ctx, machineId, step, at), code('DR351'))
 })
 
 test('a retry is a new run of the same job with attempt 2', async () => {

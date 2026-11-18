@@ -1,3 +1,4 @@
+import { Worker } from 'node:worker_threads'
 import type { FailureClass } from '../db/schema.ts'
 
 // Classes a job type rule may name. cancelled and unclassified only come from the run itself.
@@ -26,12 +27,22 @@ const STATUS_NO_MEMORY = 3221225495
 const STATUS_COMMITMENT_LIMIT = 3221225773
 const SUMMARY_LINES = 20
 export const SUMMARY_MAX_BYTES = 4096
+export const PATTERN_BUDGET_MS = 250
+// Lines are cut before matching: backtracking cost grows with line length.
+const PATTERN_LINE_MAX_CHARS = 4096
 
-export function classifyRun(input: ClassifyInput, rules: ClassifyRule[]): Classification {
-  const failed = (failureClass: FailureClass, rule?: ClassifyRule): Classification => ({
+/** Called with the rule index when the pattern budget ran out (or the worker failed) on that rule. */
+export type ClassifyOptions = { onPatternTimeout?: (ruleIndex: number) => void }
+
+export async function classifyRun(
+  input: ClassifyInput,
+  rules: ClassifyRule[],
+  options: ClassifyOptions = {},
+): Promise<Classification> {
+  const failed = (failureClass: FailureClass, matchedLines?: string[]): Classification => ({
     state: failureClass === 'cancelled' ? 'stopped' : 'failed',
     failureClass,
-    failureSummary: summarize(input, rule?.log_pattern),
+    failureSummary: summarize(input, matchedLines),
   })
   if (input.reason === 'stopped') return failed('cancelled')
   if (input.reason === 'timeout') return failed('timeout')
@@ -39,27 +50,73 @@ export function classifyRun(input: ClassifyInput, rules: ClassifyRule[]): Classi
   if (input.reason === 'infra') return failed('infra')
   if (input.exitCode === 0) return { state: 'finished', failureClass: null, failureSummary: null }
   if (input.exitCode === STATUS_NO_MEMORY || input.exitCode === STATUS_COMMITMENT_LIMIT) return failed('memory')
-  const rule = rules.find((r) => matches(r, input))
-  return rule ? failed(rule.class, rule) : failed('unclassified')
+  const rule = await findRule(input, rules, options)
+  return rule ? failed(rule.class, rule.lines) : failed('unclassified')
 }
 
-function matches(rule: ClassifyRule, input: ClassifyInput): boolean {
-  if (rule.exit_codes && (input.exitCode === null || !rule.exit_codes.includes(input.exitCode))) return false
-  if (rule.log_pattern !== undefined) {
-    const pattern = new RegExp(rule.log_pattern)
-    if (!input.tail.some((line) => pattern.test(line))) return false
+// The first rule whose exit codes match and whose pattern (if any) matches a tail line. The patterns before the first
+// rule without one go to a single worker under one budget; when it runs out, the rule it was on and the patterns after
+// it count as not matching, and the search goes on with the first rule without a pattern.
+async function findRule(
+  input: ClassifyInput,
+  rules: ClassifyRule[],
+  options: ClassifyOptions,
+): Promise<{ class: RuleClass; lines?: string[] } | null> {
+  const candidates = rules
+    .map((rule, index) => ({ rule, index }))
+    .filter(({ rule }) => !rule.exit_codes || (input.exitCode !== null && rule.exit_codes.includes(input.exitCode)))
+  const firstPlain = candidates.findIndex(({ rule }) => rule.log_pattern === undefined)
+  const patterned = firstPlain === -1 ? candidates : candidates.slice(0, firstPlain)
+  if (patterned.length > 0) {
+    const lines = input.tail.map((line) => line.slice(0, PATTERN_LINE_MAX_CHARS))
+    const result = await matchPatterns(
+      patterned.map(({ rule }) => rule.log_pattern as string),
+      lines,
+    )
+    if (result.match) return { class: patterned[result.match.index].rule.class, lines: result.match.lines }
+    if (result.stoppedAt !== null) options.onPatternTimeout?.(patterned[result.stoppedAt].index)
   }
-  return true
+  return firstPlain === -1 ? null : { class: candidates[firstPlain].rule.class }
+}
+
+type PatternResult = { match: { index: number; lines: string[] } | null; stoppedAt: number | null }
+
+// Why a worker: a tenant-written pattern can backtrack for minutes on one line, and on the main thread that would stall
+// every tenant. terminate() interrupts the worker mid-match. The budget starts once the worker is online, so a slow
+// thread start does not eat it.
+function matchPatterns(patterns: string[], lines: string[]): Promise<PatternResult> {
+  return new Promise((resolve) => {
+    const worker = new Worker(new URL('./pattern-worker.ts', import.meta.url), {
+      workerData: { patterns, lines, limit: SUMMARY_LINES },
+    })
+    let evaluated = 0
+    let timer: NodeJS.Timeout | undefined
+    let settled = false
+    const finish = (result: PatternResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      void worker.terminate()
+      resolve(result)
+    }
+    worker.on('online', () => {
+      timer = setTimeout(() => finish({ match: null, stoppedAt: evaluated }), PATTERN_BUDGET_MS)
+    })
+    worker.on('message', ({ index, matched }: { index: number; matched: string[] }) => {
+      evaluated = index + 1
+      if (matched.length > 0) finish({ match: { index, lines: matched }, stoppedAt: null })
+      else if (evaluated === patterns.length) finish({ match: null, stoppedAt: null })
+    })
+    // A worker that dies before reporting every pattern is treated like a timeout on the pattern it was on.
+    worker.on('error', () => finish({ match: null, stoppedAt: Math.min(evaluated, patterns.length - 1) }))
+    worker.on('exit', () => finish({ match: null, stoppedAt: Math.min(evaluated, patterns.length - 1) }))
+  })
 }
 
 // The matched rule's lines first (the cause, as the job type author knows it), else the executor's summary, else the
 // end of the output. Tail lines are cut from the front so the last lines, where failures usually print, survive.
-function summarize(input: ClassifyInput, logPattern: string | undefined): string | null {
-  if (logPattern !== undefined) {
-    const pattern = new RegExp(logPattern)
-    const lines = input.tail.filter((line) => pattern.test(line)).slice(0, SUMMARY_LINES)
-    return fit(lines, 'head')
-  }
+function summarize(input: ClassifyInput, matchedLines: string[] | undefined): string | null {
+  if (matchedLines !== undefined) return fit(matchedLines, 'head')
   if (input.summary) return fit(input.summary.split('\n'), 'head')
   return fit(input.tail.slice(-SUMMARY_LINES), 'tail')
 }

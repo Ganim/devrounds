@@ -83,21 +83,21 @@ const cases: {
 ]
 
 for (const c of cases) {
-  test(c.name, () => {
-    const result = classifyRun(c.input, c.rules)
+  test(c.name, async () => {
+    const result = await classifyRun(c.input, c.rules)
     assert.equal(result.state, c.state)
     assert.equal(result.failureClass, c.failureClass)
     if (c.state === 'finished') assert.equal(result.failureSummary, null)
   })
 }
 
-test('a log pattern rule names the class and the summary is the matching line', () => {
+test('a log pattern rule names the class and the summary is the matching line', async () => {
   const tail = [
     'Scope: all 3 workspace projects',
     ' ERR_PNPM_NO_LOCKFILE  Cannot install with "frozen-lockfile"',
     'done',
   ]
-  const result = classifyRun(exited(1, tail), [{ class: 'environment', log_pattern: 'ERR_PNPM_' }])
+  const result = await classifyRun(exited(1, tail), [{ class: 'environment', log_pattern: 'ERR_PNPM_' }])
   assert.deepEqual(result, {
     state: 'failed',
     failureClass: 'environment',
@@ -105,20 +105,50 @@ test('a log pattern rule names the class and the summary is the matching line', 
   })
 })
 
-test('the summary is the last 20 lines when no pattern matched', () => {
+test('the summary is the last 20 lines when no pattern matched', async () => {
   const tail = Array.from({ length: 30 }, (_, i) => `line ${i}`)
-  const result = classifyRun(exited(7, tail), [])
+  const result = await classifyRun(exited(7, tail), [])
   assert.equal(result.failureSummary, tail.slice(10).join('\n'))
 })
 
-test('the executor summary of a spawn failure is kept', () => {
-  const result = classifyRun({ reason: 'spawn_failed', exitCode: null, tail: [], summary: 'program not found' }, [])
+test('the executor summary of a spawn failure is kept', async () => {
+  const result = await classifyRun(
+    { reason: 'spawn_failed', exitCode: null, tail: [], summary: 'program not found' },
+    [],
+  )
   assert.equal(result.failureSummary, 'program not found')
 })
 
-test('a 10 000-line tail gives a summary of at most 4096 bytes cut on a whole line', () => {
+test('a catastrophic pattern runs out of budget, counts as no match and is reported once', async () => {
+  // Under the 4096-character cap, so the trailing `!` survives and `(a+)+$` backtracks exponentially.
+  const tail = [`${'a'.repeat(4000)}!`]
+  const timedOut: number[] = []
+  const started = performance.now()
+  const result = await classifyRun(
+    exited(1, tail),
+    [
+      { class: 'check_red', exit_codes: [2] },
+      { class: 'environment', log_pattern: '(a+)+$' },
+      { class: 'infra', log_pattern: 'a' },
+    ],
+    { onPatternTimeout: (rule) => timedOut.push(rule) },
+  )
+  assert.ok(performance.now() - started < 1000, `${performance.now() - started} ms`)
+  assert.equal(result.failureClass, 'unclassified')
+  assert.deepEqual(timedOut, [1])
+})
+
+test('a pattern rule that times out falls through to the next rule without a pattern', async () => {
+  const result = await classifyRun(exited(1, [`${'a'.repeat(4000)}!`]), [
+    { class: 'environment', log_pattern: '(a+)+$' },
+    { class: 'check_red', exit_codes: [1] },
+  ])
+  assert.equal(result.failureClass, 'check_red')
+})
+
+test('a 10 000-line tail gives a summary of at most 4096 bytes cut on a whole line', async () => {
   const tail = Array.from({ length: 10_000 }, (_, i) => `${i} ${'é'.repeat(300)}`)
-  const result = classifyRun(exited(7, tail), [])
+  const result = await classifyRun(exited(7, tail), [])
   const summary = result.failureSummary ?? ''
   assert.ok(Buffer.byteLength(summary) <= SUMMARY_MAX_BYTES, `${Buffer.byteLength(summary)} bytes`)
   assert.ok(summary.length > 0)
