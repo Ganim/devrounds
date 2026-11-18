@@ -39,6 +39,8 @@ pub struct Telemetry {
 
 struct Inner {
     url: String,
+    /// `url` without `user:password@`, the only form that is logged.
+    shown_url: String,
     agent: ureq::Agent,
     in_flight: AtomicUsize,
 }
@@ -65,12 +67,25 @@ pub(crate) struct RunTrace<'a> {
 impl Telemetry {
     /// `None`, and nothing built, without an endpoint (absent or blank).
     /// `otlp_endpoint` is the collector's base URL, as
-    /// `OTEL_EXPORTER_OTLP_ENDPOINT`: `/v1/traces` is appended.
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`: `/v1/traces` is appended. Anything but
+    /// an `http://` or `https://` URL is also `None`, with one warning.
     pub fn from_config(otlp_endpoint: Option<&str>) -> Option<Telemetry> {
         let endpoint = otlp_endpoint?.trim();
         if endpoint.is_empty() {
             return None;
         }
+        let Some(rest) = after_http_scheme(endpoint) else {
+            tracing::warn!(
+                endpoint = %without_userinfo(endpoint),
+                "otlp_endpoint is not an http:// or https:// URL; telemetry stays off"
+            );
+            return None;
+        };
+        if rest.is_empty() {
+            tracing::warn!("otlp_endpoint has no host; telemetry stays off");
+            return None;
+        }
+        let url = format!("{}/v1/traces", endpoint.trim_end_matches('/'));
         let agent = ureq::Agent::config_builder()
             .tls_config(
                 TlsConfig::builder()
@@ -82,7 +97,8 @@ impl Telemetry {
             .into();
         Some(Telemetry {
             inner: Arc::new(Inner {
-                url: format!("{}/v1/traces", endpoint.trim_end_matches('/')),
+                shown_url: without_userinfo(&url),
+                url,
                 agent,
                 in_flight: AtomicUsize::new(0),
             }),
@@ -108,7 +124,7 @@ impl Telemetry {
                 .send(body);
             inner.in_flight.fetch_sub(1, Ordering::SeqCst);
             if let Err(error) = posted {
-                tracing::warn!(%run, url = %inner.url, %error, "spans not exported");
+                tracing::warn!(%run, url = %inner.shown_url, %error, "spans not exported");
             }
         });
     }
@@ -202,14 +218,40 @@ fn parse_trace_parent(value: &str) -> Option<(&str, &str)> {
             && part
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && part.bytes().any(|b| b != b'0')
     };
+    let non_zero = |part: &str| part.bytes().any(|b| b != b'0');
     let usable = parts.next().is_none()
         && version == "00"
         && hex(trace_id, 32)
+        && non_zero(trace_id)
         && hex(span_id, 16)
-        && flags.len() == 2;
+        && non_zero(span_id)
+        && hex(flags, 2);
     usable.then_some((trace_id, span_id))
+}
+
+/// What follows `http://` or `https://` (any case); `None` for other schemes.
+fn after_http_scheme(url: &str) -> Option<&str> {
+    ["http://", "https://"].iter().find_map(|scheme| {
+        url.get(..scheme.len())
+            .filter(|head| head.eq_ignore_ascii_case(scheme))
+            .map(|_| &url[scheme.len()..])
+    })
+}
+
+/// `url` with any `user:password@` before the host removed, for logs.
+fn without_userinfo(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if scheme.is_empty() {
+        format!("{host}{tail}")
+    } else {
+        format!("{scheme}://{host}{tail}")
+    }
 }
 
 /// A non-zero id, unique in practice: span ids need no secrecy, so std's
@@ -243,8 +285,21 @@ mod tests {
             "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
             "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-x",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-zz",
         ] {
             assert_eq!(parse_trace_parent(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn logged_url_has_no_userinfo() {
+        assert_eq!(
+            without_userinfo("https://user:s3cret@collector.example:4318/v1/traces"),
+            "https://collector.example:4318/v1/traces"
+        );
+        assert_eq!(
+            without_userinfo("http://127.0.0.1:4318/a@b"),
+            "http://127.0.0.1:4318/a@b"
+        );
     }
 }

@@ -60,8 +60,9 @@ function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConf
   }
   const otlpEndpoint = env.DEVROUNDS_OTLP_ENDPOINT ?? file.otlpEndpoint
   if (otlpEndpoint === undefined || otlpEndpoint === '') return { databaseUrl, port, logsRoot, logRetentionDays }
-  if (typeof otlpEndpoint !== 'string' || !URL.canParse(otlpEndpoint)) {
-    fail('DR502', { reason: 'otlpEndpoint must be a URL' })
+  const protocol = typeof otlpEndpoint === 'string' ? URL.parse(otlpEndpoint)?.protocol : undefined
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    fail('DR502', { reason: 'otlpEndpoint must be an http:// or https:// URL' })
   }
   return { databaseUrl, port, logsRoot, logRetentionDays, otlpEndpoint }
 }

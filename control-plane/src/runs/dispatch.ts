@@ -51,6 +51,8 @@ export async function recordDispatch(
   return run(ctx, async (trx) => {
     const inner = { ...ctx, trx }
     const created = await createRun(inner, i)
+    // Exported before the commit, so a rollback after this point leaves a run.dispatch span of a run that does not
+    // exist; accepted (the live machine and the job type are already checked), the trace id must go in this row.
     const traceParent = telemetry?.runDispatched({ id: created.id, jobType: i.jobTypeKey }) ?? null
     await markOffered(inner, created.id, traceParent)
     const project = await findProject(trx, i.projectKey)

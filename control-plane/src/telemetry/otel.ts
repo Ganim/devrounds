@@ -36,11 +36,13 @@ export function formatTraceParent(traceId: string, spanId: string): string {
 
 /**
  * The exporter for `endpoint`, the collector's OTLP/HTTP base URL (`/v1/traces` is appended, as with
- * OTEL_EXPORTER_OTLP_ENDPOINT); null, with nothing loaded, when there is none.
+ * OTEL_EXPORTER_OTLP_ENDPOINT); null, with nothing loaded, when there is none. `warn` gets the SDK's warnings and
+ * errors (failed exports).
  */
 export async function startTelemetry(
   endpoint: string | undefined,
   load: (module: string) => Promise<unknown> = (module) => import(module),
+  warn: (message: string) => void = (message) => process.emitWarning(message),
 ): Promise<Telemetry | null> {
   const base = endpoint?.trim()
   if (!base) return null
@@ -50,6 +52,14 @@ export async function startTelemetry(
     load('@opentelemetry/exporter-trace-otlp-http'),
     load('@opentelemetry/resources'),
   ])) as [typeof Api, typeof Sdk, typeof Exporter, typeof Resources]
+  // The SDK reports a failed export only through its diag logger, which is silent unless one is installed.
+  const toWarn = (message: string, ...args: unknown[]) =>
+    warn(['opentelemetry:', message, ...args.map(String)].join(' '))
+  const quiet = () => {}
+  api.diag.setLogger(
+    { error: toWarn, warn: toWarn, info: quiet, debug: quiet, verbose: quiet },
+    { logLevel: api.DiagLogLevel.WARN, suppressOverrideMessage: true },
+  )
   const provider = new sdk.TracerProvider({
     resource: resources.resourceFromAttributes({ 'service.name': SERVICE, 'service.version': pkg.version }),
     spanProcessors: [

@@ -185,10 +185,16 @@ async function offeredRuns(tenant: Awaited<ReturnType<typeof paired>>['tenant'],
   const runs: string[] = []
   for (const machineName of machineNames) {
     const run = await createRun(ctx, { projectKey: 'devrounds', jobTypeKey: 'check', machineName, cwd: 'C:\\w' })
-    await markOffered(ctx, run.id)
+    await markOffered(ctx, run.id, traceParentOf(run.id))
     runs.push(run.id)
   }
   return runs
+}
+
+// As if dispatched with telemetry on: the trace id is the run's uuid, the dispatch span id its first 16 hex digits.
+function traceParentOf(run: string): string {
+  const hex = run.replaceAll('-', '')
+  return `00-${hex}-${hex.slice(0, 16)}-01`
 }
 
 const delayedEvent = (seq: number, run: string) => ({
@@ -391,7 +397,8 @@ test('after HelloAck, the Offer of every run of this machine still offered is se
     run: offered,
     job: { job_type: 'check', program: 'pnpm', args: ['check'], cwd: 'C:\\w', env_allow: ['PATH'], timeout_s: 600 },
     memory_need: 536870912,
-    trace_parent: null,
+    // The same traceparent as the first Offer, rebuilt from runs.trace_id and trace_span_id.
+    trace_parent: traceParentOf(offered),
   })
   // Nothing else: an event answers its Ack next, with no Offer of the other runs in between.
   await again.send(orphans(2))

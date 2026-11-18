@@ -9,6 +9,8 @@ fn no_exporter_without_endpoint() {
     assert!(Telemetry::from_config(None).is_none());
     assert!(Telemetry::from_config(Some("")).is_none());
     assert!(Telemetry::from_config(Some("   ")).is_none());
+    assert!(Telemetry::from_config(Some("file:///C:/spans")).is_none());
+    assert!(Telemetry::from_config(Some("127.0.0.1:4318")).is_none());
     assert!(Telemetry::from_config(Some("http://127.0.0.1:4318")).is_some());
 }
 

@@ -12,8 +12,11 @@ import { startTelemetry } from './telemetry/otel.ts'
 async function serve(): Promise<void> {
   const config = await loadServerConfig()
   const db = createDb(config.databaseUrl)
-  const telemetry = await startTelemetry(config.otlpEndpoint)
+  // The app logger exists only once the server is built with the telemetry; until then SDK warnings go to stderr.
+  let warn = (message: string) => console.error(message)
+  const telemetry = await startTelemetry(config.otlpEndpoint, undefined, (message) => warn(message))
   const app = buildServer({ db, logsRoot: config.logsRoot, telemetry })
+  warn = (message) => app.log.warn(message)
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
     pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
