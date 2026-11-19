@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +13,12 @@ import { testDb } from '../test-support/db.ts'
 import { moreCommandFor, runCli } from './commands.ts'
 
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url))
+const SCRATCH = join(fileURLToPath(new URL('../../../', import.meta.url)), '.superpowers', 'tmp')
+
+async function scratch(prefix: string): Promise<string> {
+  await mkdir(SCRATCH, { recursive: true })
+  return mkdtemp(join(SCRATCH, prefix))
+}
 
 let app: ReturnType<typeof buildServer>
 let url: string
@@ -84,7 +89,7 @@ async function fakeServer(handle: (req: IncomingMessage, res: ServerResponse) =>
 
 const json = (res: ServerResponse, body: unknown) =>
   res.setHeader('content-type', 'application/json').end(JSON.stringify(body))
-const NO_CONFIG = join(tmpdir(), 'devrounds-no-such-dir', 'config.json')
+const NO_CONFIG = join(SCRATCH, 'devrounds-no-such-dir', 'config.json')
 
 test('events cut by the budget: next continues after the last event shown, more pages the same command', async (t) => {
   const events = Array.from({ length: 100 }, (_, i) => ({
@@ -122,7 +127,7 @@ test('plan import never offers more: long lists are capped samples, and --cursor
     json(res, result)
   })
   t.after(fake.close)
-  const dir = await mkdtemp(join(tmpdir(), 'devrounds-import-'))
+  const dir = await scratch('devrounds-import-')
   t.after(() => rm(dir, { recursive: true, force: true }))
   const file = join(dir, 'plan.yaml')
   await writeFile(file, 'project: {key: alpha, name: Alpha}\n')
@@ -189,7 +194,7 @@ test('login writes the config through a restricted temp file and leaves nothing 
     json(res, { project: { key: 'alpha', name: 'Alpha' }, phases: [], unphased: [] }),
   )
   t.after(fake.close)
-  const dir = await mkdtemp(join(tmpdir(), 'devrounds-login-'))
+  const dir = await scratch('devrounds-login-')
   t.after(() => rm(dir, { recursive: true, force: true }))
   const configPath = join(dir, '.devrounds', 'config.json')
   const args = ['login', '--url', fake.env.DEVROUNDS_URL, '--token', 'drt_secret', '--project', 'alpha']
@@ -330,7 +335,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
     json(res, { project: { key: 'alpha' }, phases: [], unphased: [] })
   })
   t.after(fake.close)
-  const dir = await mkdtemp(join(tmpdir(), 'devrounds-missing-'))
+  const dir = await scratch('devrounds-missing-')
   t.after(() => rm(dir, { recursive: true, force: true }))
 
   const commands = [
@@ -348,7 +353,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
 })
 
 test('a config file that is not a JSON object answers DR502', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'devrounds-config-'))
+  const dir = await scratch('devrounds-config-')
   t.after(() => rm(dir, { recursive: true, force: true }))
   const configPath = join(dir, 'config.json')
   for (const content of ['null', '[]', '"text"', '5']) {

@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -62,7 +61,9 @@ test('serve listens, and a second serve on the same port exits instead of hangin
   timeout: 2 * START_BUDGET_MS + 10_000,
 }, async (t) => {
   await testDb()
-  const logsRoot = await mkdtemp(join(tmpdir(), 'devrounds-serve-'))
+  const scratch = join(fileURLToPath(new URL('../../', import.meta.url)), '.superpowers', 'tmp')
+  await mkdir(scratch, { recursive: true })
+  const logsRoot = await mkdtemp(join(scratch, 'devrounds-serve-'))
   const port = await freePort()
   const first = serve(port, logsRoot)
   t.after(async () => {
