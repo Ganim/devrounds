@@ -125,6 +125,11 @@ export function settledRuns(settled: { retryRunId: string | null; skipped: strin
   return settled.retryRunId === null ? settled.skipped : [settled.retryRunId, ...settled.skipped]
 }
 
+/** The failure summary of a run skipped because the dependency named `dependency` (its ref, or id) ended `state`. */
+export function skippedSummary(dependency: string, state: JobState): string {
+  return `skipped: dependency ${dependency} ${state}`
+}
+
 // Sets the job's outcome; a red one (failed, stopped) skips its open dependents and returns their skipped runs.
 async function endJob(trx: Trx, jobId: string, ref: string | null, state: JobState): Promise<string[]> {
   await trx.updateTable('jobs').set({ state }).where('id', '=', jobId).execute()
@@ -148,7 +153,7 @@ async function endJob(trx: Trx, jobId: string, ref: string | null, state: JobSta
     .set({
       state: 'skipped',
       finished_at: sql<Date>`now()`,
-      failure_summary: `skipped: dependency ${ref ?? jobId} ${state}`,
+      failure_summary: skippedSummary(ref ?? jobId, state),
     })
     .where(
       'job_id',

@@ -1,9 +1,9 @@
 import { sql, type Updateable } from 'kysely'
-import type { RunState, RunsTable } from '../db/schema.ts'
+import type { JobState, RunState, RunsTable } from '../db/schema.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
-import { failJob, queueRetry, settledRuns, settleJob } from '../jobs/outcome.ts'
+import { failJob, queueRetry, settledRuns, settleJob, skippedSummary } from '../jobs/outcome.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { ensureQueue } from '../queues/service.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -68,7 +68,8 @@ export function createRun(
  * A person's retry: a new run of the same job (same job type, machine, cwd and task), attempt + 1, cause retry, and
  * the job open again. Only an ended run is retried; the job type's max_attempts bounds automatic retries only. A job
  * pinned to a revoked machine answers DR201 for the machine, as a new pin to it would (jobs/enqueue.ts): no claim
- * would ever take the run. The job's skipped dependents open again too (reopenDependents).
+ * would ever take the run. The job's skipped dependents open again too (reopenDependents), unless a dependency of the
+ * job is still red: then the new run is skipped at once, naming that dependency, and nothing reopens.
  */
 export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
   requireRunId(runId)
@@ -93,6 +94,22 @@ export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
       if (machine.revoked_at !== null) fail('DR201', { kind: 'machine', key: machine.name })
     }
     const retryId = await queueRetry(trx, ctx.tenantId, previous.job_id)
+    // Read with the job locked (queueRetry). claim_run never takes a job behind a red dependency, so the new run would
+    // wait queued for good: it is skipped at once, as settling would have, and reopens nothing.
+    const red = await redDependency(trx, previous.job_id)
+    if (red) {
+      await trx
+        .updateTable('runs')
+        .set({
+          state: 'skipped',
+          finished_at: sql<Date>`now()`,
+          failure_summary: skippedSummary(red.ref ?? red.id, red.state),
+        })
+        .where('id', '=', retryId)
+        .execute()
+      await trx.updateTable('jobs').set({ state: 'skipped' }).where('id', '=', previous.job_id).execute()
+      return loadRunView(trx, retryId)
+    }
     await reopenDependents(trx, ctx.tenantId, previous.job_id)
     await notifyScheduler(trx, ctx.tenantId)
     return loadRunView(trx, retryId)
@@ -109,23 +126,60 @@ export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
 async function reopenDependents(trx: Trx, tenantId: string, jobId: string): Promise<void> {
   let frontier = [jobId]
   while (frontier.length > 0) {
-    const { rows } = await sql<{ id: string }>`
-      select distinct j.id
+    const { rows } = await sql<{ id: string; machine_id: string | null }>`
+      select distinct j.id, j.machine_id
       from job_dependencies d
       join jobs j on j.id = d.job_id
-      left join machines m on m.id = j.machine_id
       where d.depends_on_job_id = any(${frontier}::uuid[])
         and j.state = 'skipped'
-        and m.revoked_at is null
         and not exists (
           select 1 from job_dependencies o join jobs oj on oj.id = o.depends_on_job_id
           where o.job_id = j.id and oj.state in ('failed', 'stopped', 'skipped')
         )
       order by j.id`.execute(trx)
-    frontier = rows.map((row) => row.id)
-    // queueRetry opens each job, so the next round sees it as no longer red.
-    for (const id of frontier) await queueRetry(trx, tenantId, id, sql<Date>`now()`, 'requeue')
+    frontier = []
+    for (const row of rows) {
+      if (row.machine_id !== null) {
+        // Shared, as in retryRun, so a revoke cannot commit between this check and the new run. Taken after job rows,
+        // against the machine → job order, but safely: this transaction holds no run or job of a job pinned to this
+        // machine yet (the first one it would add takes this lock first), so a revoke holding it waits on nothing here.
+        const machine = await trx
+          .selectFrom('machines')
+          .select('revoked_at')
+          .where('id', '=', row.machine_id)
+          .forShare()
+          .executeTakeFirstOrThrow()
+        if (machine.revoked_at !== null) continue
+      }
+      // queueRetry opens the job, so the next round sees it as no longer red.
+      await queueRetry(trx, tenantId, row.id, sql<Date>`now()`, 'requeue')
+      frontier.push(row.id)
+    }
   }
+}
+
+/**
+ * The dependency to name for job `jobId` being held back, or undefined when none of its dependencies is red: the
+ * nearest failed or stopped job reached through its dependencies and their skipped ones (the cause settling names,
+ * jobs/outcome.ts), else a skipped dependency itself.
+ */
+async function redDependency(
+  trx: Trx,
+  jobId: string,
+): Promise<{ id: string; ref: string | null; state: JobState } | undefined> {
+  const { rows } = await sql<{ id: string; ref: string | null; state: JobState }>`
+    with recursive up (id, depth) as (
+      select d.depends_on_job_id, 1 from job_dependencies d where d.job_id = ${jobId}
+      union
+      select d.depends_on_job_id, u.depth + 1
+      from up u join jobs uj on uj.id = u.id join job_dependencies d on d.job_id = u.id
+      where uj.state = 'skipped'
+    )
+    select j.id, j.ref, j.state from up join jobs j on j.id = up.id
+    where j.state in ('failed', 'stopped', 'skipped')
+    order by j.state = 'skipped', up.depth, j.ref, j.id
+    limit 1`.execute(trx)
+  return rows[0]
 }
 
 /**
@@ -407,6 +461,23 @@ export async function failRevokedRuns(
     from target t
     where r.id = t.id
     returning r.id, r.tenant_id, r.job_id, t.was, t.pinned`.execute(trx)
+  // Its own statement, so its own snapshot: a transaction the one above waited on (an executor event or the expiry
+  // holding a run of a pinned job) may have committed a retry or requeue still pinned here, which that statement's
+  // snapshot could not see. Nothing can add another after this: every writer of a pinned run takes the machine row or
+  // a run row this transaction now holds. Before any job row is touched, as above.
+  const late = await trx
+    .updateTable('runs')
+    .set({
+      state: 'stopped',
+      finished_at: sql<Date>`now()`,
+      failure_class: 'infra',
+      failure_summary: `${revoked}; the job is pinned to it`,
+    })
+    .where('state', '=', 'queued')
+    .where('job_id', 'in', trx.selectFrom('jobs').select('id').where('machine_id', '=', machine.id))
+    .returning(['id', 'tenant_id', 'job_id'])
+    .execute()
+  rows.push(...late.map((row) => ({ ...row, was: 'queued' as const, pinned: true })))
   const changed = new Set<string>()
   for (const row of rows) {
     changed.add(row.id)

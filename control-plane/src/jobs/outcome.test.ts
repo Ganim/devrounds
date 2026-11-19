@@ -15,6 +15,7 @@ import { claimRun } from '../scheduler/claim.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { testDb } from '../test-support/db.ts'
 import { enqueueRun, submitBatch } from './enqueue.ts'
+import { queueRetry } from './outcome.ts'
 
 const projectKey = 'devrounds'
 const PLENTY = 64n * 1024n * 1024n * 1024n
@@ -361,4 +362,81 @@ test('a retry of a red dependency reopens its skipped dependents, which wait for
   await s.end(retry.id)
   const [, b] = await s.runsOfJobOf(runOf(view, 'b'))
   assert.equal(await s.claim(), b.id)
+})
+
+// An executor event holding run R of a pinned job when the revoke starts: the revoke waits on R, the event commits R
+// ended with a retry R2 still pinned to the machine, and the revoke must still end R2 (a later snapshot sees it).
+test('revoke ends a pinned retry committed by a transaction it waited on', async () => {
+  const s = await setup({ max_attempts: 3, backoff_s: 0, on: ['infra'] })
+  const r = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\w' })).id
+  assert.equal(await s.claim(), r)
+  await s.start(r)
+
+  let release: () => void = () => {}
+  const released = new Promise<void>((resolve) => (release = resolve))
+  let locked: () => void = () => {}
+  const isLocked = new Promise<void>((resolve) => (locked = resolve))
+  // Transaction A: what applyRunEvent → settleJob does for a retryable failure, held open until the revoke waits.
+  const holder = withTenant(s.t.db, s.ctx.tenantId, async (trx) => {
+    await trx.selectFrom('runs').select('id').where('id', '=', r).forNoKeyUpdate().execute()
+    locked()
+    await released
+    await trx
+      .updateTable('runs')
+      .set({ state: 'failed', finished_at: sql<Date>`now()`, failure_class: 'infra' })
+      .where('id', '=', r)
+      .execute()
+    const job = await trx.selectFrom('runs').select('job_id').where('id', '=', r).executeTakeFirstOrThrow()
+    await queueRetry(trx, s.ctx.tenantId, job.job_id)
+  })
+  await isLocked
+  const revoking = revokeMachine(s.ctx, 'build-01')
+  // The revoke is waiting on R's row lock.
+  for (let i = 0; ; i++) {
+    const { rows } = await sql<{ n: number }>`
+      select count(*)::int as n from pg_stat_activity
+      where wait_event_type = 'Lock' and query like '%for no key update of r%'`.execute(s.t.admin)
+    if (rows[0].n > 0) break
+    assert.ok(i < 200, 'the revoke never waited on the run')
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  release()
+  await holder
+  await revoking
+
+  assert.deepEqual(
+    (await s.runsOfJobOf(r)).map((run) => [run.attempt, run.cause, run.state]),
+    [
+      [1, 'first', 'failed'],
+      [2, 'retry', 'stopped'],
+    ],
+  )
+  assert.equal(await s.jobState(r), 'failed')
+})
+
+// claim_run never takes a job behind a red dependency, so such a retry would wait queued for good.
+test('a retry of a skipped job behind a red dependency is skipped at once, naming the failed dependency', async () => {
+  const s = await setup()
+  const view = await s.batch([{ ref: 'a' }, { ref: 'b', depends_on: ['a'] }, { ref: 'c', depends_on: ['b'] }])
+  assert.equal(await s.claim(), runOf(view, 'a'))
+  await s.end(runOf(view, 'a'), { exit: 1 })
+
+  for (const ref of ['b', 'c']) {
+    const retried = await retryRun(s.ctx, runOf(view, ref))
+    assert.deepEqual(
+      [retried.attempt, retried.cause, retried.state, retried.outcome.failureSummary],
+      [2, 'retry', 'skipped', 'skipped: dependency a failed'],
+      ref,
+    )
+    assert.equal(await s.jobState(runOf(view, ref)), 'skipped', ref)
+  }
+  // b's retry reopened nothing: c has its first run and the retry above, both skipped.
+  assert.deepEqual(
+    (await s.runsOfJobOf(runOf(view, 'c'))).map((run) => [run.attempt, run.state]),
+    [
+      [1, 'skipped'],
+      [2, 'skipped'],
+    ],
+  )
+  assert.equal(await s.claim(), null)
 })
