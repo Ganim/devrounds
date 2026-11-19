@@ -117,9 +117,9 @@ async function skipEvent(ctx: TenantCtx, rejected: Rejected, log: FastifyBaseLog
 
 /**
  * Applies one new event and moves machines.last_seq to its seq in one transaction, so after a crash the executor
- * resends exactly what was not applied. An event applyRunEvent rejects with a DevRounds code (DR351, DR201, an input
- * code) rolls back and is skipped (skipEvent); any other failure throws and closes the session 1011, so the executor
- * resends it later. Unknown event kinds advance last_seq and change nothing else. The Stops an Orphans event answers
+ * resends exactly what was not applied. An event applyRunEvent rejects with a DevRounds code below DR5xx (DR351,
+ * DR201, an input code) rolls back and is skipped (skipEvent); any other failure, DR5xx included, throws and closes
+ * the session 1011, so the executor resends it later. Unknown event kinds advance last_seq and change nothing else. The Stops an Orphans event answers
  * go out through `reply` after the commit and before the caller's Ack: the executor reads an Ack of its Orphans event
  * with no Stop before it as the let_finish policy.
  */
@@ -157,7 +157,8 @@ async function applyEvent(
       await reportFinished(ctx, telemetry, message.event.run, log)
     }
   } catch (err) {
-    if (!(err instanceof DevRoundsError)) throw err
+    // A DR5xx is this side's fault (DR501 wraps a database error), not the event's: a replay can succeed.
+    if (!(err instanceof DevRoundsError) || err.code.startsWith('DR5')) throw err
     const run = 'run' in message.event ? message.event.run : undefined
     await skipEvent(ctx, { code: err.code, machineId, seq: message.seq, run }, log)
   }

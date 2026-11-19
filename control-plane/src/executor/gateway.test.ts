@@ -4,9 +4,11 @@ import { after, before, test } from 'node:test'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { createDb } from '../db/connection.ts'
+import { DevRoundsError } from '../errors/error.ts'
 import { putJobType } from '../job-types/service.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import { createProject } from '../planning/service.ts'
+import { runEvents } from '../runs/dispatch.ts'
 import { createRun, markOffered } from '../runs/record.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { FEATURES } from './protocol.ts'
@@ -330,6 +332,25 @@ test('an event for a run of another machine (DR201) is logged and acked, and the
   assert.equal(await delayCount(other), 0)
   assert.equal(await delayCount(own), 1)
   assert.equal(await lastSeq(machine.machineId), 2)
+})
+
+// A DR5xx is a fault of this side (DR501 wraps a database error): replaying can succeed, so it must not be skipped.
+test('an event whose apply fails with a DR5xx closes 1011 instead of being acked', async () => {
+  const { tenant, machine } = await paired()
+  const [run] = await offeredRuns(tenant, 'build-01')
+  const session = await helloAcked(machine.token)
+  assert.equal(((await session.next()) as { type: string }).type, 'Offer')
+  const failing = (changed: string) => {
+    if (changed === run) throw new DevRoundsError('DR501', { cause: 'injected' })
+  }
+  runEvents.on('changed', failing)
+  try {
+    await session.send(delayedEvent(1, run))
+    const first = await Promise.race([session.next(), session.closed])
+    assert.deepEqual(first, { code: 1011, reason: 'DR501 {}' })
+  } finally {
+    runEvents.off('changed', failing)
+  }
 })
 
 test('a malformed event keeps its place in the sequence', async () => {
