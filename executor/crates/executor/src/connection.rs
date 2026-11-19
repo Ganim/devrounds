@@ -288,7 +288,8 @@ impl InFlight {
 }
 
 /// Sends the outbox frames after `sent`, in seq order, moving `sent` along,
-/// one page of at most [`RESEND_PAGE_BYTES`] at a time, until the outbox is
+/// one page of at most [`RESEND_PAGE_BYTES`] (and no more than the window has
+/// room for) at a time, until the outbox is
 /// sent or [`SEND_WINDOW_BYTES`] are in flight; an `Ack` calls it again.
 /// False when the socket failed.
 async fn send_pending<S>(
@@ -301,7 +302,18 @@ where
     S: Sink<Message> + Unpin,
 {
     loop {
-        let page = store.pending_page(*sent, RESEND_PAGE_BYTES).await?;
+        // While draining a backlog the window is full and each Ack frees room
+        // for a frame or two; a page sized past that room would be read from
+        // SQLite and thrown away on every Ack.
+        let budget = if in_flight.frames.is_empty() {
+            RESEND_PAGE_BYTES
+        } else {
+            match SEND_WINDOW_BYTES.saturating_sub(in_flight.bytes) {
+                0 => return Ok(true),
+                room => room.min(RESEND_PAGE_BYTES),
+            }
+        };
+        let page = store.pending_page(*sent, budget).await?;
         if page.is_empty() {
             return Ok(true);
         }
