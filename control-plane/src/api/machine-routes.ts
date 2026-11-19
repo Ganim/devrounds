@@ -5,6 +5,7 @@ import type { Database } from '../db/schema.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import { createPairingCode, MACHINE_NAME } from '../machines/pairing.ts'
 import { closeRevoked, listMachines, revokeMachine } from '../machines/service.ts'
+import { runEvents } from '../runs/dispatch.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -38,14 +39,17 @@ export const machineRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; se
     '/:name/revoke',
     { schema: { headers: Headers, params: Type.Object({ name: Type.String({ minLength: 1, maxLength: 200 }) }) } },
     async (request, reply) => {
-      let revoked: string | undefined
+      let revoked: { machineId: string; failedRuns: string[] } | undefined
       const sent = await mutateIdempotent(db, request, reply, async (ctx) => {
-        const { name, machineId } = await revokeMachine(ctx, request.params.name)
-        revoked = machineId
+        const { name, machineId, failedRuns } = await revokeMachine(ctx, request.params.name)
+        revoked = { machineId, failedRuns }
         return { name }
       })
       // mutateIdempotent has committed by now; a replayed key revokes nothing and closes nothing.
-      if (revoked) closeRevoked(sessions, revoked)
+      if (revoked) {
+        closeRevoked(sessions, revoked.machineId)
+        for (const run of revoked.failedRuns) runEvents.emit('changed', run)
+      }
       return sent
     },
   )

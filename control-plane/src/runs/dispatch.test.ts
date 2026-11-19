@@ -131,6 +131,11 @@ const finished = (run: string) => ({
   summary: null,
 })
 
+async function until(condition: () => boolean) {
+  for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.ok(condition(), 'condition not met within 2 s')
+}
+
 // Admitted and started, with one finished step.
 async function running(exec: Awaited<ReturnType<typeof executor>>, run: string) {
   await exec.event({ kind: 'Admitted', run })
@@ -274,6 +279,47 @@ test('run routes stay within their project, stop answers DR350 when the Stop can
     sessions.send = send
   }
   exec.close()
+})
+
+// A revoked machine's executor never reports again, so its runs that have not ended would stay open forever.
+test('revoking a machine fails its runs that have not ended with class infra, and leaves ended ones', async () => {
+  const { ctx, machine, token, dispatch } = await setup()
+  const exec = await executor(machine.token)
+  const [offered, started, done] = [await dispatch(), await dispatch(), await dispatch()]
+  for (let i = 0; i < 3; i++) assert.equal((await exec.next()).type, 'Offer')
+  await running(exec, started.id)
+  await running(exec, done.id)
+  await exec.event(finished(done.id))
+  const res = await fetch(`http://${host}/api/machines/build-01/revoke`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.status, 200, await res.text())
+  for (const id of [offered.id, started.id]) {
+    const view = await runView(ctx, id)
+    assert.deepEqual([view.state, view.outcome.failureClass], ['failed', 'infra'], id)
+    assert.match(view.outcome.failureSummary ?? '', /machine build-01 was revoked/)
+    assert.ok(view.timeline.finishedAt, id)
+  }
+  assert.equal((await runView(ctx, done.id)).state, 'finished')
+  exec.close()
+})
+
+test('stop of a run on a revoked machine fails it; on an offline machine it answers DR350', async () => {
+  const { ctx, machine, dispatch } = await setup()
+  const exec = await executor(machine.token)
+  const offered = await dispatch()
+  assert.equal((await exec.next()).type, 'Offer')
+  exec.close()
+  await until(() => !sessions.get(machine.machineId))
+  await assert.rejects(stopRun(ctx, sessions, offered.id), code('DR350'))
+  assert.equal((await runView(ctx, offered.id)).state, 'offered')
+
+  // Revoked before revoking failed the machine's runs (or racing it): stop is the way out.
+  await t.admin.updateTable('machines').set({ revoked_at: new Date() }).where('id', '=', machine.machineId).execute()
+  const stopped = await stopRun(ctx, sessions, offered.id)
+  assert.deepEqual([stopped.state, stopped.outcome.failureClass], ['failed', 'infra'])
+  assert.match(stopped.outcome.failureSummary ?? '', /machine build-01 was revoked/)
 })
 
 test('a client that leaves GET /runs/:id?wait ends the wait and its listener', async () => {

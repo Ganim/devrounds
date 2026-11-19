@@ -3,6 +3,7 @@ import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { MachineReport } from '../executor/protocol.ts'
 import { type Ctx, run, type TenantCtx } from '../planning/resolve.ts'
+import { failRevokedRuns } from '../runs/record.ts'
 import { requireHuman } from './pairing.ts'
 
 // Close code for a session whose machine token stopped being valid; the executor then asks for a new pairing.
@@ -54,12 +55,17 @@ export function listMachines(ctx: TenantCtx): Promise<MachineView[]> {
 }
 
 /**
- * Revokes the live machine `name` and returns its id. Its session is not closed here: the caller closes it with
- * closeRevoked once the transaction has committed, because 4401 makes the executor stop for good and a rolled-back
- * revoke would leave it stopped with a valid token. A session that starts before the commit still ends, because
- * recordHello's update waits on this row lock and then finds the machine revoked.
+ * Revokes the live machine `name` and returns its id, with the runs it had not ended, now failed with class infra
+ * in the same transaction: a revoked executor never reports again, so they would stay offered or running for good.
+ * Its session is not closed here: the caller closes it with closeRevoked once the transaction has committed, because
+ * 4401 makes the executor stop for good and a rolled-back revoke would leave it stopped with a valid token. A session
+ * that starts before the commit still ends, because recordHello's update waits on this row lock and then finds the
+ * machine revoked.
  */
-export async function revokeMachine(ctx: Ctx, name: string): Promise<{ name: string; machineId: string }> {
+export async function revokeMachine(
+  ctx: Ctx,
+  name: string,
+): Promise<{ name: string; machineId: string; failedRuns: string[] }> {
   requireHuman(ctx, 'revoke a machine')
   return run(ctx, async (trx) => {
     const row = await trx
@@ -70,7 +76,7 @@ export async function revokeMachine(ctx: Ctx, name: string): Promise<{ name: str
       .returning('id')
       .executeTakeFirst()
     if (!row) fail('DR201', { kind: 'machine', key: name })
-    return { name, machineId: row.id }
+    return { name, machineId: row.id, failedRuns: await failRevokedRuns(trx, { id: row.id, name }) }
   })
 }
 

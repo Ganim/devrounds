@@ -289,6 +289,32 @@ export async function applyRunEvent(
   })
 }
 
+/**
+ * Fails, class infra, every run of the revoked machine `machineId` that has not ended (offered, admitted or running),
+ * or only `runId` with it, inside `trx`; returns the ids failed. A revoked executor never reports again, so these runs
+ * could never end otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative.
+ */
+export async function failRevokedRuns(
+  trx: Trx,
+  machine: { id: string; name: string },
+  runId?: string,
+): Promise<string[]> {
+  const rows = await trx
+    .updateTable('runs')
+    .set({
+      state: 'failed',
+      finished_at: sql<Date>`greatest(now(), offered_at, admitted_at, started_at)`,
+      failure_class: 'infra',
+      failure_summary: `machine ${machine.name} was revoked; the run cannot report its end`,
+    })
+    .where('machine_id', '=', machine.id)
+    .where('state', 'in', ['offered', 'admitted', 'running'])
+    .$if(runId !== undefined, (query) => query.where('id', '=', runId as string))
+    .returning('id')
+    .execute()
+  return rows.map((row) => row.id)
+}
+
 type OrphansEvent = Extract<RunEvent, { kind: 'Orphans' }>
 type StopMessage = Extract<ControlPlaneMessage, { type: 'Stop' }>
 type OrphanLog = { warn(data: { code: string; machineId: string; run: string }, message: string): void }

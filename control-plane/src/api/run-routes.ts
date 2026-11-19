@@ -7,7 +7,7 @@ import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
-import { prepareStop, recordDispatch, waitForRun } from '../runs/dispatch.ts'
+import { prepareStop, recordDispatch, runEvents, waitForRun } from '../runs/dispatch.ts'
 import { readRunLog } from '../runs/log-store.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { mutateIdempotent } from './idempotency.ts'
@@ -68,7 +68,7 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
         send = { machineId, message: offer }
         return view
       })
-      // A session lost since the check leaves the run offered; the executor's reconnect does not replay Offers.
+      // A session lost since the check leaves the run offered until the next HelloAck, which sends pendingOffers again.
       if (send) sessions.send(send.machineId, send.message)
       return answer
     },
@@ -117,14 +117,15 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
   )
 
   app.post('/runs/:id/stop', { schema: { params: RunParams, headers: Headers } }, async (request, reply) => {
-    let target: { machineId: string; machine: string } | undefined
+    let target: { machineId: string; machine: string; ended: boolean } | undefined
     const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
-      const { view, machineId } = await prepareStop(ctx, sessions, request.params.id, request.params.key)
-      target = { machineId, machine: view.machine }
+      const { view, machineId, ended } = await prepareStop(ctx, sessions, request.params.id, request.params.key)
+      target = { machineId, machine: view.machine, ended }
       return view
     })
+    if (target?.ended) runEvents.emit('changed', request.params.id)
     // Same answer as stopRun: a session lost since the check is DR350, not a stop that silently went nowhere.
-    if (target && !sessions.send(target.machineId, { type: 'Stop', run: request.params.id, reason: 'cancel' })) {
+    else if (target && !sessions.send(target.machineId, { type: 'Stop', run: request.params.id, reason: 'cancel' })) {
       fail('DR350', { machine: target.machine })
     }
     return answer

@@ -8,7 +8,7 @@ import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { learnedNeed } from './learned-need.ts'
-import { createRun, markOffered, runTraceParent } from './record.ts'
+import { createRun, failRevokedRuns, markOffered, runTraceParent } from './record.ts'
 import { TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId, runView } from './view.ts'
 
@@ -140,31 +140,53 @@ export async function dispatchRun(
   return view
 }
 
-/** Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. */
+/**
+ * Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. On a
+ * revoked machine, whose executor never reports again, the run fails with class infra here instead (`ended`), and no
+ * Stop is to be sent.
+ */
 export async function prepareStop(
   ctx: TenantCtx,
   sessions: Sessions,
   runId: string,
   projectKey?: string,
-): Promise<{ view: RunView; machineId: string }> {
+): Promise<{ view: RunView; machineId: string; ended: boolean }> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
     const view = await loadRunView(trx, runId, projectKey)
     if (TERMINAL.includes(view.state)) fail('DR351', { run: runId, state: view.state })
-    const row = await trx.selectFrom('runs').select('machine_id').where('id', '=', runId).executeTakeFirstOrThrow()
+    const row = await trx
+      .selectFrom('runs')
+      .innerJoin('machines', 'machines.id', 'runs.machine_id')
+      .select(['runs.machine_id', 'machines.revoked_at'])
+      .where('runs.id', '=', runId)
+      .executeTakeFirstOrThrow()
+    if (row.revoked_at !== null) {
+      const failed = await failRevokedRuns(trx, { id: row.machine_id, name: view.machine }, runId)
+      // Ended meanwhile (an event applied since the read): its state is the answer, as for any ended run.
+      if (failed.length === 0) fail('DR351', { run: runId, state: (await loadRunView(trx, runId)).state })
+      return { view: await loadRunView(trx, runId), machineId: row.machine_id, ended: true }
+    }
     if (!sessions.get(row.machine_id)) fail('DR350', { machine: view.machine })
-    return { view, machineId: row.machine_id }
+    return { view, machineId: row.machine_id, ended: false }
   })
 }
 
-/** Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350. */
+/**
+ * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350; on a
+ * revoked machine the run fails at once (see prepareStop).
+ */
 export async function stopRun(
   ctx: TenantCtx,
   sessions: Sessions,
   runId: string,
   projectKey?: string,
 ): Promise<RunView> {
-  const { view, machineId } = await prepareStop(ctx, sessions, runId, projectKey)
+  const { view, machineId, ended } = await prepareStop(ctx, sessions, runId, projectKey)
+  if (ended) {
+    runEvents.emit('changed', runId)
+    return view
+  }
   if (!sessions.send(machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {
     fail('DR350', { machine: view.machine })
   }
