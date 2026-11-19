@@ -1,7 +1,7 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
-// 0009_runs_trace_span_id.ts and 0010_queues.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
+// 0009_runs_trace_span_id.ts, 0010_queues.ts and 0011_claim_run.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -254,6 +254,9 @@ export interface RunsTable {
   memory_need: NullableInt8
   cause: Generated<RunCause>
   offered_at: NullableTimestamp
+  offer_expires_at: NullableTimestamp
+  offer_accepted_at: NullableTimestamp
+  withdrawn_at: NullableTimestamp
   admitted_at: NullableTimestamp
   started_at: NullableTimestamp
   finished_at: NullableTimestamp
@@ -275,6 +278,16 @@ export interface RunsTable {
   clock_skew_ms: Generated<number>
   trace_id: string | null
   trace_span_id: string | null
+}
+
+export interface LearnedNeedsTable {
+  tenant_id: string
+  project_id: string
+  job_type_id: string
+  machine_id: string
+  need_bytes: Int8
+  samples: number
+  updated_at: Timestamp
 }
 
 export interface RunStepsTable {
@@ -335,6 +348,7 @@ export interface Database {
   job_batches: JobBatchesTable
   job_dependencies: JobDependenciesTable
   runs: RunsTable
+  learned_needs: LearnedNeedsTable
   run_steps: RunStepsTable
   run_delays: RunDelaysTable
   log_segments: LogSegmentsTable

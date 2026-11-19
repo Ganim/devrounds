@@ -8,6 +8,7 @@ import { ensureQueue } from '../queues/service.ts'
 import { formatTraceParent, parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
 import { int4, int8 } from './int-columns.ts'
+import { updateLearnedNeed } from './learned-need.ts'
 import { nextRunState, type RunTransition, TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId } from './view.ts'
 
@@ -153,7 +154,7 @@ async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
 async function lockRun(trx: Trx, machineId: string, runId: string) {
   const row = await trx
     .selectFrom('runs')
-    .select(['state', 'clock_skew_ms', 'job_type_id', 'orphan_action'])
+    .select(['state', 'clock_skew_ms', 'project_id', 'job_type_id', 'orphan_action'])
     .where('id', '=', runId)
     .where('machine_id', '=', machineId)
     .forNoKeyUpdate()
@@ -294,6 +295,8 @@ export async function applyRunEvent(
           swept_processes: int4(event.swept),
           visible_windows: int4(event.visible_windows),
         })
+        // Same transaction as the peak, so the next claim already places by it.
+        await updateLearnedNeed(trx, row.project_id, row.job_type_id, machineId)
         return
       }
     }
