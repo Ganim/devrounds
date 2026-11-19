@@ -1,9 +1,9 @@
 import { sql, type Updateable } from 'kysely'
-import type { RunsTable } from '../db/schema.ts'
+import type { RunState, RunsTable } from '../db/schema.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
-import { queueRetry, settledRuns, settleJob } from '../jobs/outcome.ts'
+import { failJob, queueRetry, settledRuns, settleJob } from '../jobs/outcome.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { ensureQueue } from '../queues/service.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -315,58 +315,59 @@ export async function applyRunEvent(
 }
 
 /**
- * Fails, class infra, every run of the revoked machine `machineId` that has not ended (offered, admitted or running),
- * or only `runId` with it, inside `trx`. A revoked executor never reports again, so these runs could never end
- * otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative. Like any run end, it
- * settles each run's job (jobs/outcome.ts) and wakes the scheduler at the commit.
+ * Ends every run of the revoked machine `machine` that has not ended (offered, admitted or running), or only `runId`
+ * with it, and every queued run of a job pinned to it, inside `trx`. A revoked executor never reports again and no
+ * claim takes a run pinned to it, so these runs could never end otherwise. finished_at is no earlier than any stamp on
+ * the run, so no duration is negative; the class is always infra.
  *
- * The queued runs of jobs pinned to the machine fail too, with the same class: no claim can take them. That includes
- * the retries settling queues for those jobs (a retry keeps the pin), so it repeats until none is left; max_attempts
- * bounds it. Returns every run changed: failed, retried and skipped, for the caller to wake their waiters.
+ * - running: failed, and its job settled as for any failure (jobs/outcome.ts): it ran, so it is an attempt.
+ * - offered or admitted: it never started, so it is handled like an expired offer (scheduler/expiry.ts): stopped,
+ *   withdrawn like any withdrawn offer, and its job requeued, cause requeue, which never counts toward max_attempts.
+ * - queued (pinned): stopped.
+ * A job pinned to the machine is never retried or requeued, as every new run would be pinned there too: it fails once
+ * (failJob) and its dependents are skipped. Returns every run changed (ended, requeued, retried and skipped) for the
+ * caller to wake their waiters, and wakes the scheduler at the commit.
  */
 export async function failRevokedRuns(
   trx: Trx,
   machine: { id: string; name: string },
   runId?: string,
 ): Promise<string[]> {
-  const rows = await trx
-    .updateTable('runs')
-    .set({
-      state: 'failed',
-      finished_at: sql<Date>`greatest(now(), offered_at, admitted_at, started_at)`,
-      failure_class: 'infra',
-      failure_summary: `machine ${machine.name} was revoked; the run cannot report its end`,
-    })
-    .where('machine_id', '=', machine.id)
-    .where('state', 'in', ['offered', 'admitted', 'running'])
-    .$if(runId !== undefined, (query) => query.where('id', '=', runId as string))
-    .returning(['id', 'tenant_id'])
-    .execute()
+  const revoked = `machine ${machine.name} was revoked`
+  // One statement locks every run row before any job row is touched below (lock order run → job).
+  const { rows } = await sql<{ id: string; tenant_id: string; job_id: string; was: RunState; pinned: boolean }>`
+    with target as (
+      select r.id, r.state as was, j.machine_id is not null as pinned
+      from runs r join jobs j on j.id = r.job_id
+      where (r.machine_id = ${machine.id} and r.state in ('offered', 'admitted', 'running')
+          ${runId === undefined ? sql`` : sql`and r.id = ${runId}`})
+        or (r.state = 'queued' and j.machine_id = ${machine.id})
+      for no key update of r
+    )
+    update runs r set
+      state = case when t.was = 'running' then 'failed' else 'stopped' end,
+      finished_at = greatest(now(), r.offered_at, r.admitted_at, r.started_at),
+      failure_class = 'infra',
+      failure_summary = case
+        when t.was = 'running' then ${`${revoked}; the run cannot report its end`}
+        when t.pinned then ${`${revoked}; the job is pinned to it`}
+        else ${`${revoked} before the run started; requeued`}
+      end,
+      withdrawn_at = case when t.was in ('offered', 'admitted') then now() else r.withdrawn_at end
+    from target t
+    where r.id = t.id
+    returning r.id, r.tenant_id, r.job_id, t.was, t.pinned`.execute(trx)
   const changed = new Set<string>()
-  const settle = async (failed: { id: string; tenant_id: string }[]) => {
-    for (const row of failed) {
-      changed.add(row.id)
-      for (const other of settledRuns(await settleJob(trx, row.tenant_id, row.id))) changed.add(other)
-    }
+  for (const row of rows) {
+    changed.add(row.id)
+    const others = row.pinned
+      ? await failJob(trx, row.job_id)
+      : row.was === 'running'
+        ? settledRuns(await settleJob(trx, row.tenant_id, row.id))
+        : [await queueRetry(trx, row.tenant_id, row.job_id, sql<Date>`now()`, 'requeue')]
+    for (const other of others) changed.add(other)
   }
-  await settle(rows)
-  for (;;) {
-    const pinned = await trx
-      .updateTable('runs')
-      .set({
-        state: 'failed',
-        finished_at: sql<Date>`now()`,
-        failure_class: 'infra',
-        failure_summary: `machine ${machine.name} was revoked; the job is pinned to it`,
-      })
-      .where('state', '=', 'queued')
-      .where('job_id', 'in', trx.selectFrom('jobs').select('id').where('machine_id', '=', machine.id))
-      .returning(['id', 'tenant_id'])
-      .execute()
-    if (pinned.length === 0) break
-    rows.push(...pinned)
-    await settle(pinned)
-  }
+  // A machine belongs to one tenant, and every row above is one of its runs or of a job pinned to it.
   if (rows.length > 0) await notifyScheduler(trx, rows[0].tenant_id)
   return [...changed]
 }

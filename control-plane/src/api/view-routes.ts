@@ -133,6 +133,9 @@ export function listJobs(
             .selectFrom('runs as r')
             .select(['r.id', 'r.state', 'r.failure_class'])
             .whereRef('r.job_id', '=', 'j.id')
+            // By attempt, unique per job: runs queued in one transaction share queued_at (now()), so it alone, with
+            // the random uuid as tie-break, could pick an older run (as the batch view does, jobs/enqueue.ts).
+            .orderBy('r.attempt', 'desc')
             .orderBy('r.queued_at', 'desc')
             .orderBy('r.id', 'desc')
             .limit(1)

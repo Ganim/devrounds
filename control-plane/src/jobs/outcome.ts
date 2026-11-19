@@ -110,6 +110,15 @@ export async function settleJob(
   }
 }
 
+/**
+ * Fails job `jobId` without its retry policy and skips its open dependents; returns the skipped runs. For a job pinned
+ * to a revoked machine (runs/record.ts failRevokedRuns): every retry would be pinned there too, and never claimed.
+ */
+export async function failJob(trx: Trx, jobId: string): Promise<string[]> {
+  const { ref } = await trx.selectFrom('jobs').select('ref').where('id', '=', jobId).executeTakeFirstOrThrow()
+  return endJob(trx, jobId, ref, 'failed')
+}
+
 /** The runs settleJob changed besides the one that ended. */
 export function settledRuns(settled: { retryRunId: string | null; skipped: string[] }): string[] {
   return settled.retryRunId === null ? settled.skipped : [settled.retryRunId, ...settled.skipped]

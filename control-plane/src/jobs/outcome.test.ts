@@ -6,6 +6,7 @@ import { Sessions } from '../executor/gateway.ts'
 import type { RunEvent } from '../executor/protocol.ts'
 import type { JobTypeFile } from '../job-types/file.ts'
 import { putJobType } from '../job-types/service.ts'
+import { revokeMachine } from '../machines/service.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { stopRun, waitForRun } from '../runs/dispatch.ts'
@@ -251,4 +252,69 @@ test('an orphaned run fails its job without a retry', async () => {
     ['orphaned'],
   )
   assert.equal(await s.jobState(first), 'failed')
+})
+
+// An offer or admission that never started is the machine's loss, not the job's: like an expired offer, another
+// machine may take the job. A job pinned to the revoked machine has nowhere else to go, so it fails once.
+test('revoke requeues an unpinned offered run and fails a pinned one once, neither counting as an attempt', async () => {
+  const s = await setup({ max_attempts: 3, backoff_s: 0, on: ['infra'] })
+  const free = await s.enqueue()
+  assert.equal(await s.claim(), free)
+  const pinnedView = await submitBatch(s.ctx, projectKey, {
+    jobs: [
+      { ref: 'p', job_type: 'check', cwd: 'C:\\work', machine: 'build-01' },
+      { ref: 'after-p', job_type: 'check', cwd: 'C:\\work', depends_on: ['p'] },
+    ],
+  })
+  const pinned = runOf(pinnedView, 'p')
+  assert.equal(await s.claim(), pinned)
+  await revokeMachine(s.ctx, 'build-01')
+
+  const freeRuns = await s.runsOfJobOf(free)
+  assert.deepEqual(
+    freeRuns.map((r) => [r.attempt, r.cause, r.state]),
+    [
+      [1, 'first', 'stopped'],
+      [2, 'requeue', 'queued'],
+    ],
+  )
+  assert.equal(await s.jobState(free), 'open')
+  const withdrawn = await s.t.admin
+    .selectFrom('runs')
+    .select(['failure_class', 'withdrawn_at', 'failure_summary'])
+    .where('id', 'in', [free, pinned])
+    .execute()
+  for (const row of withdrawn) {
+    assert.equal(row.failure_class, 'infra')
+    assert.ok(row.withdrawn_at, 'listed in the next HelloAck')
+    assert.match(row.failure_summary ?? '', /machine build-01 was revoked/)
+  }
+
+  assert.deepEqual(
+    (await s.runsOfJobOf(pinned)).map((r) => [r.attempt, r.state]),
+    [[1, 'stopped']],
+  )
+  assert.equal(await s.jobState(pinned), 'failed')
+  assert.equal(await s.jobState(runOf(pinnedView, 'after-p')), 'skipped')
+})
+
+test('revoke ends a pinned queued run once and fails its job, with no retry rows', async () => {
+  const s = await setup({ max_attempts: 3, backoff_s: 0, on: ['infra'] })
+  const queued = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
+  const running = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
+  await s.offer(running)
+  await s.start(running)
+  await revokeMachine(s.ctx, 'build-01')
+
+  const [only] = await s.runsOfJobOf(queued)
+  assert.equal((await s.runsOfJobOf(queued)).length, 1)
+  assert.deepEqual([only.attempt, only.state], [1, 'stopped'])
+  assert.match(only.failure_summary ?? '', /machine build-01 was revoked; the job is pinned to it/)
+  assert.equal(await s.jobState(queued), 'failed')
+  // A run that ran fails, class infra, and its retry would be pinned to the revoked machine: the job fails instead.
+  assert.deepEqual(
+    (await s.runsOfJobOf(running)).map((r) => [r.attempt, r.state]),
+    [[1, 'failed']],
+  )
+  assert.equal(await s.jobState(running), 'failed')
 })

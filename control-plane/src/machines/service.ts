@@ -82,8 +82,8 @@ export function listMachines(ctx: TenantCtx): Promise<MachineView[]> {
 }
 
 /**
- * Revokes the live machine `name` and returns its id, with the runs it had not ended, now failed with class infra
- * in the same transaction (and every run that changed with them, see failRevokedRuns): a revoked executor never
+ * Revokes the live machine `name` and returns its id, with the runs it had not ended, now ended with class infra in
+ * the same transaction (and every run that changed with them, see failRevokedRuns): a revoked executor never
  * reports again, so they would stay offered or running for good, and no claim takes a run pinned to it.
  * Its session is not closed here: the caller closes it with closeRevoked once the transaction has committed, because
  * 4401 makes the executor stop for good and a rolled-back revoke would leave it stopped with a valid token. A session

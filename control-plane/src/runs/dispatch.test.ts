@@ -301,7 +301,7 @@ test('run routes stay within their project, stop answers DR350 when the Stop can
 })
 
 // A revoked machine's executor never reports again, so its runs that have not ended would stay open forever.
-test('revoking a machine fails its runs that have not ended with class infra, and leaves ended ones', async () => {
+test('revoking a machine fails its running runs, withdraws its offers, and leaves ended ones', async () => {
   const { ctx, machine, token, dispatch } = await setup()
   const exec = await executor(machine.token)
   const [offered, started, done] = [await dispatch(), await dispatch(), await dispatch()]
@@ -314,9 +314,13 @@ test('revoking a machine fails its runs that have not ended with class infra, an
     headers: { authorization: `Bearer ${token}` },
   })
   assert.equal(res.status, 200, await res.text())
-  for (const id of [offered.id, started.id]) {
+  // The offer never started, so it is stopped and withdrawn; the running run fails. Class infra for both.
+  for (const [id, state] of [
+    [offered.id, 'stopped'],
+    [started.id, 'failed'],
+  ]) {
     const view = await runView(ctx, id)
-    assert.deepEqual([view.state, view.outcome.failureClass], ['failed', 'infra'], id)
+    assert.deepEqual([view.state, view.outcome.failureClass], [state, 'infra'], id)
     assert.match(view.outcome.failureSummary ?? '', /machine build-01 was revoked/)
     assert.ok(view.timeline.finishedAt, id)
   }
@@ -325,7 +329,7 @@ test('revoking a machine fails its runs that have not ended with class infra, an
 })
 
 // No claim takes a run pinned to a revoked machine, so it would wait queued for good.
-test('revoking a machine fails the queued runs pinned to it, retries included, and leaves the others queued', async () => {
+test('revoking a machine ends the queued runs pinned to it without a retry, and leaves the others queued', async () => {
   const { ctx, token, dispatch } = await setup()
   await putJobType(ctx, projectKey, {
     key: 'flaky',
@@ -344,10 +348,10 @@ test('revoking a machine fails the queued runs pinned to it, retries included, a
 
   for (const run of [pinned.id, retried.id]) {
     const view = await runView(ctx, run)
-    assert.deepEqual([view.state, view.outcome.failureClass], ['failed', 'infra'], run)
+    assert.deepEqual([view.state, view.outcome.failureClass], ['stopped', 'infra'], run)
     assert.match(view.outcome.failureSummary ?? '', /machine build-01 was revoked/)
   }
-  // Each retry the policy queued was pinned to the same machine, and failed in turn.
+  // A retry would be pinned to the same machine, so the job fails once even though its policy retries infra.
   const runs = await t.admin
     .selectFrom('runs')
     .select(['attempt', 'state'])
@@ -356,11 +360,7 @@ test('revoking a machine fails the queued runs pinned to it, retries included, a
     .execute()
   assert.deepEqual(
     runs.map((run) => [run.attempt, run.state]),
-    [
-      [1, 'failed'],
-      [2, 'failed'],
-      [3, 'failed'],
-    ],
+    [[1, 'stopped']],
   )
   assert.equal((await runView(ctx, free.id)).state, 'queued')
 })
@@ -410,11 +410,12 @@ test('stop of an offered run on an offline machine ends it at once and withdraws
   await assert.rejects(stopRun(ctx, sessions, admitted.id), code('DR350'))
   assert.equal((await runView(ctx, admitted.id)).state, 'admitted')
 
-  // Revoked before revoking failed the machine's runs (or racing it): stop is the way out.
+  // Revoked before revoking ended the machine's runs (or racing it): stop is the way out. The admitted run never
+  // started, so the person's stop ends its job; it is not requeued as a revoke alone would.
   await t.admin.updateTable('machines').set({ revoked_at: new Date() }).where('id', '=', machine.machineId).execute()
-  const failed = await stopRun(ctx, sessions, admitted.id)
-  assert.deepEqual([failed.state, failed.outcome.failureClass], ['failed', 'infra'])
-  assert.match(failed.outcome.failureSummary ?? '', /machine build-01 was revoked/)
+  const ended = await stopRun(ctx, sessions, admitted.id)
+  assert.deepEqual([ended.state, ended.outcome.failureClass], ['stopped', 'cancelled'])
+  assert.match(ended.outcome.failureSummary ?? '', /revoked machine/)
 })
 
 test('a client that leaves GET /runs/:id?wait ends the wait and its listener', async () => {

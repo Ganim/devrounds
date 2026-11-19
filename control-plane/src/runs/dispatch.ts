@@ -135,6 +135,7 @@ export function recentlyWithdrawn(ctx: TenantCtx, machineId: string): Promise<st
 
 export const QUEUED_STOP_SUMMARY = 'stopped while queued; no machine ran it'
 export const OFFLINE_OFFER_STOP_SUMMARY = 'stopped while offered to an offline machine; withdrawn before it ran'
+export const REVOKED_OFFER_STOP_SUMMARY = 'stopped before it started on a revoked machine; withdrawn'
 
 /** `changed`: every run the stop changed, the stopped one first, for the caller to wake their waiters. */
 export type PreparedStop =
@@ -146,7 +147,8 @@ export type PreparedStop =
  * still queued is on no executor: it stops here at once, class cancelled, and its job is settled (`ended`). An offered
  * run on a machine with no live session stops the same way and is withdrawn: its executor drops it at the next
  * HelloAck, so it never runs, and an answer that arrives before that is refused like any to an ended run. On a
- * revoked machine, whose executor never reports again, the run fails with class infra here instead (`ended`). An
+ * revoked machine, whose executor never reports again, an offered or admitted run stops the same way, and a running
+ * one fails with class infra here instead (failRevokedRuns; `ended`). An
  * admitted or running run on an offline machine answers DR350: its process may be alive, only its executor can stop
  * it. An ended run has no Stop to send.
  */
@@ -193,6 +195,8 @@ export async function prepareStop(
       .where('runs.id', '=', runId)
       .executeTakeFirstOrThrow()
     if (row.revoked_at !== null) {
+      // Never started: the person's stop ends the job, where failRevokedRuns would requeue it.
+      if (state === 'offered' || state === 'admitted') return cancel(REVOKED_OFFER_STOP_SUMMARY, true)
       const changed = await failRevokedRuns(trx, row, runId)
       return { view: await loadRunView(trx, runId), ended: true, changed }
     }
