@@ -1,0 +1,10 @@
+# The dag case of pnpm e2e: test runs once build finished, and is skipped, never offered, when build fails.
+# `devrounds batch submit` it with a real directory in every cwd; pnpm e2e submits a copy with its own.
+jobs:
+  - ref: build
+    job_type: dag-build
+    cwd: .
+  - ref: test
+    job_type: dag-test
+    cwd: .
+    depends_on: [build]

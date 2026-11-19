@@ -1,0 +1,12 @@
+# The build of the dag batch of pnpm e2e (roadmap/fixtures/batches/dag.yaml): red the first time it runs in a
+# directory (exit 1, check_red, and it leaves build.red behind), green from then on, so one directory gives both
+# outcomes. No retry on check_red: a red build fails its job and skips the test that depends on it.
+key: dag-build
+command:
+  program: tree-fixture
+  args: [--fail-once, build.red, --steps, build]
+env: [PATH, PATHEXT, SystemRoot]
+timeout_s: 120
+classify:
+  - class: check_red
+    exit_codes: [1]

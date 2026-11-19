@@ -6,6 +6,7 @@
 //!              [--print N] [--steps NAME,...] [--print-env] [--exit CODE]
 //!              [--alloc-mb MB [--touch] [--alloc-hold-ms MS]]
 //!              [--ctrl-c ignore|bye] [--ready] [--breakaway] [--raw-hex HEX]
+//!              [--fail-once PATH]
 //! ```
 //!
 //! - `--children N --depth D`: every process above depth `D` starts `N`
@@ -38,11 +39,17 @@
 //!   `breakaway: allowed` when it starts.
 //! - `--raw-hex HEX`: the leader writes these bytes to stdout last, as they
 //!   are: no newline is added, and they need not be UTF-8.
+//! - `--fail-once PATH`: when `PATH` (relative to the working directory)
+//!   does not exist, the leader creates it and exits 1 before anything else;
+//!   when it exists, the flag does nothing. A job of it is red on its first
+//!   run in a directory and green from then on (retry and dependency tests).
 //!
 //! Exits 2 on an unknown or malformed argument.
 
 use std::{
+    fs::OpenOptions,
     io::{self, Write},
+    path::PathBuf,
     process::{Command, ExitCode},
     time::Duration,
 };
@@ -88,6 +95,7 @@ struct Args {
     ready: bool,
     breakaway: bool,
     raw: Vec<u8>,
+    fail_once: Option<PathBuf>,
     /// Set on the children this program starts.
     child: bool,
 }
@@ -134,6 +142,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         ready: false,
         breakaway: false,
         raw: Vec::new(),
+        fail_once: None,
         child: false,
     };
     let mut args = args.into_iter();
@@ -169,6 +178,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--ready" => parsed.ready = true,
             "--breakaway" => parsed.breakaway = true,
             "--raw-hex" => parsed.raw = hex(&flag, &value()?)?,
+            "--fail-once" => parsed.fail_once = Some(PathBuf::from(value()?)),
             "--child" => parsed.child = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -200,6 +210,20 @@ fn main() -> ExitCode {
 /// Builds the tree, prints, holds memory and waits as `args` say; returns
 /// the exit code.
 async fn run(args: Args) -> io::Result<u8> {
+    if let Some(path) = &args.fail_once {
+        // create_new, so two runs in one directory never both see it missing.
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => {
+                eprintln!(
+                    "tree-fixture: --fail-once: created {}, exiting 1",
+                    path.display()
+                );
+                return Ok(1);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
     // Installed first, so a stop arriving while the tree starts is handled.
     let mut ctrl_c = match args.ctrl_c {
         Some(_) => Some(tokio::signal::windows::ctrl_c()?),

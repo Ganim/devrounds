@@ -1,0 +1,14 @@
+# The retry case of pnpm e2e: red the first time it runs in a directory (exit 1, check_red, and it leaves flaky.red
+# behind), green from then on, so the automatic retry (attempt 2, after the default 30 s backoff) finishes.
+key: flaky
+command:
+  program: tree-fixture
+  args: [--fail-once, flaky.red]
+env: [PATH, PATHEXT, SystemRoot]
+timeout_s: 120
+classify:
+  - class: check_red
+    exit_codes: [1]
+retry:
+  max_attempts: 2
+  on: [check_red]

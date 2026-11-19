@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 // pnpm e2e: the executor end to end on this machine, self-contained. Builds the release binaries, starts its own
-// control plane on the test database (port 4993) and its own executor under `supervise` with a home in
-// .superpowers/tmp and a tree-fixture copy of its own on PATH, pairs it into a fresh tenant, then runs:
-//   synthetic  tree-fixture with 3 lingering children, placed by the scheduler: finished, stamped, swept, hidden,
-//              steps and 1000 log lines
-//   lint       `pnpm lint` of this repo through pnpm.cmd, placed by the scheduler: finished and hidden
+// control plane on the test database (port 4993; offers expire after 5 s, the scheduler polls every 2 s) and its own
+// executor under `supervise` with a home in .superpowers/tmp and a tree-fixture copy of its own on PATH, pairs it
+// into a fresh tenant, then runs, every run placed by the scheduler:
+//   synthetic  tree-fixture with 3 lingering children: finished, stamped, swept, hidden, steps and 1000 log lines
+//   lint       `pnpm lint` of this repo through pnpm.cmd: finished and hidden
+//   schedule   `schedule set --every 60`, set first and checked after dag and retry: fires within 75 s, finishes
+//   dag        roadmap/fixtures/batches/dag.yaml twice in one directory: red build → test skipped, never offered;
+//              green build → test finished
+//   retry      flaky, red once (check_red): attempt 2 is queued by the retry policy and finishes
+//   expiry     `run` suspended, a run pinned to its machine is offered and not answered: after 5 s it is
+//              stopped/infra with a requeue run; `run` resumed → the requeue finishes, the first never started
 //   orphan     `run` killed under a live run, restarted by its supervisor: the run is orphaned, killed, tree gone
 //   re-pair    the machine revoked, the same home paired again as a new machine: synthetic finishes on it
-// then measures both sides with scripts/footprint.ts after 60 s idle, and checks that `run` exits once its supervisor
-// is gone. Nothing is installed; everything it started, and nothing else, is stopped at the end, so it can run beside
-// an installed executor service.
+// then measures both sides with scripts/footprint.ts after 60 s idle, plus `serve` alone against an early warning,
+// and checks that `run` exits once its supervisor is gone. Nothing is installed; everything it started, and nothing
+// else, is stopped at the end, so it can run beside an installed executor service.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +28,7 @@ import { bootstrap } from '../../control-plane/src/admin.ts'
 import { runCli } from '../../control-plane/src/cli/commands.ts'
 import { createDb } from '../../control-plane/src/db/connection.ts'
 import { migrateToLatest } from '../../control-plane/src/db/migrate.ts'
+import { parseBatchFile } from '../../control-plane/src/jobs/batch-file.ts'
 import {
   TEST_ADMIN_URL,
   TEST_APP_PASSWORD,
@@ -29,7 +36,7 @@ import {
   TEST_AUTH_SECRET,
   TEST_DATABASE_URL,
 } from '../../control-plane/src/test-support/test-db-urls.ts'
-import { footprint, IDLE_MS } from '../footprint.ts'
+import { footprint, IDLE_MS, measure } from '../footprint.ts'
 
 const run = promisify(execFile)
 
@@ -39,14 +46,22 @@ const RELEASE = join(EXECUTOR_DIR, 'target', 'release')
 const EXE = join(RELEASE, 'devrounds-executor.exe')
 const FIXTURE = join(RELEASE, 'tree-fixture.exe')
 const JOB_TYPES = join(ROOT, 'roadmap', 'fixtures', 'job-types')
+const DAG_BATCH = join(ROOT, 'roadmap', 'fixtures', 'batches', 'dag.yaml')
 const PORT = 4993
 const BASE = `http://127.0.0.1:${PORT}`
 const PROJECT = 'devrounds'
-const TERMINAL = ['finished', 'failed', 'stopped', 'orphaned']
+const TERMINAL = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
+// The shortest offer timeout serve accepts, so the expiry scenario waits seconds, not the default 2 minutes.
+const OFFER_TIMEOUT_S = 5
+// `serve` alone after the idle window: an early warning well under the control plane's 300 MB budget, which also
+// counts the supervisor that only the live install has (pnpm footprint measures that one).
+const SERVE_EARLY_WARNING = 230_000_000
 
 type RunJson = {
   id: string
   state: string
+  attempt: number
+  cause: string
   timeline: Record<string, string | null>
   durations: Record<string, number | null>
   outcome: { exitCode: number | null; failureClass: string | null; failureSummary: string | null }
@@ -87,6 +102,16 @@ const processesOf = (exe: string, name: string) =>
 const executors = () => processesOf(EXE, 'devrounds-executor.exe')
 const runProcess = async () => (await executors()).find((p) => /\srun\s+--supervised\s*$/.test(p.CommandLine ?? ''))
 const kill = (pid: number) => run('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true }).catch(() => {})
+
+// Freezes or thaws every thread of `pid`, as a hung executor: its socket stays open, so the control plane keeps
+// offering to it, and nothing answers. Windows has no command for it; ntdll's pair is what Process Explorer uses.
+async function freeze(call: 'NtSuspendProcess' | 'NtResumeProcess', pid: number): Promise<void> {
+  const [status] = await powershellJson<number>(
+    `Add-Type -Namespace E2e -Name Nt -MemberDefinition '[DllImport("ntdll.dll")] public static extern int ${call}(IntPtr process);'; ` +
+      `[E2e.Nt]::${call}((Get-Process -Id ${pid}).Handle)`,
+  )
+  assert.equal(status, 0, `${call}(${pid}) answered NTSTATUS ${status}`)
+}
 
 // A process seen under the e2e executor, by pid and start time so a reused pid is never killed at teardown.
 type Snapshot = { ProcessId: number; ParentProcessId: number; Started: string }
@@ -176,6 +201,8 @@ async function main(): Promise<void> {
         DEVROUNDS_LOGS_ROOT: join(tmp, 'logs'),
         // Empty, not unset: an unset variable falls back to ~/.devrounds/server.json.
         DEVROUNDS_OTLP_ENDPOINT: '',
+        DEVROUNDS_OFFER_TIMEOUT_S: String(OFFER_TIMEOUT_S),
+        DEVROUNDS_SCHEDULER_POLL_S: '2',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -234,7 +261,7 @@ async function main(): Promise<void> {
     const firstRun = await until('supervise to start run', 10_000, runProcess)
     log(`executor connected: supervise ${supervisePid}, run ${firstRun.ProcessId}`)
 
-    for (const file of ['synthetic.yaml', 'lint.yaml', 'orphan.yaml'])
+    for (const file of ['synthetic.yaml', 'lint.yaml', 'orphan.yaml', 'dag-build.yaml', 'dag-test.yaml', 'flaky.yaml'])
       await cli('jobtype', 'set', join(JOB_TYPES, file))
 
     // No --machine: the scheduler places each run on the one connected machine once it has reported.
@@ -299,6 +326,114 @@ async function main(): Promise<void> {
     assert.equal(lint.resources.visibleWindows, 0, JSON.stringify(lint))
     log(`lint finished in ${lint.durations.runTimeMs} ms, visible windows 0, swept ${lint.resources.swept}`)
 
+    // schedule: set now, checked after dag and retry, so its 60 s run in parallel with them.
+    type ScheduleJson = { key: string; lastJob: { id: string; state: string } | null }
+    type JobJson = { id: string; lastRun: { id: string } }
+    log('schedule: synthetic every 60 s')
+    const scheduledAt = Date.now()
+    const scheduleArgs = ['e2e-every', '--job-type', 'synthetic', '--cwd', tmp, '--every', '60']
+    await cli('schedule', 'set', ...scheduleArgs)
+    const lastJob = async () => {
+      const schedules = await api<ScheduleJson[]>(`/projects/${PROJECT}/schedules`)
+      return schedules.find((s) => s.key === 'e2e-every')?.lastJob ?? undefined
+    }
+
+    // dag: the first build in a directory is red, the next one green (dag-build.yaml).
+    const dagDir = join(tmp, 'dag')
+    await mkdir(dagDir)
+    const dagBatch = parseBatchFile(await readFile(DAG_BATCH, 'utf8'))
+    for (const job of dagBatch.jobs) job.cwd = dagDir
+    // JSON is YAML: the copy is the fixture with this e2e's directory in every cwd.
+    const dagFile = join(tmp, 'dag.yaml')
+    await writeFile(dagFile, JSON.stringify(dagBatch))
+    type BatchJson = { jobs: { ref: string; runId: string; state: string }[] }
+    const submitDag = async () => {
+      const out = await cli('batch', 'submit', dagFile)
+      const id = /devrounds batch show (\S+)/.exec(out)?.[1] ?? assert.fail(out)
+      const { jobs } = await api<BatchJson>(`/projects/${PROJECT}/batches/${id}`)
+      const runOf = (ref: string) => jobs.find((j) => j.ref === ref)?.runId ?? assert.fail(`${ref} not in ${out}`)
+      return { build: runOf('build'), test: runOf('test') }
+    }
+    log('dag: red build, then green build, in one directory')
+    const red = await submitDag()
+    const redBuild = await ended(red.build, 120_000)
+    assert.equal(redBuild.state, 'failed', JSON.stringify(redBuild))
+    assert.equal(redBuild.outcome.failureClass, 'check_red', JSON.stringify(redBuild))
+    const skipped = await ended(red.test, 30_000)
+    assert.equal(skipped.state, 'skipped', JSON.stringify(skipped))
+    assert.equal(skipped.timeline.offeredAt, null, `skipped test was offered: ${JSON.stringify(skipped)}`)
+    const green = await submitDag()
+    const greenBuild = await ended(green.build, 120_000)
+    assert.equal(greenBuild.state, 'finished', JSON.stringify(greenBuild))
+    const tested = await ended(green.test, 120_000)
+    assert.equal(tested.state, 'finished', JSON.stringify(tested))
+    // claim_run holds a dependent until its dependency finished.
+    assert.ok(
+      (tested.timeline.offeredAt ?? '') >= (greenBuild.timeline.finishedAt ?? '~'),
+      `test offered before build finished: ${JSON.stringify([greenBuild.timeline, tested.timeline])}`,
+    )
+    log(`dag: red build → test skipped (${skipped.outcome.failureSummary}); green build → test finished`)
+
+    // retry
+    log('retry: flaky is red once (check_red), max_attempts 2')
+    const flakyDir = join(tmp, 'flaky')
+    await mkdir(flakyDir)
+    const firstAttempt = await ended(await start('flaky', flakyDir), 120_000)
+    assert.equal(firstAttempt.state, 'failed', JSON.stringify(firstAttempt))
+    assert.equal(firstAttempt.outcome.failureClass, 'check_red', JSON.stringify(firstAttempt))
+    type RunListJson = { runs: { id: string; attempt: number; cause: string }[] }
+    const retryId = await until('the retry run', 10_000, async () => {
+      const { runs } = await api<RunListJson>(`/projects/${PROJECT}/runs?jobType=flaky`)
+      return runs.find((r) => r.attempt === 2 && r.cause === 'retry')?.id
+    })
+    // The default backoff is 30 s after the first attempt ended.
+    const secondAttempt = await ended(retryId, 120_000)
+    assert.equal(secondAttempt.state, 'finished', JSON.stringify(secondAttempt))
+    log(`retry: attempt 1 check_red, attempt 2 finished after ${secondAttempt.durations.totalMs} ms queued → finished`)
+
+    const fired = await until('the schedule to fire', Math.max(0, scheduledAt + 75_000 - Date.now()), lastJob)
+    const { jobs } = await api<{ jobs: JobJson[] }>(`/projects/${PROJECT}/jobs`)
+    const scheduledRunId = jobs.find((j) => j.id === fired.id)?.lastRun.id ?? assert.fail(`job ${fired.id} not listed`)
+    const scheduled = await ended(scheduledRunId, 120_000)
+    assert.equal(scheduled.state, 'finished', JSON.stringify(scheduled))
+    const firedAfterMs = Date.parse(scheduled.timeline.queuedAt ?? '') - scheduledAt
+    assert.ok(firedAfterMs <= 75_000, `the schedule fired ${firedAfterMs} ms after it was set`)
+    // Off before the expiry and the idle window, which another fire would disturb.
+    await cli('schedule', 'set', ...scheduleArgs, '--disable')
+    await until('the swept tree to be gone', 10_000, async () => ((await fixtures()).length === 0 ? true : undefined))
+    log(`schedule: fired ${(firedAfterMs / 1000).toFixed(1)} s after it was set, finished; disabled`)
+
+    // expiry: a suspended `run` keeps its session open and answers nothing.
+    log(`expiry: run suspended, a pinned synthetic offered to it expires after ${OFFER_TIMEOUT_S} s`)
+    const frozen = (await runProcess()) ?? assert.fail('no run process')
+    await freeze('NtSuspendProcess', frozen.ProcessId)
+    let withdrawn: RunJson
+    let requeueId: string
+    try {
+      // Pinned: the requeue run of the job keeps the pin, so it waits for this machine to come back.
+      const out = await cli('run', 'start', 'synthetic', '--machine', machine, '--cwd', tmp)
+      const offeredId = /run ([0-9a-f-]{36})/.exec(out)?.[1] ?? assert.fail(out)
+      withdrawn = await ended(offeredId, 30_000)
+      assert.equal(withdrawn.state, 'stopped', JSON.stringify(withdrawn))
+      assert.equal(withdrawn.outcome.failureClass, 'infra', JSON.stringify(withdrawn))
+      const offeredFor =
+        Date.parse(withdrawn.timeline.finishedAt ?? '') - Date.parse(withdrawn.timeline.offeredAt ?? '')
+      assert.ok(offeredFor >= OFFER_TIMEOUT_S * 1000, `withdrawn ${offeredFor} ms after the offer`)
+      requeueId =
+        /requeued as run ([0-9a-f-]{36})/.exec(withdrawn.outcome.failureSummary ?? '')?.[1] ??
+        assert.fail(JSON.stringify(withdrawn))
+      const requeue = await view(requeueId)
+      assert.deepEqual([requeue.cause, requeue.state], ['requeue', 'queued'], JSON.stringify(requeue))
+    } finally {
+      await freeze('NtResumeProcess', frozen.ProcessId)
+    }
+    const requeued = await ended(requeueId, 120_000)
+    assert.equal(requeued.state, 'finished', JSON.stringify(requeued))
+    const never = await view(withdrawn.id)
+    assert.equal(never.timeline.startedAt, null, `the withdrawn run started: ${JSON.stringify(never)}`)
+    await until('the swept tree to be gone', 30_000, async () => ((await fixtures()).length === 0 ? true : undefined))
+    log(`expiry: offer withdrawn after ${OFFER_TIMEOUT_S} s (${withdrawn.outcome.failureSummary}); requeue finished`)
+
     // orphan
     log('orphan: taskkill /F on run during a 60 s run')
     const orphanId = await start('orphan', tmp)
@@ -361,6 +496,10 @@ async function main(): Promise<void> {
     })
     for (const line of measured.lines) log(`footprint ${line}`)
     assert.ok(measured.ok, 'footprint over budget')
+    const [served] = await measure([servePid])
+    assert.ok(served, 'serve is gone')
+    log(`footprint serve alone: ${served.privateBytes} private bytes (early warning ${SERVE_EARLY_WARNING})`)
+    assert.ok(served.privateBytes <= SERVE_EARLY_WARNING, 'serve over its early warning')
 
     // `run` follows its supervisor out.
     await kill(resupervisePid)

@@ -90,7 +90,7 @@ reconnects after 1 s, doubling to 30 s, each wait moved by up to ±20 %.
 
 ```
 pnpm footprint    # after 60 s with no job running: private bytes of both services against their budgets
-pnpm e2e          # the executor end to end: synthetic job, pnpm lint, orphan, footprint
+pnpm e2e          # the executor end to end through the scheduler (scenarios below), then the footprint
 ```
 
 `pnpm footprint` finds what the `DevRounds` and `DevRoundsExecutor` tasks run: the control plane's `supervise.ts` and the
@@ -100,10 +100,13 @@ and a missing one fails its side by name). It waits until `GET /api/machines` re
 `--control-plane-pids` and `--executor-pids` measure given processes instead; `--idle-ms` changes the window.
 
 `pnpm e2e` installs nothing: it builds the release binaries, starts its own control plane on the test database at
-port 4993 and its own executor under `supervise` with a home and a `tree-fixture` copy in `.superpowers/tmp`, pairs it
-into a fresh tenant, runs the job types of `roadmap/fixtures/job-types`, measures the footprint of its own processes and
-stops those, and only those, so an installed executor service is left alone. It needs
-Postgres (`pnpm db:up`) and takes about 2 minutes, most of it the 60 s idle window.
+port 4993 (offers expire after 5 s, the scheduler polls every 2 s) and its own executor under `supervise` with a home
+and a `tree-fixture` copy in `.superpowers/tmp`, pairs it into a fresh tenant and runs the job types of
+`roadmap/fixtures/job-types`, every run placed by the scheduler: synthetic, `pnpm lint`, a schedule every 60 s, the dag
+batch red then green, a retry, an offer that expires on a suspended `run` and is requeued, an orphan, and a re-pair.
+It then measures the footprint of its own processes (and `serve` alone against a 230 MB early warning) and stops
+those, and only those, so an installed executor service is left alone. It needs Postgres (`pnpm db:up`) and takes
+about 4 minutes, most of it the schedule's first fire and the 60 s idle window.
 
 `pnpm devlanes-sync --fetch` fetches upstream devlanes into the gitignored `executor/.devlanes-cache`, stamps the fetch time
 and fails (exit 1) listing every upstream commit that touches a mapped crate, partial copy or workspace file and is not
@@ -111,3 +114,56 @@ yet ported or recorded as `[[reviewed]]` in `executor/devlanes-sync.toml`. It al
 upstream or `synced_commit` is missing from the cache. Without `--fetch` it only reads the cache. `pnpm test` runs the
 same check against the cache as it is, so it only proves "nothing new since the last fetch" and fails when that fetch is
 older than 7 days: run `pnpm devlanes-sync --fetch` first (CI must do the same).
+
+## Queues, batches and schedules
+
+Every run waits in a queue of its project. `default` is created the first time a run uses it; any other queue is
+created first:
+
+```
+devrounds queue set <key> [--priority <n>] [--concurrency <n>|none] [--job-types <a,b>|none]
+devrounds queue list     # depth = runs queued, in flight = offered, admitted or running
+```
+
+The scheduler takes the queue with the highest priority first and the oldest run in it first. `--concurrency` caps
+the runs in flight in the queue; `--job-types` lists the job types allowed in it (any other answers DR153).
+
+A batch queues several jobs at once, all or nothing, with dependencies by `ref` inside the file (a cycle answers DR152).
+Each job also takes `machine`, `queue` and `task`:
+
+```yaml
+jobs:
+  - ref: build
+    job_type: dag-build
+    cwd: C:\src\app
+  - ref: test
+    job_type: dag-test
+    cwd: C:\src\app
+    depends_on: [build]
+```
+
+```
+devrounds batch submit <file.yaml>   # each job with its run
+devrounds batch show <id>            # failed and skipped jobs first
+```
+
+A job is offered only once every job it depends on finished. When one fails or is stopped, every open job waiting on
+it, directly or through others, becomes `skipped` and is never offered. A job type's `retry` decides when a failed run
+is tried again: `on` lists the failure classes (default `[infra]`), `max_attempts` counts the attempts (default 1, no
+retry) and the next attempt is queued `backoff_s × 2^(attempt − 1)` seconds after the run ended (default 30, at most
+1 h). A requeue after an expired offer is not an attempt. `roadmap/fixtures/job-types/flaky.yaml` and
+`roadmap/fixtures/batches/dag.yaml` are the examples `pnpm e2e` runs.
+
+A schedule queues a job of a job type on a clock:
+
+```
+devrounds schedule set <key> --job-type <jt> --cwd <path> (--every <seconds> | --daily HH:MM) [--queue <key>] [--machine <name>] [--disable]
+devrounds schedule list
+```
+
+`--every` is at least 60 s, counted from the last fire; `--daily` is the wall clock of the tenant time zone. A schedule
+whose last job is still open lets that fire pass, and one missed while the control plane was down fires once when it
+is back. `schedule set` replaces the whole definition; saving the same timing again keeps the clock.
+
+`devrounds run list` and `devrounds indicators` (runs, queue wait, run time and failure classes per day or week) read
+what happened; the web view shows the same at `#/queues`, `#/jobs` and `#/runs`.

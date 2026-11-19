@@ -1,0 +1,7 @@
+# The test of the dag batch of pnpm e2e (roadmap/fixtures/batches/dag.yaml): green, once its build is.
+key: dag-test
+command:
+  program: tree-fixture
+  args: [--steps, test]
+env: [PATH, PATHEXT, SystemRoot]
+timeout_s: 120

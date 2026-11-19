@@ -37,11 +37,15 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 - Pair an executor with `devrounds machine pair-code --name <machine>` (human members only), then run the printed
   `devrounds-executor pair` on that machine. Machine tokens and pairing codes are stored only as SHA-256.
 - Run the executor as the `DevRoundsExecutor` scheduled task (`devrounds-executor service install`, after pairing).
-  Check the idle budgets with `pnpm footprint` and the executor end to end with `pnpm e2e`.
+  Check the idle budgets with `pnpm footprint` and the executor end to end through the scheduler with `pnpm e2e`.
 - Run a job with `devrounds run start <jobType> --cwd <path> [--machine <name>]` (queued; the scheduler offers it to a
   machine with room, `--machine` pins it), then read its outcome with `devrounds run show <id> --wait` (failures
   first: state, class, summary). List runs newest first with `devrounds run list [--state <s>] [--job-type <k>]`
   (failed, stopped and orphaned first; a cut output prints the `--cursor` that continues it).
+- Queue several dependent jobs with `devrounds batch submit <file.yaml>` (`depends_on` by ref; a failed or stopped job
+  skips its dependents), recurring ones with `devrounds schedule set <key> --job-type <jt> --cwd <path> --every <s>`
+  (or `--daily HH:MM`), and shape queues with `devrounds queue set <key>`. Automatic retries come from the job type's
+  `retry` (`max_attempts`, `backoff_s`, `on`). Read trends with `devrounds indicators`.
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.
