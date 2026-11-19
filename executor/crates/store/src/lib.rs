@@ -227,6 +227,24 @@ impl Store {
         .await
     }
 
+    /// The seq every event up to which some control plane acked: the one
+    /// before the oldest event kept, or the last seq ever appended when the
+    /// outbox is empty (0 for a fresh store). Sent as `Hello.acked_through`.
+    pub async fn acked_through(&self) -> Result<u64, DrError> {
+        self.call(|connection| {
+            let seq: u64 = connection.query_row(
+                "select coalesce(
+                    (select min(seq) - 1 from outbox),
+                    (select seq from sqlite_sequence where name = 'outbox'),
+                    0)",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(seq)
+        })
+        .await
+    }
+
     /// Changes whenever an ack moves past the highest seq acked so far in this
     /// process; the value is that seq.
     pub fn acked(&self) -> watch::Receiver<u64> {

@@ -167,6 +167,47 @@ async fn a_fresh_store_continues_after_the_control_planes_last_seq() {
     client.abort();
 }
 
+/// A machine paired again, or a control plane restored from an older
+/// backup, knows a lower last_seq than this store acked: `Hello` tells it how
+/// far the store got, so the next event is not taken for a gap.
+#[tokio::test]
+async fn hello_carries_the_seq_this_store_was_acked_through() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("store");
+    for seq in 1..=3 {
+        store
+            .append_event(admitted(&format!("r{seq}")))
+            .await
+            .expect("append");
+    }
+    store.ack_through(2).await.expect("ack");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let config = ExecutorConfig {
+        url: format!("http://{}", listener.local_addr().expect("addr")),
+        machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
+    };
+    let connection = Connection::new(store.clone());
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut Quiet).await });
+
+    bounded(async {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut socket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("handshake");
+        let Some(ClientMessage::Hello(hello)) = next(&mut socket).await else {
+            panic!("the first message must be Hello");
+        };
+        assert_eq!(hello.acked_through, Some(2));
+        assert!(hello.features.iter().any(|f| f == "acked-through"));
+    })
+    .await;
+    client.abort();
+}
+
 #[tokio::test]
 async fn a_backlog_of_large_segments_is_resent_whole_and_in_order() {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");

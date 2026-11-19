@@ -386,6 +386,43 @@ test('last_seq survives a control plane restart', async () => {
   }
 })
 
+// Pairing a home again makes a new machine at last_seq 0 while the executor's seqs go on from its store; a control
+// plane restored from a backup is behind the same way. Without Hello.acked_through the first event is a gap whose
+// Resync resends the same seq, which then reads as a duplicate forever.
+test('a Hello acked through a seq past last_seq raises last_seq to it, and the next event applies', async () => {
+  const { tenant, machine } = await paired()
+  const [run] = await offeredRuns(tenant, 'build-01')
+  const lines: string[] = []
+  const logged = buildServer({ db: t.db, logger: { level: 'warn', stream: { write: (line) => lines.push(line) } } })
+  try {
+    await logged.listen({ port: 0, host: '127.0.0.1' })
+    const session = dial(machine.token, `127.0.0.1:${(logged.server.address() as AddressInfo).port}`)
+    await session.send({ ...HELLO, acked_through: 41 })
+    assert.equal(((await session.next()) as { last_seq: number }).last_seq, 41)
+    assert.equal(((await session.next()) as { type: string }).type, 'Offer')
+    await session.send({ type: 'Event', seq: 42, at: AT, event: { kind: 'Admitted', run } })
+    assert.deepEqual(await session.next(), ack(42))
+    session.close()
+    await session.closed
+  } finally {
+    await logged.close()
+  }
+  assert.equal(await lastSeq(machine.machineId), 42)
+  const state = await t.admin.selectFrom('runs').select('state').where('id', '=', run).executeTakeFirstOrThrow()
+  assert.equal(state.state, 'admitted')
+  const raised = lines.map((line) => JSON.parse(line)).filter((entry) => entry.msg?.startsWith('executor acked'))
+  assert.deepEqual(
+    raised.map(({ machineId, lastSeq, ackedThrough, lost }) => ({ machineId, lastSeq, ackedThrough, lost })),
+    [{ machineId: machine.machineId, lastSeq: 0, ackedThrough: 41, lost: 41 }],
+  )
+
+  // At or below last_seq it changes nothing: the executor resends what was not applied.
+  const again = dial(machine.token)
+  await again.send({ ...HELLO, acked_through: 40 })
+  assert.equal(((await again.next()) as { last_seq: number }).last_seq, 42)
+  again.close()
+})
+
 test('Hello with protocol 2 answers DR151 and closes 4400', async () => {
   const { machine } = await paired()
   const session = dial(machine.token)

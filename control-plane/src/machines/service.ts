@@ -79,8 +79,18 @@ export function closeRevoked(sessions: Sessions, machineId: string): void {
   sessions.close(machineId, CLOSE_REVOKED)
 }
 
-/** Marks the machine seen at Hello and returns the last event seq applied for it; null once it is revoked. */
-export function recordHello(ctx: TenantCtx, machineId: string, version: string): Promise<bigint | null> {
+/**
+ * Marks the machine seen at Hello and returns the last event seq applied for it; null once it is revoked. With
+ * `ackedThrough` (Hello.acked_through) above last_seq, last_seq moves up to it and `raisedFrom` names the old value:
+ * the executor holds no event up to that seq any more, so waiting for them would wedge the machine. That happens when
+ * a home is paired again as a new machine (last_seq 0, the executor's seqs go on) or the database was restored.
+ */
+export function recordHello(
+  ctx: TenantCtx,
+  machineId: string,
+  version: string,
+  ackedThrough?: number,
+): Promise<{ lastSeq: bigint; raisedFrom: bigint | null } | null> {
   return run(ctx, async (trx) => {
     const row = await trx
       .updateTable('machines')
@@ -89,7 +99,15 @@ export function recordHello(ctx: TenantCtx, machineId: string, version: string):
       .where('revoked_at', 'is', null)
       .returning('last_seq')
       .executeTakeFirst()
-    return row ? BigInt(row.last_seq) : null
+    if (!row) return null
+    const lastSeq = BigInt(row.last_seq)
+    if (ackedThrough === undefined || BigInt(ackedThrough) <= lastSeq) return { lastSeq, raisedFrom: null }
+    await trx
+      .updateTable('machines')
+      .set({ last_seq: String(ackedThrough) })
+      .where('id', '=', machineId)
+      .execute()
+    return { lastSeq: BigInt(ackedThrough), raisedFrom: lastSeq }
   })
 }
 

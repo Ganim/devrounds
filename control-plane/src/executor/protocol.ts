@@ -7,7 +7,7 @@ import { fail } from '../errors/error.ts'
 // executor's messages ClientMessage and the control plane's ServerMessage.
 
 export const PROTOCOL = 1
-export const FEATURES = ['seq', 'steps', 'log-segments', 'orphans', 'trace-context'] as const
+export const FEATURES = ['seq', 'steps', 'log-segments', 'orphans', 'trace-context', 'acked-through'] as const
 
 const U32 = Type.Integer({ minimum: 0, maximum: 4294967295 })
 // Rust sends u64; a JSON number above 2^53 would silently round here, so the schema refuses it. Seqs and byte counts
@@ -93,6 +93,8 @@ export const EXECUTOR_MESSAGES = {
     version: Type.String(),
     features: Type.Array(Type.String()),
     boot_id: Type.String(),
+    // Feature acked-through: every seq up to this one was acked by some control plane. Absent from older executors.
+    acked_through: Type.Optional(U64),
   }),
   MachineReport: Type.Object({
     type: Type.Literal('MachineReport'),

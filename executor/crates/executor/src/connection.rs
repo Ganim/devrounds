@@ -144,6 +144,7 @@ async fn session<H: Handler>(
             }
         };
     let (mut sink, mut stream) = socket.split();
+    let acked_through = store.acked_through().await?;
     let hello = ClientMessage::Hello(Hello {
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -152,6 +153,7 @@ async fn session<H: Handler>(
             .map(|feature| (*feature).to_owned())
             .collect(),
         boot_id: handler.boot_id(),
+        acked_through: Some(acked_through),
     });
     if sink
         .send(Message::text(encode_client(&hello)?))

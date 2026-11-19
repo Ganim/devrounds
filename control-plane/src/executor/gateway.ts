@@ -233,8 +233,14 @@ function serveSession(
       session = { tenantId: machine.tenantId, socket }
       sessions.open(machine.machineId, session)
       // Revoked between the token lookup and now: the update finds no live row.
-      const lastSeq = await recordHello(ctx, machine.machineId, message.version)
-      if (lastSeq === null) return end(CLOSE_REVOKED, new DevRoundsError('DR452'))
+      const seen = await recordHello(ctx, machine.machineId, message.version, message.acked_through)
+      if (seen === null) return end(CLOSE_REVOKED, new DevRoundsError('DR452'))
+      const { lastSeq, raisedFrom } = seen
+      if (raisedFrom !== null) {
+        // The events between were applied by another machine row or lost with a restored database; logged, not waited for.
+        const gap = { machineId: machine.machineId, lastSeq: Number(raisedFrom), ackedThrough: Number(lastSeq) }
+        log.warn({ ...gap, lost: gap.ackedThrough - gap.lastSeq }, 'executor acked past last_seq; last_seq raised')
+      }
       if (closed) return
       tracker = new SeqTracker(lastSeq)
       sessions.send(machine.machineId, {

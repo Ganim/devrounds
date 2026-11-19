@@ -5,6 +5,7 @@
 //   synthetic  tree-fixture with 3 lingering children: finished, stamped, swept, hidden, steps and 1000 log lines
 //   lint       `pnpm lint` of this repo through pnpm.cmd: finished and hidden
 //   orphan     `run` killed under a live run, restarted by its supervisor: the run is orphaned, killed, tree gone
+//   re-pair    the machine revoked, the same home paired again as a new machine: synthetic finishes on it
 // then measures both sides with scripts/footprint.ts after 60 s idle, and checks that `run` exits once its supervisor
 // is gone. Nothing is installed; everything it started, and nothing else, is stopped at the end, so it can run beside
 // an installed executor service.
@@ -305,17 +306,42 @@ async function main(): Promise<void> {
     })
     log(`orphan run orphaned, orphan_action killed, tree gone; run restarted as ${restarted.ProcessId}`)
 
+    // re-pair: the home keeps its event history while the control plane makes a new machine at last_seq 0, so the
+    // executor's next seq used to read as a gap and then as a duplicate forever, and the run stayed offered.
+    log('re-pair: revoke the machine, pair the same home again, run synthetic')
+    await cli('machine', 'revoke', machine)
+    await until('run to exit after the revoke', 30_000, async () =>
+      (await runProcess()) === undefined ? true : undefined,
+    )
+    // As `service uninstall` would: the supervisor goes before the home is paired again.
+    await kill(supervisePid)
+    const repaired = `${machine}-2`
+    const repairing = await cli('machine', 'pair-code', '--name', repaired)
+    const repairCode = /pairing code for machine \S+: (\S+)/.exec(repairing)?.[1] ?? assert.fail(repairing)
+    await run(EXE, ['pair', '--url', BASE, '--code', repairCode], { env: executorEnv, windowsHide: true })
+    supervise = spawn(EXE, ['supervise'], { env: executorEnv, stdio: 'ignore', windowsHide: true })
+    const resupervisePid = supervise.pid ?? assert.fail('supervise has no pid')
+    await until('the re-paired executor to connect', 30_000, async () =>
+      (await api<MachineJson[]>('/machines')).some((m) => m.name === repaired && m.connected) ? true : undefined,
+    )
+    const out = await cli('run', 'start', 'synthetic', '--machine', repaired, '--cwd', tmp)
+    const repairedRun = await ended(/run ([0-9a-f-]{36})/.exec(out)?.[1] ?? assert.fail(out), 120_000)
+    assert.equal(repairedRun.state, 'finished', JSON.stringify(repairedRun))
+    await until('the swept tree to be gone', 10_000, async () => ((await fixtures()).length === 0 ? true : undefined))
+    const rerun = (await runProcess()) ?? assert.fail('no run process after re-pairing')
+    log(`re-paired as ${repaired}: synthetic finished; supervise ${resupervisePid}, run ${rerun.ProcessId}`)
+
     // footprint
     log(`footprint: waiting ${IDLE_MS / 1000} s idle`)
     const measured = await footprint({
       api: { url: BASE, token },
-      pids: { controlPlane: [servePid], executor: [supervisePid, restarted.ProcessId] },
+      pids: { controlPlane: [servePid], executor: [resupervisePid, rerun.ProcessId] },
     })
     for (const line of measured.lines) log(`footprint ${line}`)
     assert.ok(measured.ok, 'footprint over budget')
 
     // `run` follows its supervisor out.
-    await kill(supervisePid)
+    await kill(resupervisePid)
     await until('run to exit after its supervisor', 15_000, async () => {
       const left = await executors()
       if (left.length === 0) return true

@@ -129,6 +129,25 @@ async fn a_store_behind_the_control_plane_moves_its_events_after_last_seq() {
     );
 }
 
+/// What `Hello.acked_through` carries: the seq before the oldest event kept,
+/// or the last seq ever appended once the outbox is empty.
+#[tokio::test]
+async fn acked_through_is_the_seq_before_the_oldest_kept_event() {
+    let dir = dir();
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("open");
+    assert_eq!(store.acked_through().await.expect("fresh"), 0);
+    for run in ["r1", "r2", "r3", "r4"] {
+        store.append_event(admitted(run)).await.expect("append");
+    }
+    assert_eq!(store.acked_through().await.expect("none acked"), 0);
+    store.ack_through(2).await.expect("ack");
+    assert_eq!(store.acked_through().await.expect("two acked"), 2);
+    store.ack_through(4).await.expect("ack");
+    assert_eq!(store.acked_through().await.expect("all acked"), 4);
+}
+
 #[tokio::test]
 async fn runs_in_flight_keep_their_identity_and_members_until_forgotten() {
     let dir = dir();

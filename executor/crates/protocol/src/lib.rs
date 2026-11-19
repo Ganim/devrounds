@@ -14,7 +14,14 @@ use serde_json::{Value, json};
 pub const PROTOCOL: u32 = 1;
 
 /// Optional capabilities this build speaks; a session uses the intersection.
-pub const FEATURES: [&str; 5] = ["seq", "steps", "log-segments", "orphans", "trace-context"];
+pub const FEATURES: [&str; 6] = [
+    "seq",
+    "steps",
+    "log-segments",
+    "orphans",
+    "trace-context",
+    "acked-through",
+];
 
 /// The features both sides speak, in the order of `ours`.
 pub fn negotiate<A: AsRef<str>, B: AsRef<str>>(ours: &[A], theirs: &[B]) -> Vec<String> {
@@ -62,6 +69,14 @@ pub struct Hello {
     pub version: String,
     pub features: Vec<String>,
     pub boot_id: String,
+    /// Feature `acked-through`: every seq up to this one was acked by some
+    /// control plane (the seq before the oldest event kept, or the last seq
+    /// ever appended when none is kept). A control plane whose last applied
+    /// seq is lower (the home was paired again as a new machine, or its
+    /// database was restored) moves it up, so the next event is not a gap.
+    /// Absent from executors that predate the feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acked_through: Option<u64>,
 }
 
 /// Machine state, sent periodically. Memory figures are bytes.
