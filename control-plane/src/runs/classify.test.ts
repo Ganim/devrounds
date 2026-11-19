@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { test } from 'node:test'
 import { type ClassifyInput, type ClassifyRule, classifyRun, SUMMARY_MAX_BYTES } from './classify.ts'
 
@@ -144,6 +145,29 @@ test('a pattern rule that times out falls through to the next rule without a pat
     { class: 'check_red', exit_codes: [1] },
   ])
   assert.equal(result.failureClass, 'check_red')
+})
+
+test('a pattern worker that cannot be started counts as no match instead of failing the classification', async () => {
+  // syncBuiltinESMExports carries the swap to classify.ts's `import { Worker }`.
+  const workerThreads = createRequire(import.meta.url)('node:worker_threads') as typeof import('node:worker_threads')
+  const { Worker } = workerThreads
+  workerThreads.Worker = class {
+    constructor() {
+      throw new Error('ERR_WORKER_INIT_FAILED')
+    }
+  } as unknown as typeof Worker
+  syncBuiltinESMExports()
+  try {
+    const timedOut: number[] = []
+    const result = await classifyRun(exited(1, ['boom']), [{ class: 'environment', log_pattern: 'boom' }], {
+      onPatternTimeout: (rule) => timedOut.push(rule),
+    })
+    assert.equal(result.failureClass, 'unclassified')
+    assert.deepEqual(timedOut, [0])
+  } finally {
+    workerThreads.Worker = Worker
+    syncBuiltinESMExports()
+  }
 })
 
 test('a 10 000-line tail gives a summary of at most 4096 bytes cut on a whole line', async () => {

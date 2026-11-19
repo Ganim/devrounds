@@ -86,9 +86,16 @@ type PatternResult = { match: { index: number; lines: string[] } | null; stopped
 // thread start does not eat it.
 function matchPatterns(patterns: string[], lines: string[]): Promise<PatternResult> {
   return new Promise((resolve) => {
-    const worker = new Worker(new URL('./pattern-worker.ts', import.meta.url), {
-      workerData: { patterns, lines, limit: SUMMARY_LINES },
-    })
+    let worker: Worker
+    try {
+      worker = new Worker(new URL('./pattern-worker.ts', import.meta.url), {
+        workerData: { patterns, lines, limit: SUMMARY_LINES },
+      })
+    } catch {
+      // No thread to start (ERR_WORKER_INIT_FAILED under memory pressure): a worker that failed on the first pattern.
+      resolve({ match: null, stoppedAt: 0 })
+      return
+    }
     let evaluated = 0
     let timer: NodeJS.Timeout | undefined
     let settled = false
