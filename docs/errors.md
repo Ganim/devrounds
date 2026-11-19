@@ -56,7 +56,7 @@ Job type {jobType} is not allowed on queue {queue}.
 
 ### Fix
 
-Pick a queue that lists {jobType} (see `devrounds queue list`), or add it with `devrounds queue set {queue} --job-types <a,b>`.
+Pick a queue that lists {jobType} (see `devrounds queue list`), or list it with the job types the queue already allows: `devrounds queue set {queue} --job-types <a,b>` (the list replaces the old one).
 
 ## DR201
 

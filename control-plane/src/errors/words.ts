@@ -42,7 +42,7 @@ export const WORDS: Record<ErrorCode, Words> = {
   },
   DR153: {
     text: 'Job type {jobType} is not allowed on queue {queue}.',
-    hint: 'Pick a queue that lists {jobType} (see `devrounds queue list`), or add it with `devrounds queue set {queue} --job-types <a,b>`.',
+    hint: 'Pick a queue that lists {jobType} (see `devrounds queue list`), or list it with the job types the queue already allows: `devrounds queue set {queue} --job-types <a,b>` (the list replaces the old one).',
     httpStatus: 400,
     keys: ['jobType', 'queue'],
   },

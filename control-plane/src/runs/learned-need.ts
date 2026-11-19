@@ -1,3 +1,4 @@
+import { sql } from 'kysely'
 import type { Trx } from '../planning/resolve.ts'
 
 // 512 MiB, devlanes DEFAULT_MEMORY_NEED: what a job type is assumed to need before any run of it reported a peak.
@@ -40,6 +41,9 @@ export async function learnedNeed(trx: Trx, projectId: string, jobTypeId: string
 /**
  * Recomputes the learned_needs row of the key from its runs. Called in the transaction that records a run's peak, so
  * the row never lags the runs it summarizes. A key without any peak keeps no row.
+ * Two runs of the key finishing at once would each read the peaks without the other's uncommitted one, and the later
+ * upsert would leave the row one peak behind; a lock per key, held to the commit, makes the second read wait for the
+ * first commit (read committed: the read after the lock sees it).
  */
 export async function updateLearnedNeed(
   trx: Trx,
@@ -47,6 +51,8 @@ export async function updateLearnedNeed(
   jobTypeId: string,
   machineId: string,
 ): Promise<void> {
+  const key = `devrounds.learned_need:${projectId}:${jobTypeId}:${machineId}`
+  await sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(trx)
   const peaks = await recentPeaks(trx, projectId, jobTypeId, machineId)
   if (peaks.length === 0) return
   const need = median(peaks).toString()

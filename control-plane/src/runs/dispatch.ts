@@ -1,14 +1,11 @@
 import { EventEmitter } from 'node:events'
-import type { Selectable } from 'kysely'
-import type { JobTypesTable } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
-import { findJobType } from '../job-types/service.ts'
-import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
-import type { Telemetry } from '../telemetry/otel.ts'
+import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import { parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { learnedNeed } from './learned-need.ts'
-import { createRun, failRevokedRuns, markOffered, runTraceParent } from './record.ts'
+import { failRevokedRuns, runTraceParent } from './record.ts'
 import { TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId, runView } from './view.ts'
 
@@ -17,132 +14,98 @@ export const runEvents = new EventEmitter()
 // One listener per `GET /runs/:id?wait` in flight; Node's default of 10 would warn under normal load.
 runEvents.setMaxListeners(0)
 
-export type DispatchInput = {
-  projectKey: string
-  jobTypeKey: string
-  machineName: string
-  cwd: string
-  taskKey?: string
-}
-
 type Offer = Extract<ControlPlaneMessage, { type: 'Offer' }>
 
-/** The machine's id when it has a live session; DR350 otherwise, DR201 when no live machine has that name. */
-async function connectedMachine(ctx: TenantCtx, sessions: Sessions, name: string): Promise<string> {
-  const machine = await run(ctx, (trx) =>
-    trx.selectFrom('machines').select('id').where('name', '=', name).where('revoked_at', 'is', null).executeTakeFirst(),
-  )
-  if (!machine) fail('DR201', { kind: 'machine', key: name })
-  if (!sessions.get(machine.id)) fail('DR350', { machine: name })
-  return machine.id
+// What an Offer of a run carries, from its run, job and job type.
+function offerRows(trx: Trx) {
+  return trx
+    .selectFrom('runs')
+    .innerJoin('jobs', 'jobs.id', 'runs.job_id')
+    .innerJoin('job_types', 'job_types.id', 'runs.job_type_id')
+    .select([
+      'runs.id',
+      'runs.project_id',
+      'runs.memory_need',
+      'runs.trace_id',
+      'runs.trace_span_id',
+      'jobs.cwd',
+      'job_types.id as job_type_id',
+      'job_types.key',
+      'job_types.program',
+      'job_types.args',
+      'job_types.env_allow',
+      'job_types.timeout_s',
+    ])
 }
 
-/**
- * Records a run as offered and builds its Offer, inside the caller's transaction when `ctx.trx` is set. The Offer is
- * not sent here: the executor answers it at once, and its events find no run (DR201) until this transaction commits.
- */
-export async function recordDispatch(
-  ctx: Ctx,
-  sessions: Sessions,
-  i: DispatchInput,
-  telemetry: Telemetry | null = null,
-): Promise<{ view: RunView; machineId: string; offer: Offer }> {
-  const machineId = await connectedMachine(ctx, sessions, i.machineName)
-  return run(ctx, async (trx) => {
-    const inner = { ...ctx, trx }
-    const created = await createRun(inner, i)
-    // Exported before the commit, so a rollback after this point leaves a run.dispatch span of a run that does not
-    // exist; accepted (the live machine and the job type are already checked), the trace id must go in this row.
-    const traceParent = telemetry?.runDispatched({ id: created.id, jobType: i.jobTypeKey }) ?? null
-    await markOffered(inner, created.id, traceParent)
-    const project = await findProject(trx, i.projectKey)
-    const jobType = await findJobType(trx, project.id, i.jobTypeKey)
-    const offered = { id: created.id, project_id: project.id, cwd: i.cwd, machine_id: machineId, traceParent }
-    const offer = await offerOf(trx, offered, jobType)
-    return { view: await loadRunView(trx, created.id), machineId, offer }
-  })
-}
+type OfferRow = Awaited<ReturnType<ReturnType<typeof offerRows>['executeTakeFirstOrThrow']>>
 
-type JobTypeRow = Pick<Selectable<JobTypesTable>, 'id' | 'key' | 'program' | 'args' | 'env_allow' | 'timeout_s'>
-
-async function offerOf(
-  trx: Trx,
-  run: { id: string; project_id: string; cwd: string; machine_id: string; traceParent: string | null },
-  jobType: JobTypeRow,
-): Promise<Offer> {
-  const need = await learnedNeed(trx, run.project_id, jobType.id, run.machine_id)
+function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null): Offer {
   return {
     type: 'Offer',
-    run: run.id,
+    run: row.id,
     job: {
-      job_type: jobType.key,
-      program: jobType.program,
-      args: jobType.args as string[],
-      cwd: run.cwd,
-      env_allow: jobType.env_allow,
-      timeout_s: jobType.timeout_s,
+      job_type: row.key,
+      program: row.program,
+      args: row.args as string[],
+      cwd: row.cwd,
+      env_allow: row.env_allow,
+      timeout_s: row.timeout_s,
     },
-    // A learned peak is a byte count well under 2^53, so the wire carries it as a JSON number.
-    memory_need: Number(need),
-    trace_parent: run.traceParent,
+    // A need is a byte count well under 2^53, so the wire carries it as a JSON number.
+    memory_need: Number(memoryNeed),
+    trace_parent: traceParent,
   }
 }
 
 /**
+ * The Offer of a run the scheduler just claimed (scheduler/claim.ts), inside the claim's transaction, with the
+ * memory need the claim reserved. With telemetry on, the run.dispatch span is exported here and its trace and span
+ * ids go on the run, for a re-sent Offer and for run.record. The span is exported before the commit, so a rollback
+ * leaves a span of a claim that did not happen; accepted, the trace id must go in this row.
+ */
+export async function claimedOffer(
+  trx: Trx,
+  runId: string,
+  memoryNeed: bigint,
+  telemetry: Telemetry | null,
+): Promise<Offer> {
+  const row = await offerRows(trx).where('runs.id', '=', runId).executeTakeFirstOrThrow()
+  const traceParent = telemetry?.runDispatched({ id: runId, jobType: row.key }) ?? null
+  const trace = parseTraceParent(traceParent)
+  if (trace) {
+    await trx
+      .updateTable('runs')
+      .set({ trace_id: trace.traceId, trace_span_id: trace.spanId })
+      .where('id', '=', runId)
+      .execute()
+  }
+  return offerOf(row, memoryNeed, traceParent)
+}
+
+/**
  * The Offer of every run of `machineId` still offered, oldest first, for the gateway to send again after each
- * HelloAck: an Offer lost with a session that dropped after the dispatch commit would leave its run offered for
- * good. The executor ignores the Offer of a run it already knows.
+ * HelloAck: an Offer lost with a session that dropped between the claim's commit and the send would leave its run
+ * offered for good. The executor ignores the Offer of a run it already knows.
  */
 export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[]> {
   return run(ctx, async (trx) => {
-    const rows = await trx
-      .selectFrom('runs')
-      .innerJoin('jobs', 'jobs.id', 'runs.job_id')
-      .innerJoin('job_types', 'job_types.id', 'runs.job_type_id')
-      .select([
-        'runs.id',
-        'runs.project_id',
-        'runs.trace_id',
-        'runs.trace_span_id',
-        'jobs.cwd',
-        'job_types.id as job_type_id',
-        'job_types.key',
-        'job_types.program',
-        'job_types.args',
-        'job_types.env_allow',
-        'job_types.timeout_s',
-      ])
+    const rows = await offerRows(trx)
       .where('runs.machine_id', '=', machineId)
       .where('runs.state', '=', 'offered')
       .orderBy('runs.offered_at')
       .execute()
     const offers: Offer[] = []
     for (const row of rows) {
-      offers.push(
-        await offerOf(
-          trx,
-          { ...row, machine_id: machineId, traceParent: runTraceParent(row) },
-          { ...row, id: row.job_type_id },
-        ),
-      )
+      // A claim stores the need it reserved; a run offered before claims existed has none, so it gets the learned one.
+      const need =
+        row.memory_need === null
+          ? await learnedNeed(trx, row.project_id, row.job_type_id, machineId)
+          : BigInt(row.memory_need)
+      offers.push(offerOf(row, need, runTraceParent(row)))
     }
     return offers
   })
-}
-
-/**
- * Creates a run on a connected machine and offers it. `ctx` must not carry a transaction: the Offer goes out after
- * the commit. A session lost between the commit and the send leaves the run offered.
- */
-export async function dispatchRun(
-  ctx: Ctx,
-  sessions: Sessions,
-  i: DispatchInput,
-  telemetry: Telemetry | null = null,
-): Promise<RunView> {
-  const { view, machineId, offer } = await recordDispatch(ctx, sessions, i, telemetry)
-  sessions.send(machineId, offer)
-  return view
 }
 
 /**

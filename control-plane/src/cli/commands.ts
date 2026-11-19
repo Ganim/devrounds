@@ -769,24 +769,29 @@ export const COMMANDS: Spec[] = [
       return {
         failures: [],
         body: [`saved job type ${key}`],
-        next: `devrounds run start ${shellArg(key)} --machine <name> --cwd <path>`,
+        next: `devrounds run start ${shellArg(key)} --cwd <path>`,
       }
     },
   },
   {
     path: ['run', 'start'],
-    usage: 'run start <jobType> --machine <name> --cwd <path> [--task <key>]',
+    usage:
+      'run start <jobType> --cwd <path> [--machine <name>] [--queue <key>] [--task <key>]   ' +
+      'queue a run; the scheduler offers it to a machine with room, --machine pins it',
     args: 1,
-    options: { machine: str, cwd: str, task: str },
+    options: { machine: str, cwd: str, queue: str, task: str },
     run: async (inv, connect) => {
       const api = await connect()
       const jobType = arg(inv, 0, '<jobType>')
-      const need = (name: string) => text(inv, name) ?? fail('DR101', { path: `--${name}`, reason: 'is required' })
-      const body = { jobType, machine: need('machine'), cwd: need('cwd'), task: text(inv, 'task') }
+      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const machine = text(inv, 'machine')
+      const body = { jobType, cwd, machine, queue: text(inv, 'queue'), task: text(inv, 'task') }
       const r = await api.send<RunJson>('POST', '/runs', body)
+      // The run is placed later, so the machine printed is the pin, if any.
+      const on = machine === undefined ? '' : fmt` on ${machine}`
       return {
         failures: [],
-        body: [fmt`run ${r.id} ${r.state} · ${r.jobType} on ${r.machine}`],
+        body: [fmt`run ${r.id} ${r.state} · ${r.jobType}` + on],
         next: `devrounds run show ${shellArg(r.id)} --wait`,
       }
     },
@@ -866,18 +871,18 @@ export const COMMANDS: Spec[] = [
       }
       const concurrency = orNull(text(inv, 'concurrency'))
       const jobTypes = orNull(text(inv, 'job-types'))
+      const listed = jobTypes
+        ?.split(',')
+        .map((jobType) => jobType.trim())
+        .filter(Boolean)
+      // An empty list lets every job type in; only the literal `none` says so, never a stray "," or blank.
+      if (listed?.length === 0) {
+        fail('DR101', { path: '--job-types', reason: 'lists no job type; use none to let every job type in' })
+      }
       const body = {
         priority: priority === undefined ? undefined : Number(priority),
         concurrency: concurrency == null ? concurrency : (integer(inv, 'concurrency', 1) as number),
-        jobTypes:
-          jobTypes == null
-            ? jobTypes === null
-              ? []
-              : undefined
-            : jobTypes
-                .split(',')
-                .map((jobType) => jobType.trim())
-                .filter(Boolean),
+        jobTypes: jobTypes === null ? [] : listed,
       }
       const q = await api.send<QueueJson>('PUT', path('queues', key), body)
       return { failures: [], body: [queueLine(q)], next: 'devrounds queue list' }
@@ -895,7 +900,7 @@ export const COMMANDS: Spec[] = [
       return {
         failures: [],
         body: queues.length > 0 ? queues.map(queueLine) : ['no queues'],
-        next: queues.length > 0 ? 'devrounds plan show' : 'devrounds queue set <key>',
+        next: queues.length > 0 ? 'devrounds batch submit <file.yaml>' : 'devrounds queue set <key>',
       }
     },
   },

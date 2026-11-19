@@ -4,7 +4,9 @@ import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
 import { explain } from './errors/error.ts'
+import { Sessions } from './executor/gateway.ts'
 import { pruneLogSegments } from './runs/log-store.ts'
+import { Scheduler } from './scheduler/scheduler.ts'
 import { startTelemetry } from './telemetry/otel.ts'
 
 // The control plane. `serve` never migrates (that needs the owner URL; see `devrounds-admin migrate`) and binds to
@@ -15,7 +17,20 @@ async function serve(): Promise<void> {
   // The app logger exists only once the server is built with the telemetry; until then SDK warnings go to stderr.
   let warn = (message: string) => console.error(message)
   const telemetry = await startTelemetry(config.otlpEndpoint, undefined, (message) => warn(message))
-  const app = buildServer({ db, logsRoot: config.logsRoot, telemetry })
+  const sessions = new Sessions()
+  // The scheduler is built before the server (the gateway pokes it) and logs through the server's logger once it exists.
+  const scheduler = new Scheduler({
+    db,
+    sessions,
+    offerTimeoutS: config.offerTimeoutS,
+    pollMs: config.schedulerPollS * 1000,
+    telemetry,
+    log: {
+      warn: (data, message) => app.log.warn(data, message),
+      error: (data, message) => app.log.error(data, message),
+    },
+  })
+  const app = buildServer({ db, logsRoot: config.logsRoot, telemetry, sessions, scheduler })
   warn = (message) => app.log.warn(message)
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
@@ -25,6 +40,8 @@ async function serve(): Promise<void> {
   const pruning = setInterval(prune, PRUNE_EVERY_MS)
   const stop = async () => {
     clearInterval(pruning)
+    // First, so no tick claims against a closing pool or offers to a closing gateway.
+    await scheduler.stop()
     // The 'disconnect' listener below keeps the IPC channel, and so this process, alive until it is closed.
     process.off('disconnect', stop)
     if (process.connected) process.disconnect()
@@ -45,6 +62,8 @@ async function serve(): Promise<void> {
     await stop()
     throw err
   }
+  // LISTEN uses the server's own URL on a dedicated connection, outside the pool.
+  await scheduler.start(config.databaseUrl)
   await prune()
 }
 

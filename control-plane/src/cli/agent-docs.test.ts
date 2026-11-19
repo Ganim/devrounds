@@ -12,7 +12,9 @@ test('every devrounds command quoted in AGENTS.md parses', async () => {
   const quoted = [...text.matchAll(/`devrounds ([^`]+)`/g)].map((m) => m[1])
   assert.ok(quoted.length >= 5, `expected the session commands in AGENTS.md, found ${quoted.length}`)
   for (const command of quoted) {
-    assert.doesNotThrow(() => parseCommand(command.split(/\s+/)), `devrounds ${command}`)
+    // An optional part in brackets must parse too: it is checked with the brackets dropped.
+    const words = command.replace(/[[\]]/g, '').split(/\s+/)
+    assert.doesNotThrow(() => parseCommand(words), `devrounds ${command}`)
   }
   // The check must be able to fail.
   assert.throws(() => parseCommand(['task', 'finish']), DevRoundsError)

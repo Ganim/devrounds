@@ -65,6 +65,16 @@ past 10 MB, 14 days kept). One `supervise` runs per home; a second one exits at 
 does; runs keep going and the next `run` reports them as orphans. `service uninstall` stops and removes the task and the
 copy, and keeps the home; run it from the build, not from the installed copy, which cannot delete itself.
 
+`devrounds run start <jobType> --cwd <path>` queues a run (`--machine <name>` pins it, `--queue <key>` picks a queue);
+it never fails because no executor is connected. The control plane's scheduler offers queued runs to connected machines
+that sent a `MachineReport` in the last 30 s, the one with the most free memory first, as long as the run's learned
+memory need fits in free memory minus the reserve (a tenth of the total, at most 2 GiB) minus the needs already
+offered there. It wakes on a Postgres NOTIFY (`devrounds_scheduler`) when a run is queued or ends, when an executor
+connects or reports, and on a poll every `schedulerPollS` seconds (default 15, `DEVROUNDS_SCHEDULER_POLL_S`), which
+keeps placing runs if its LISTEN connection is down. `offerTimeoutS` (default 120, at least 5,
+`DEVROUNDS_OFFER_TIMEOUT_S`) is how long an executor has to answer an Offer. Both go in `server.json` or the
+environment.
+
 ```
 pnpm footprint    # after 60 s with no job running: private bytes of both services against their budgets
 pnpm e2e          # the executor end to end: synthetic job, pnpm lint, orphan, footprint

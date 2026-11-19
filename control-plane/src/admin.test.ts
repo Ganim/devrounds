@@ -17,7 +17,8 @@ test('init writes a loadable config and refuses to overwrite it without force', 
 
   const written = await initConfig(path, { force: false })
   const config = await loadConfig({}, path)
-  assert.deepEqual(config, written)
+  // The scheduler settings are not written; their defaults come back.
+  assert.deepEqual(config, { ...written, schedulerPollS: 15, offerTimeoutS: 120 })
   assert.equal(config.port, 4992)
   assert.equal(config.adminDatabaseUrl, 'postgres://postgres:postgres@127.0.0.1:15433/devrounds')
   assert.equal(config.databaseUrl, `postgres://devrounds_app:${config.appPassword}@127.0.0.1:15433/devrounds`)
@@ -42,7 +43,15 @@ test('serve config loads without an admin URL and never returns owner credential
     port: 4992,
     logsRoot: defaultLogsRoot(),
     logRetentionDays: 14,
+    schedulerPollS: 15,
+    offerTimeoutS: 120,
   })
+  const bad = (env: Record<string, string>) =>
+    assert.rejects(loadServerConfig(env, path), (err) => err instanceof DevRoundsError && err.code === 'DR502')
+  for (const value of ['0', '-1', 'soon']) await bad({ DEVROUNDS_SCHEDULER_POLL_S: value })
+  for (const value of ['4', '7.5', 'never']) await bad({ DEVROUNDS_OFFER_TIMEOUT_S: value })
+  const tuned = await loadServerConfig({ DEVROUNDS_SCHEDULER_POLL_S: '0.5', DEVROUNDS_OFFER_TIMEOUT_S: '5' }, path)
+  assert.deepEqual([tuned.schedulerPollS, tuned.offerTimeoutS], [0.5, 5])
   await assert.rejects(loadConfig({}, path), (err) => err instanceof DevRoundsError && err.code === 'DR502')
 
   const full = join(dir, 'full.json')
@@ -51,7 +60,9 @@ test('serve config loads without an admin URL and never returns owner credential
     'databaseUrl',
     'logRetentionDays',
     'logsRoot',
+    'offerTimeoutS',
     'port',
+    'schedulerPollS',
   ])
 })
 

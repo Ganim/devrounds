@@ -35,9 +35,12 @@ const USAGE = `usage: devrounds-admin <command>
   service install                    run the control plane as the ${TASK_NAME} scheduled task (Windows) and start it
   service uninstall                  stop and remove the ${TASK_NAME} scheduled task`
 
-export async function initConfig(path: string, opts: { force: boolean }): Promise<Config> {
+// The scheduler settings stay out of the file: their defaults apply until someone sets them.
+type InitialConfig = Omit<Config, 'schedulerPollS' | 'offerTimeoutS'>
+
+export async function initConfig(path: string, opts: { force: boolean }): Promise<InitialConfig> {
   const appPassword = randomBytes(24).toString('base64url')
-  const config: Config = {
+  const config: InitialConfig = {
     databaseUrl: `postgres://${APP_ROLE}:${appPassword}@127.0.0.1:15433/devrounds`,
     adminDatabaseUrl: 'postgres://postgres:postgres@127.0.0.1:15433/devrounds',
     port: 4992,

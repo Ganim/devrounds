@@ -2,8 +2,9 @@
 // pnpm e2e: the executor end to end on this machine, self-contained. Builds the release binaries, starts its own
 // control plane on the test database (port 4993) and its own executor under `supervise` with a home in
 // .superpowers/tmp and a tree-fixture copy of its own on PATH, pairs it into a fresh tenant, then runs:
-//   synthetic  tree-fixture with 3 lingering children: finished, stamped, swept, hidden, steps and 1000 log lines
-//   lint       `pnpm lint` of this repo through pnpm.cmd: finished and hidden
+//   synthetic  tree-fixture with 3 lingering children, placed by the scheduler: finished, stamped, swept, hidden,
+//              steps and 1000 log lines
+//   lint       `pnpm lint` of this repo through pnpm.cmd, placed by the scheduler: finished and hidden
 //   orphan     `run` killed under a live run, restarted by its supervisor: the run is orphaned, killed, tree gone
 //   re-pair    the machine revoked, the same home paired again as a new machine: synthetic finishes on it
 // then measures both sides with scripts/footprint.ts after 60 s idle, and checks that `run` exits once its supervisor
@@ -229,8 +230,9 @@ async function main(): Promise<void> {
     for (const file of ['synthetic.yaml', 'lint.yaml', 'orphan.yaml'])
       await cli('jobtype', 'set', join(JOB_TYPES, file))
 
+    // No --machine: the scheduler places each run on the one connected machine once it has reported.
     const start = async (jobType: string, cwd: string): Promise<string> => {
-      const out = await cli('run', 'start', jobType, '--machine', machine, '--cwd', cwd)
+      const out = await cli('run', 'start', jobType, '--cwd', cwd)
       return /run ([0-9a-f-]{36})/.exec(out)?.[1] ?? assert.fail(out)
     }
     const view = (id: string) => api<RunJson>(`/projects/${PROJECT}/runs/${id}`)
@@ -336,6 +338,7 @@ async function main(): Promise<void> {
     await until('the re-paired executor to connect', 30_000, async () =>
       (await api<MachineJson[]>('/machines')).some((m) => m.name === repaired && m.connected) ? true : undefined,
     )
+    // Pinned, so the run proves the re-paired machine's new row takes work.
     const out = await cli('run', 'start', 'synthetic', '--machine', repaired, '--cwd', tmp)
     const repairedRun = await ended(/run ([0-9a-f-]{36})/.exec(out)?.[1] ?? assert.fail(out), 120_000)
     assert.equal(repairedRun.state, 'finished', JSON.stringify(repairedRun))

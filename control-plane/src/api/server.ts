@@ -11,7 +11,7 @@ import { defaultLogsRoot } from '../config.ts'
 import { toDevRoundsError } from '../convert-error.ts'
 import type { Database } from '../db/schema.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
-import { executorRoutes, MAX_PAYLOAD, Sessions } from '../executor/gateway.ts'
+import { executorRoutes, MAX_PAYLOAD, type SchedulerPoke, Sessions } from '../executor/gateway.ts'
 import { PairingLimiter } from '../machines/pairing.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { jobRoutes } from './job-routes.ts'
@@ -39,6 +39,8 @@ export type ServerOptions = {
   logsRoot?: string
   // The OpenTelemetry exporter (telemetry/otel.ts); none, the default, means no spans.
   telemetry?: Telemetry | null
+  // Woken by the gateway after each HelloAck and MachineReport (scheduler/scheduler.ts); `serve` passes its own.
+  scheduler?: SchedulerPoke
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -102,10 +104,18 @@ export function buildServer(opts: ServerOptions) {
   app.register(projectRoutes, { prefix: '/api/projects/:key', db: opts.db })
   const logsRoot = opts.logsRoot ?? defaultLogsRoot()
   const telemetry = opts.telemetry ?? null
-  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot, telemetry })
+  app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
-  app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot, telemetry })
+  app.register(executorRoutes, {
+    prefix: '/api/executor',
+    db: opts.db,
+    sessions,
+    limiter,
+    logsRoot,
+    telemetry,
+    scheduler: opts.scheduler,
+  })
 
   const webDir = opts.webDir ?? DEFAULT_WEB_DIR
   app.register(async (instance) => {

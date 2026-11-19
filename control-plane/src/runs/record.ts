@@ -5,6 +5,7 @@ import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { ensureQueue } from '../queues/service.ts'
+import { notifyScheduler } from '../scheduler/notify.ts'
 import { formatTraceParent, parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
 import { int4, int8 } from './int-columns.ts'
@@ -14,8 +15,9 @@ import { loadRunView, type RunView, requireRunId } from './view.ts'
 
 const INT_MAX = 2147483647
 
-/** Records a job (in the project's `default` queue) and its first run, queued. The machine is the live machine named
- * `machineName`. Direct dispatch only: the scheduler's jobs go through jobs/enqueue.ts. */
+/** Records a job (in the project's `default` queue) and its first run, queued, already on the live machine named
+ * `machineName`, and wakes nobody: with markOffered it sets up an offered run without the scheduler (tests and
+ * fixtures). Runs to be placed go through jobs/enqueue.ts. */
 export function createRun(
   ctx: Ctx,
   i: { projectKey: string; jobTypeKey: string; machineName: string; cwd: string; taskKey?: string },
@@ -297,6 +299,8 @@ export async function applyRunEvent(
         })
         // Same transaction as the peak, so the next claim already places by it.
         await updateLearnedNeed(trx, row.project_id, row.job_type_id, machineId)
+        // An ended run frees its memory, its queue slot and its dependents: the scheduler looks again at the commit.
+        await notifyScheduler(trx, ctx.tenantId)
         return
       }
     }
@@ -306,7 +310,8 @@ export async function applyRunEvent(
 /**
  * Fails, class infra, every run of the revoked machine `machineId` that has not ended (offered, admitted or running),
  * or only `runId` with it, inside `trx`; returns the ids failed. A revoked executor never reports again, so these runs
- * could never end otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative.
+ * could never end otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative. Like
+ * any run end, it wakes the scheduler at the commit.
  */
 export async function failRevokedRuns(
   trx: Trx,
@@ -324,8 +329,9 @@ export async function failRevokedRuns(
     .where('machine_id', '=', machine.id)
     .where('state', 'in', ['offered', 'admitted', 'running'])
     .$if(runId !== undefined, (query) => query.where('id', '=', runId as string))
-    .returning('id')
+    .returning(['id', 'tenant_id'])
     .execute()
+  if (rows.length > 0) await notifyScheduler(trx, rows[0].tenant_id)
   return rows.map((row) => row.id)
 }
 
@@ -341,7 +347,8 @@ export const UNSUPERVISED_SUMMARY = 'executor restarted; the run ended while uns
  * its job type's `kill` policy answers Stop orphan_policy (orphan_action killed), `let_finish` sends nothing. A dead
  * run failed with class infra, stamped like any executor event (see applyRunEvent). An alive repeat of a run already
  * orphaned to be killed answers its Stop again. An orphan its run cannot take (another machine's, already ended, or a
- * let_finish repeat) is logged and skipped, so the others still apply.
+ * let_finish repeat) is logged and skipped, so the others still apply. An applied orphan ends its run, so it wakes
+ * the scheduler at the commit.
  */
 export async function applyOrphans(
   ctx: TenantCtx,
@@ -352,17 +359,20 @@ export async function applyOrphans(
 ): Promise<StopMessage[]> {
   return run(ctx, async (trx) => {
     const stops: StopMessage[] = []
+    let applied = 0
     for (const { run: runId, alive } of event.runs) {
       try {
         if (await applyOrphan(trx, machineId, runId, alive, at)) {
           stops.push({ type: 'Stop', run: runId, reason: 'orphan_policy' })
         }
+        applied += 1
       } catch (err) {
         // Every rejection is raised before the run's update, so the transaction stays usable for the next one.
         if (!(err instanceof DevRoundsError)) throw err
         log.warn({ code: err.code, machineId, run: runId }, 'orphan not applied to its run')
       }
     }
+    if (applied > 0) await notifyScheduler(trx, ctx.tenantId)
     return stops
   })
 }

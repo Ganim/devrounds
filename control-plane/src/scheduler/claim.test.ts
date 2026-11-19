@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
-import { sql } from 'kysely'
+import { sql, type Transaction } from 'kysely'
+import type { Database } from '../db/schema.ts'
 import { putJobType } from '../job-types/service.ts'
 import { enqueueRun, submitBatch } from '../jobs/enqueue.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { putQueue } from '../queues/service.ts'
-import { storedNeed } from '../runs/learned-need.ts'
+import { storedNeed, updateLearnedNeed } from '../runs/learned-need.ts'
 import { applyRunEvent, createRun, markOffered } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { TEST_APP_ROLE, testDb } from '../test-support/db.ts'
@@ -341,4 +342,61 @@ test('a RunFinished with a peak updates learned_needs to the median of the last 
     storedNeed(trx, s.ids.projectId, s.ids.jobTypeId, machineId),
   )
   assert.equal(stored, (11n * MIB) / 2n)
+})
+
+test('two runs of one key finishing at once both count in learned_needs', async () => {
+  const s = await setup()
+  const machineId = s.machineId('build-01')
+  const runs: string[] = []
+  for (let i = 0; i < 2; i++) {
+    const created = await createRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\w' })
+    await markOffered(s.ctx, created.id)
+    runs.push(created.id)
+  }
+  // Each transaction records its run's peak and recomputes the key, as RunFinished does.
+  const finish = (trx: Transaction<Database>, runId: string, peak: bigint) =>
+    trx
+      .updateTable('runs')
+      .set({ peak_private_bytes: String(peak), finished_at: new Date() })
+      .where('id', '=', runId)
+      .execute()
+      .then(() => updateLearnedNeed(trx, s.ids.projectId, s.ids.jobTypeId, machineId))
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let firstDone = () => {}
+  const firstUpdated = new Promise<void>((resolve) => {
+    firstDone = resolve
+  })
+  const first = withTenant(s.t.db, s.tenant.tenantId, async (trx) => {
+    await finish(trx, runs[0], 100n * MIB)
+    firstDone()
+    await held
+  })
+  await firstUpdated
+  let secondPid: number | undefined
+  const second = withTenant(s.t.db, s.tenant.tenantId, async (trx) => {
+    const { rows } = await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(trx)
+    secondPid = rows[0].pid
+    await finish(trx, runs[1], 300n * MIB)
+  })
+  // The second recompute is blocked behind the first transaction before that one commits.
+  for (let waiting = false; !waiting; ) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    if (secondPid === undefined) continue
+    const { rows } = await sql<{ n: number }>`
+      select count(*)::int as n from pg_stat_activity where pid = ${secondPid} and wait_event_type = 'Lock'`.execute(
+      s.t.admin,
+    )
+    waiting = rows[0].n > 0
+  }
+  release()
+  await Promise.all([first, second])
+  const row = await s.t.admin
+    .selectFrom('learned_needs')
+    .select(['need_bytes', 'samples'])
+    .where('machine_id', '=', machineId)
+    .executeTakeFirstOrThrow()
+  assert.deepEqual(row, { need_bytes: String(200n * MIB), samples: 2 })
 })

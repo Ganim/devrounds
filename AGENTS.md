@@ -38,14 +38,15 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
   `devrounds-executor pair` on that machine. Machine tokens and pairing codes are stored only as SHA-256.
 - Run the executor as the `DevRoundsExecutor` scheduled task (`devrounds-executor service install`, after pairing).
   Check the idle budgets with `pnpm footprint` and the executor end to end with `pnpm e2e`.
-- Run a job with `devrounds run start <jobType> --machine <name> --cwd <path>`, then read its outcome with
-  `devrounds run show <id> --wait` (failures first: state, class, summary).
+- Run a job with `devrounds run start <jobType> --cwd <path> [--machine <name>]` (queued; the scheduler offers it to a
+  machine with room, `--machine` pins it), then read its outcome with `devrounds run show <id> --wait` (failures
+  first: state, class, summary).
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.
 - Use the `x5x` block of each range for executor, protocol and run errors: DR150, DR151, DR152, DR153, DR350, DR351,
-  DR352, DR450, DR451, DR452, DR453, DR550, DR551, DR552. The executor emits `DrError::new("DR###", data)` and prints `DR### <data json>`
-  plus `see docs/errors.md`; text and hints stay in `errors/words.ts`.
+  DR352, DR450, DR451, DR452, DR453, DR550, DR551, DR552. The executor emits `DrError::new("DR###", data)` and
+  prints `DR### <data json>` plus `see docs/errors.md`; text and hints stay in `errors/words.ts`.
 
 ## Accepted P0 exceptions
 

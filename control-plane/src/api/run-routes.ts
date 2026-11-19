@@ -4,12 +4,11 @@ import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
-import type { ControlPlaneMessage } from '../executor/protocol.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
-import { prepareStop, recordDispatch, runEvents, waitForRun } from '../runs/dispatch.ts'
+import { enqueueRun } from '../jobs/enqueue.ts'
+import { prepareStop, runEvents, waitForRun } from '../runs/dispatch.ts'
 import { readRunLog } from '../runs/log-store.ts'
-import type { Telemetry } from '../telemetry/otel.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -20,14 +19,13 @@ const RunParams = Type.Object({ key: Key, id: Key })
 // The agent output budget (cli/output.ts BODY_BUDGET): one page is one CLI screen.
 const LOG_PAGE_BYTES = 16384
 
-// Job types and runs of one project. Messages to the executor go out only after mutateIdempotent committed, and only
-// when the mutation ran: a replayed Idempotency-Key offers or stops nothing again.
+// Job types and runs of one project. A Stop goes out only after mutateIdempotent committed, and only when the
+// mutation ran: a replayed Idempotency-Key stops nothing again.
 export const runRoutes: FastifyPluginAsyncTypebox<{
   db: Kysely<Database>
   sessions: Sessions
   logsRoot: string
-  telemetry: Telemetry | null
-}> = async (app, { db, sessions, logsRoot, telemetry }) => {
+}> = async (app, { db, sessions, logsRoot }) => {
   authenticateMembers(app, db)
 
   app.put(
@@ -54,23 +52,30 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
         params: Type.Object({ key: Key }),
         headers: Headers,
         body: Type.Object(
-          { jobType: Key, machine: Key, cwd: Type.String({ minLength: 1, maxLength: 1000 }), task: Type.Optional(Key) },
+          {
+            jobType: Key,
+            cwd: Type.String({ minLength: 1, maxLength: 1000 }),
+            machine: Type.Optional(Key),
+            queue: Type.Optional(Key),
+            task: Type.Optional(Key),
+          },
           { additionalProperties: false },
         ),
       },
     },
-    async (request, reply) => {
-      let send: { machineId: string; message: ControlPlaneMessage } | undefined
-      const { jobType, machine, cwd, task } = request.body
-      const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
-        const input = { projectKey: request.params.key, jobTypeKey: jobType, machineName: machine, cwd, taskKey: task }
-        const { view, machineId, offer } = await recordDispatch(ctx, sessions, input, telemetry)
-        send = { machineId, message: offer }
-        return view
-      })
-      // A session lost since the check leaves the run offered until the next HelloAck, which sends pendingOffers again.
-      if (send) sessions.send(send.machineId, send.message)
-      return answer
+    (request, reply) => {
+      const { jobType, cwd, machine, queue, task } = request.body
+      // The Offer comes from the scheduler, woken at the commit, so a replayed key offers nothing again.
+      return mutateIdempotent(db, request, reply, (ctx) =>
+        enqueueRun(ctx, {
+          projectKey: request.params.key,
+          jobTypeKey: jobType,
+          cwd,
+          machineName: machine,
+          queueKey: queue,
+          taskKey: task,
+        }),
+      )
     },
   )
 

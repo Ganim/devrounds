@@ -13,20 +13,24 @@ import { DevRoundsError } from '../errors/error.ts'
 import { Sessions } from '../executor/gateway.ts'
 import { FEATURES } from '../executor/protocol.ts'
 import { putJobType } from '../job-types/service.ts'
+import { enqueueRun } from '../jobs/enqueue.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
+import { Scheduler } from '../scheduler/scheduler.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
-import { type TestDb, testDb } from '../test-support/db.ts'
-import { dispatchRun, runEvents, stopRun } from './dispatch.ts'
+import { TEST_DATABASE_URL, type TestDb, testDb } from '../test-support/db.ts'
+import { runEvents, stopRun } from './dispatch.ts'
 import { runView } from './view.ts'
 
 const projectKey = 'devrounds'
 const MIB = 1024 * 1024
+const GIB = 1024 * MIB
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 
 let t: TestDb
 let sessions: Sessions
+let scheduler: Scheduler
 let app: ReturnType<typeof buildServer>
 let host: string
 let scratch: string
@@ -51,12 +55,16 @@ before(async () => {
   sessions = new Sessions()
   await mkdir(join(REPO_ROOT, '.superpowers', 'tmp'), { recursive: true })
   scratch = await mkdtemp(join(REPO_ROOT, '.superpowers', 'tmp', 'dispatch-'))
-  app = buildServer({ db: t.db, logger: false, sessions, logsRoot: join(scratch, 'logs'), telemetry })
+  // Woken by each enqueue's NOTIFY and by the gateway; the poll never comes within a test.
+  scheduler = new Scheduler({ db: t.db, sessions, offerTimeoutS: 120, pollMs: 600_000, telemetry, log: console })
+  app = buildServer({ db: t.db, logger: false, sessions, scheduler, logsRoot: join(scratch, 'logs'), telemetry })
   await app.listen({ port: 0, host: '127.0.0.1' })
   host = `127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  await scheduler.start(TEST_DATABASE_URL)
 })
 
 after(async () => {
+  await scheduler.stop()
   await app.close()
   await rm(scratch, { recursive: true, force: true })
 })
@@ -77,12 +85,24 @@ async function setup() {
   const { code: pairing } = await createPairingCode(ctx, 'build-01')
   const machine = await redeemPairingCode(t.db, new PairingLimiter(), pairing, { os: 'windows', version: '0.1.0' })
   const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
-  const dispatch = () =>
-    dispatchRun(ctx, sessions, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' }, telemetry)
+  // Pinned to build-01; the scheduler offers it once the executor is connected and has reported.
+  const dispatch = () => enqueueRun(ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' })
   return { tenant, ctx, machine, token, dispatch }
 }
 
 type Message = { type: string; [field: string]: unknown }
+
+const REPORT = {
+  type: 'MachineReport',
+  total_memory: 32 * GIB,
+  available_memory: 16 * GIB,
+  commit_total: 8 * GIB,
+  commit_limit: 64 * GIB,
+  cpu_percent: 3,
+  memory_pressure: 'normal',
+  running: 0,
+  executor_private_bytes: 18_000_000,
+}
 
 // The executor's side of a session, over Node's global WebSocket, past HelloAck.
 async function executor(token: string) {
@@ -102,7 +122,11 @@ async function executor(token: string) {
     return inbox.shift() as Message
   }
   ws.send(JSON.stringify({ type: 'Hello', protocol: 1, version: '0.1.0', features: [...FEATURES], boot_id: 'boot-1' }))
-  assert.equal((await next()).type, 'HelloAck')
+  const ack = await next()
+  assert.equal(ack.type, 'HelloAck')
+  // Placeable from its first report on.
+  ws.send(JSON.stringify(REPORT))
+  await until(() => sessions.get(String(ack.machine_id))?.report !== undefined)
   let seq = 0
   return {
     next,
@@ -144,16 +168,8 @@ async function running(exec: Awaited<ReturnType<typeof executor>>, run: string) 
   await exec.event({ kind: 'StepFinished', run, step: 0, outcome: 'finished' })
 }
 
-test('dispatch to a machine without a live session answers DR350 and writes no run', async () => {
-  const { tenant, dispatch } = await setup()
-  await assert.rejects(dispatch(), (err) => code('DR350')(err) && (err as DevRoundsError).data.machine === 'build-01')
-  const runs = await t.admin.selectFrom('runs').select('id').where('tenant_id', '=', tenant.tenantId).execute()
-  const jobs = await t.admin.selectFrom('jobs').select('id').where('tenant_id', '=', tenant.tenantId).execute()
-  assert.deepEqual([runs, jobs], [[], []])
-})
-
-test('dispatch sends one Offer with memory_need 536870912 without history', async () => {
-  const { machine, token } = await setup()
+test('POST /runs queues the run and the scheduler sends one Offer with memory_need 536870912 without history', async () => {
+  const { tenant, machine, token } = await setup()
   const exec = await executor(machine.token)
   const body = JSON.stringify({ jobType: 'check', machine: 'build-01', cwd: 'C:\\work' })
   const post = () =>
@@ -169,10 +185,13 @@ test('dispatch sends one Offer with memory_need 536870912 without history', asyn
   const first = await post()
   assert.equal(first.status, 200, await first.clone().text())
   const view = (await first.json()) as { id: string; state: string }
-  assert.equal(view.state, 'offered')
-  // The same key replays the stored answer and offers nothing again.
+  // Queued at the commit; the Offer comes from the scheduler its NOTIFY wakes.
+  assert.equal(view.state, 'queued')
+  // The same key replays the stored answer and queues, so offers, nothing again.
   const replay = (await (await post()).json()) as { id: string }
   assert.equal(replay.id, view.id)
+  const runs = await t.admin.selectFrom('runs').select('id').where('tenant_id', '=', tenant.tenantId).execute()
+  assert.deepEqual(runs, [{ id: view.id }])
 
   assert.deepEqual(await exec.next(), {
     type: 'Offer',

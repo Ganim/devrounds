@@ -37,7 +37,13 @@ export const MAX_PAYLOAD = 4 * 1024 * 1024
 // A close reason is at most 123 bytes of UTF-8.
 const MAX_REASON_BYTES = 123
 
-type Session = { tenantId: string; socket: WebSocket }
+// The machine's latest MachineReport in this session, stamped with this process's clock: the scheduler places only
+// on a machine whose report is recent (scheduler/scheduler.ts).
+export type MachineMemory = { at: number; availableMemory: bigint; totalMemory: bigint }
+type Session = { tenantId: string; socket: WebSocket; report?: MachineMemory }
+
+/** What the gateway wakes when a machine of the tenant may take work. */
+export type SchedulerPoke = { poke(tenantId: string): void }
 
 // The reason the executor reads: `DR### <data json>`, the same line it prints for its own errors.
 function reasonOf(error: DevRoundsError): string {
@@ -57,6 +63,10 @@ export class Sessions {
 
   get(machineId: string): Session | undefined {
     return this.#live.get(machineId)
+  }
+
+  list(): { machineId: string; tenantId: string; report?: MachineMemory }[] {
+    return [...this.#live].map(([machineId, { tenantId, report }]) => ({ machineId, tenantId, report }))
   }
 
   /** False when the machine has no live session. */
@@ -91,6 +101,7 @@ type GatewayOptions = {
   limiter: PairingLimiter
   logsRoot: string
   telemetry?: Telemetry | null
+  scheduler?: SchedulerPoke
 }
 
 // Moves machines.last_seq to `seq`, only while it is below: the row lock and condition keep a replaced session still
@@ -254,9 +265,19 @@ function serveSession(
       for (const offer of await pendingOffers(ctx, machine.machineId)) reply(offer)
       // Orphan Stops lost the same way; they must precede this session's first Ack (see pendingOrphanStops).
       for (const stop of await pendingOrphanStops(ctx, machine.machineId)) reply(stop)
+      opts.scheduler?.poke(machine.tenantId)
       return
     }
-    if (message.type === 'MachineReport') await recordReport(ctx, machine.machineId, message)
+    if (message.type === 'MachineReport') {
+      session.report = {
+        at: Date.now(),
+        availableMemory: BigInt(message.available_memory),
+        totalMemory: BigInt(message.total_memory),
+      }
+      await recordReport(ctx, machine.machineId, message)
+      // Freed memory may fit a queued run, and the first report is what makes the machine placeable at all.
+      opts.scheduler?.poke(machine.tenantId)
+    }
     if (message.type === 'Event') {
       const event = message
       const { machineId } = machine

@@ -229,6 +229,12 @@ test('queue set, batch submit and batch show through the CLI and the API', async
     assert.match(set.stdout, /^fast {2}priority -1 · concurrency 2 · job types check, lint · depth 0 /)
     const cleared = await cli('queue', 'set', 'fast', '--concurrency', 'none', '--job-types', 'none')
     assert.match(cleared.stdout, /^fast {2}priority -1 · concurrency none · job types any · /)
+    // Only `none` empties the list; a stray separator is a typo, not "every job type".
+    for (const empty of [',', ' ']) {
+      const typo = await cli('queue', 'set', 'fast', '--job-types', empty)
+      assert.equal(typo.exitCode, 2, typo.stdout)
+      assert.match(typo.stderr + typo.stdout, /DR101.*--job-types/)
+    }
 
     const file = join(scratch, 'batch.yaml')
     await writeFile(
@@ -260,6 +266,7 @@ test('queue set, batch submit and batch show through the CLI and the API', async
     const list = await cli('queue', 'list')
     assert.match(list.stdout, /^fast {2}priority -1 · .* · depth 1 · in flight 0 · /m)
     assert.match(list.stdout, /^default {2}priority 0 · .* · depth 1 · in flight 0 · /m)
+    assert.match(list.stdout, /^next: devrounds batch submit <file\.yaml>$/m)
 
     const bad = await cli('batch', 'submit', file.replace('batch.yaml', 'missing.yaml'))
     assert.equal(bad.exitCode, 2, bad.stderr)
