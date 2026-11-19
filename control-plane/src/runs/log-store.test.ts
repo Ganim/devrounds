@@ -6,6 +6,7 @@ import { isAbsolute, join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
+import { sql } from 'kysely'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { runCli } from '../cli/commands.ts'
@@ -220,6 +221,30 @@ test('a duplicate segment is ignored', async () => {
     read.lines.map((line) => line.text),
     ['line 1', 'line 2', 'line 3'],
   )
+})
+
+test('a records count past int4 is stored at its maximum', async () => {
+  const { logCtx, runId, machineId } = await setup()
+  await storeSegment(logCtx, runId, { ...segment(1, 3), records: 4294967295 }, { machineId })
+  const row = await t.admin
+    .selectFrom('log_segments')
+    .select('records')
+    .where('run_id', '=', runId)
+    .executeTakeFirstOrThrow()
+  assert.equal(row.records, 2147483647)
+})
+
+test('more expired segments than one statement takes are all pruned', async () => {
+  const { tenant, runId } = await setup()
+  // Past the 65535 bind parameters of one Postgres statement.
+  const count = 70_000
+  await sql`
+    insert into log_segments (tenant_id, run_id, first_seq, last_seq, records, bytes, path, created_at)
+    select ${tenant.tenantId}::uuid, ${runId}::uuid, g, g, 1, 1, 'x', ${new Date(0)}
+    from generate_series(1, ${count}) g`.execute(t.admin)
+  const pruned = await pruneLogSegments(t.db, join(scratch, `empty-${runId}`), new Date(), 14)
+  assert.ok(pruned >= count, `pruned ${pruned}`)
+  assert.deepEqual(await segmentRows(runId), [])
 })
 
 test('segments older than the retention are pruned with their files', async () => {

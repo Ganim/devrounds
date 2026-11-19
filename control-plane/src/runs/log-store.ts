@@ -7,6 +7,7 @@ import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { findProject, run, type TenantCtx } from '../planning/resolve.ts'
 import { withTenant } from '../tenancy/scope.ts'
+import { int4 } from './int-columns.ts'
 import { requireRunId } from './view.ts'
 
 const zstdDecompress = promisify(zstdDecompressCallback)
@@ -24,6 +25,8 @@ export type LogPage = { lines: LogLine[]; nextCursor: bigint | null }
 
 /** What one segment may decompress to. A 1 MiB executor segment is a few MiB of JSON lines at worst. */
 export const SEGMENT_READ_BOUND = 16 * 1024 * 1024
+/** Segment ids one prune delete names. */
+const PRUNE_BATCH = 1000
 
 type Warn = { warn(data: Record<string, unknown>, message: string): void }
 const emitWarning: Warn = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) }
@@ -89,7 +92,7 @@ export async function storeSegment(
         run_id: runId,
         first_seq: segment.first_seq,
         last_seq: segment.last_seq,
-        records: segment.records,
+        records: int4(segment.records),
         bytes: bytes.length,
         // For people reading the table; code derives the file with segmentFile.
         path: segmentName(ctx.tenantId, runId, segment.first_seq),
@@ -189,17 +192,25 @@ export async function pruneLogSegments(
   const { rows } = await sql<{ tenant_id: string; id: string }>`
     select tenant_id, id from expired_log_segments(${cutoff})`.execute(db)
   const byTenant = new Map<string, string[]>()
-  for (const row of rows) byTenant.set(row.tenant_id, [...(byTenant.get(row.tenant_id) ?? []), row.id])
+  for (const row of rows) {
+    const ids = byTenant.get(row.tenant_id)
+    if (ids) ids.push(row.id)
+    else byTenant.set(row.tenant_id, [row.id])
+  }
   let pruned = 0
   for (const [tenantId, ids] of byTenant) {
-    const deleted = await withTenant(db, tenantId, (trx) =>
-      trx.deleteFrom('log_segments').where('id', 'in', ids).returning(['run_id', 'first_seq']).execute(),
-    )
-    for (const row of deleted) {
-      // Number is exact: the protocol caps seqs at 2^53.
-      await rm(segmentFile(logsRoot, tenantId, row.run_id, Number(row.first_seq)), { force: true })
+    // One statement binds at most 65535 parameters.
+    for (let at = 0; at < ids.length; at += PRUNE_BATCH) {
+      const batch = ids.slice(at, at + PRUNE_BATCH)
+      const deleted = await withTenant(db, tenantId, (trx) =>
+        trx.deleteFrom('log_segments').where('id', 'in', batch).returning(['run_id', 'first_seq']).execute(),
+      )
+      for (const row of deleted) {
+        // Number is exact: the protocol caps seqs at 2^53.
+        await rm(segmentFile(logsRoot, tenantId, row.run_id, Number(row.first_seq)), { force: true })
+      }
+      pruned += deleted.length
     }
-    pruned += deleted.length
   }
   return pruned
 }
