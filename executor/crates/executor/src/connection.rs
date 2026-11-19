@@ -5,11 +5,12 @@
 //!
 //! Events reach the control plane only through the [`Store`] outbox: each
 //! session resends what is left after `HelloAck.last_seq`, then sends new
-//! events as they are appended. `Ack` drops events from the outbox and
+//! events as they are appended, never more than [`SEND_WINDOW_BYTES`] of them
+//! unacked. `Ack` drops events from the outbox and
 //! `Resync` resends from the seq it names, so an event is applied once and in
 //! order whatever happens to the socket or the control plane.
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use devrounds_core::DrError;
 use devrounds_protocol::{
@@ -37,6 +38,10 @@ pub const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 /// What one resend read takes from the outbox: a backlog left by a long
 /// disconnect is sent page by page, never loaded whole.
 const RESEND_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Event bytes a session keeps sent but not acked. Past it the session waits
+/// for `Ack`s, still reading frames, so a slow control plane neither queues a
+/// whole backlog in its socket nor delays a `Stop` behind it.
+pub const SEND_WINDOW_BYTES: usize = 8 * 1024 * 1024;
 
 /// Close codes the control plane sends (see `control-plane/src/executor/gateway.ts`).
 const CLOSE_TOKEN: u16 = 4401;
@@ -168,6 +173,7 @@ async fn session<H: Handler>(
     let mut acked = false;
     // The last seq this session has sent; events go out strictly after it.
     let mut sent = 0;
+    let mut in_flight = InFlight::default();
     loop {
         tokio::select! {
             _ = reports.tick(), if acked => {
@@ -179,7 +185,7 @@ async fn session<H: Handler>(
             changed = appended.changed(), if acked => {
                 // The store this session holds owns the sender, so `changed` cannot fail; if it ever
                 // did, dropping the session beats spinning on it.
-                if changed.is_err() || !send_pending(&mut sink, store, &mut sent).await? {
+                if changed.is_err() || !send_pending(&mut sink, store, &mut sent, &mut in_flight).await? {
                     return Ok(Ended::Dropped { acked });
                 }
             }
@@ -202,15 +208,22 @@ async fn session<H: Handler>(
                                 store.ack_through(*last_seq).await?;
                                 sent = *last_seq;
                                 appended.mark_unchanged();
-                                if !send_pending(&mut sink, store, &mut sent).await? {
+                                if !send_pending(&mut sink, store, &mut sent, &mut in_flight).await? {
                                     return Ok(Ended::Dropped { acked });
                                 }
                                 connected.send_replace(true);
                             }
-                            ServerMessage::Ack(Ack { seq }) => store.ack_through(*seq).await?,
+                            ServerMessage::Ack(Ack { seq }) => {
+                                store.ack_through(*seq).await?;
+                                in_flight.acked(*seq);
+                                if acked && !send_pending(&mut sink, store, &mut sent, &mut in_flight).await? {
+                                    return Ok(Ended::Dropped { acked });
+                                }
+                            }
                             ServerMessage::Resync(Resync { from_seq }) if acked => {
+                                in_flight.resent_from(*from_seq);
                                 sent = from_seq.saturating_sub(1);
-                                if !send_pending(&mut sink, store, &mut sent).await? {
+                                if !send_pending(&mut sink, store, &mut sent, &mut in_flight).await? {
                                     return Ok(Ended::Dropped { acked });
                                 }
                             }
@@ -232,10 +245,58 @@ async fn session<H: Handler>(
     }
 }
 
-/// Sends every outbox frame after `sent`, in seq order, moving `sent` along,
-/// one page of at most [`RESEND_PAGE_BYTES`] at a time. False when the socket
-/// failed.
-async fn send_pending<S>(sink: &mut S, store: &Store, sent: &mut u64) -> Result<bool, DrError>
+/// The frames a session sent and has not seen acked, oldest first.
+#[derive(Default)]
+struct InFlight {
+    frames: VecDeque<(u64, usize)>,
+    bytes: usize,
+}
+
+impl InFlight {
+    /// Room for a frame of `len` bytes. A frame larger than the whole window
+    /// still goes out once nothing else is in flight.
+    fn fits(&self, len: usize) -> bool {
+        self.frames.is_empty() || self.bytes + len <= SEND_WINDOW_BYTES
+    }
+
+    fn push(&mut self, seq: u64, len: usize) {
+        self.frames.push_back((seq, len));
+        self.bytes += len;
+    }
+
+    /// `Ack` is cumulative.
+    fn acked(&mut self, seq: u64) {
+        while let Some(&(front, len)) = self.frames.front() {
+            if front > seq {
+                break;
+            }
+            self.frames.pop_front();
+            self.bytes -= len;
+        }
+    }
+
+    /// A `Resync` from `from_seq`: what was sent from there on goes again.
+    fn resent_from(&mut self, from_seq: u64) {
+        while let Some(&(back, len)) = self.frames.back() {
+            if back < from_seq {
+                break;
+            }
+            self.frames.pop_back();
+            self.bytes -= len;
+        }
+    }
+}
+
+/// Sends the outbox frames after `sent`, in seq order, moving `sent` along,
+/// one page of at most [`RESEND_PAGE_BYTES`] at a time, until the outbox is
+/// sent or [`SEND_WINDOW_BYTES`] are in flight; an `Ack` calls it again.
+/// False when the socket failed.
+async fn send_pending<S>(
+    sink: &mut S,
+    store: &Store,
+    sent: &mut u64,
+    in_flight: &mut InFlight,
+) -> Result<bool, DrError>
 where
     S: Sink<Message> + Unpin,
 {
@@ -245,6 +306,10 @@ where
             return Ok(true);
         }
         for (seq, frame) in page {
+            if !in_flight.fits(frame.len()) {
+                return Ok(true);
+            }
+            in_flight.push(seq, frame.len());
             if sink.send(Message::text(frame)).await.is_err() {
                 return Ok(false);
             }

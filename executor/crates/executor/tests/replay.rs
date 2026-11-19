@@ -9,7 +9,7 @@ use devrounds_core::gate::MemoryPressure;
 use devrounds_executor::{
     admission::AdmissionConfig,
     config::ExecutorConfig,
-    connection::{Connection, Handler},
+    connection::{Connection, Handler, SEND_WINDOW_BYTES},
 };
 use devrounds_protocol::{
     Ack, ClientMessage, HelloAck, MachineReport, PROTOCOL, Resync, RunEvent, ServerMessage,
@@ -245,6 +245,8 @@ async fn a_backlog_of_large_segments_is_resent_whole_and_in_order() {
                         panic!("unexpected event {:?}", event.event);
                     };
                     seen.push((event.seq, first_seq));
+                    // Acked as applied: past the send window nothing more comes without it.
+                    send(&mut socket, ServerMessage::Ack(Ack { seq: event.seq })).await;
                 }
                 other => panic!("expected an Event, got {other:?}"),
             }
@@ -252,6 +254,67 @@ async fn a_backlog_of_large_segments_is_resent_whole_and_in_order() {
         let expected: Vec<(u64, u64)> = (1..=12).map(|seq| (seq, (seq - 1) * 10 + 1)).collect();
         assert_eq!(seen, expected);
         nothing_more(&mut socket).await;
+    })
+    .await;
+    client.abort();
+}
+
+/// A control plane that applies slowly is never sent more than the window it
+/// has not acked; each Ack lets the next frames out.
+#[tokio::test]
+async fn a_large_backlog_never_has_more_than_the_window_unacked() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let store = Store::open(&dir.path().join("executor.db"))
+        .await
+        .expect("store");
+    const SEGMENTS: u64 = 20;
+    for first in 0..SEGMENTS {
+        let event = RunEvent::LogSegment {
+            run: "r1".to_owned(),
+            first_seq: first * 10 + 1,
+            last_seq: first * 10 + 10,
+            records: 10,
+            zstd_base64: "A".repeat(1024 * 1024),
+        };
+        store.append_event(event).await.expect("append");
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let config = ExecutorConfig {
+        url: format!("http://{}", listener.local_addr().expect("addr")),
+        machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
+    };
+    let connection = Connection::new(store.clone());
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut Quiet).await });
+
+    bounded(async {
+        let mut socket = accept(&listener, 0).await;
+        let mut seqs = Vec::new();
+        let mut acked = 0u64;
+        while (seqs.len() as u64) < SEGMENTS {
+            // Everything the executor sends before it hears an Ack.
+            let mut unacked = 0usize;
+            let mut burst = 0usize;
+            while let Ok(Some(message)) = tokio::time::timeout(QUIET, socket.next()).await {
+                let Ok(Message::Text(text)) = message else {
+                    continue;
+                };
+                if let ClientMessage::Event(event) = decode_client(&text).expect("decode") {
+                    unacked += text.len();
+                    burst += 1;
+                    seqs.push(event.seq);
+                }
+            }
+            assert!(burst > 0, "nothing came after the ack of {acked}");
+            assert!(
+                unacked <= SEND_WINDOW_BYTES,
+                "{unacked} bytes unacked, window {SEND_WINDOW_BYTES}"
+            );
+            acked = *seqs.last().expect("a seq");
+            send(&mut socket, ServerMessage::Ack(Ack { seq: acked })).await;
+        }
+        assert_eq!(seqs, (1..=SEGMENTS).collect::<Vec<_>>());
     })
     .await;
     client.abort();
