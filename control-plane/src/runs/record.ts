@@ -66,16 +66,66 @@ export function createRun(
 
 /**
  * A person's retry: a new run of the same job (same job type, machine, cwd and task), attempt + 1, cause retry, and
- * the job open again. Only an ended run is retried; the job type's max_attempts bounds automatic retries only.
+ * the job open again. Only an ended run is retried; the job type's max_attempts bounds automatic retries only. A job
+ * pinned to a revoked machine answers DR201 for the machine, as a new pin to it would (jobs/enqueue.ts): no claim
+ * would ever take the run. The job's skipped dependents open again too (reopenDependents).
  */
 export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
-    const previous = await trx.selectFrom('runs').select(['job_id', 'state']).where('id', '=', runId).executeTakeFirst()
+    const previous = await trx
+      .selectFrom('runs as r')
+      .innerJoin('jobs as j', 'j.id', 'r.job_id')
+      .select(['r.job_id', 'r.state', 'j.machine_id'])
+      .where('r.id', '=', runId)
+      .executeTakeFirst()
     if (!previous) fail('DR201', { kind: 'run', key: runId })
     if (!TERMINAL.includes(previous.state)) fail('DR351', { run: runId, state: previous.state })
-    return loadRunView(trx, await queueRetry(trx, ctx.tenantId, previous.job_id))
+    if (previous.machine_id !== null) {
+      // Shared, and first in the lock order (machine → run → job): a revoke cannot commit between this check and the
+      // new run. Here and not in queueRetry, whose automatic callers already hold a run row.
+      const machine = await trx
+        .selectFrom('machines')
+        .select(['name', 'revoked_at'])
+        .where('id', '=', previous.machine_id)
+        .forShare()
+        .executeTakeFirstOrThrow()
+      if (machine.revoked_at !== null) fail('DR201', { kind: 'machine', key: machine.name })
+    }
+    const retryId = await queueRetry(trx, ctx.tenantId, previous.job_id)
+    await reopenDependents(trx, ctx.tenantId, previous.job_id)
+    await notifyScheduler(trx, ctx.tenantId)
+    return loadRunView(trx, retryId)
   })
+}
+
+/**
+ * Opens again, with a new queued run each, the skipped dependents of job `jobId` that a retry just opened, transitively.
+ * A dependent was skipped only because a dependency went red, so it opens once none of its dependencies is red any
+ * more (failed, stopped or skipped); claim_run then holds it until they all finish, and a red end skips it again
+ * (jobs/outcome.ts). The new run's cause is requeue: the skipped run never ran, so it is no attempt. A dependent pinned
+ * to a revoked machine stays skipped, as no claim could take it.
+ */
+async function reopenDependents(trx: Trx, tenantId: string, jobId: string): Promise<void> {
+  let frontier = [jobId]
+  while (frontier.length > 0) {
+    const { rows } = await sql<{ id: string }>`
+      select distinct j.id
+      from job_dependencies d
+      join jobs j on j.id = d.job_id
+      left join machines m on m.id = j.machine_id
+      where d.depends_on_job_id = any(${frontier}::uuid[])
+        and j.state = 'skipped'
+        and m.revoked_at is null
+        and not exists (
+          select 1 from job_dependencies o join jobs oj on oj.id = o.depends_on_job_id
+          where o.job_id = j.id and oj.state in ('failed', 'stopped', 'skipped')
+        )
+      order by j.id`.execute(trx)
+    frontier = rows.map((row) => row.id)
+    // queueRetry opens each job, so the next round sees it as no longer red.
+    for (const id of frontier) await queueRetry(trx, tenantId, id, sql<Date>`now()`, 'requeue')
+  }
 }
 
 /**

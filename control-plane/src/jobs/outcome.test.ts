@@ -318,3 +318,47 @@ test('revoke ends a pinned queued run once and fails its job, with no retry rows
   )
   assert.equal(await s.jobState(running), 'failed')
 })
+
+// A retry keeps the job's pin; on a revoked machine no claim would ever take it, so it would wait queued for good.
+test('a retry of a job pinned to a revoked machine answers DR201', async () => {
+  const s = await setup()
+  const run = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
+  assert.equal(await s.claim(), run)
+  await s.end(run, { exit: 1 })
+  await revokeMachine(s.ctx, 'build-01')
+
+  await assert.rejects(
+    retryRun(s.ctx, run),
+    (err: Error & { code?: string; data?: unknown }) =>
+      err.code === 'DR201' && JSON.stringify(err.data) === JSON.stringify({ kind: 'machine', key: 'build-01' }),
+  )
+  assert.equal((await s.runsOfJobOf(run)).length, 1)
+  assert.equal(await s.jobState(run), 'failed')
+})
+
+test('a retry of a red dependency reopens its skipped dependents, which wait for it', async () => {
+  const s = await setup()
+  const view = await s.batch([{ ref: 'a' }, { ref: 'b', depends_on: ['a'] }, { ref: 'c', depends_on: ['b'] }])
+  assert.equal(await s.claim(), runOf(view, 'a'))
+  await s.end(runOf(view, 'a'), { exit: 1 })
+  assert.equal(await s.jobState(runOf(view, 'c')), 'skipped')
+
+  const retry = await retryRun(s.ctx, runOf(view, 'a'))
+  for (const ref of ['b', 'c']) {
+    assert.equal(await s.jobState(runOf(view, ref)), 'open', ref)
+    // Never ran, so the new run is a requeue: it does not count toward max_attempts.
+    assert.deepEqual(
+      (await s.runsOfJobOf(runOf(view, ref))).map((r) => [r.attempt, r.cause, r.state]),
+      [
+        [1, 'first', 'skipped'],
+        [2, 'requeue', 'queued'],
+      ],
+      ref,
+    )
+  }
+  assert.equal(await s.claim(), retry.id)
+  assert.equal(await s.claim(), null)
+  await s.end(retry.id)
+  const [, b] = await s.runsOfJobOf(runOf(view, 'b'))
+  assert.equal(await s.claim(), b.id)
+})

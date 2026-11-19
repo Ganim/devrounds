@@ -72,13 +72,15 @@ export function resolver(trx: Trx, projectId: string) {
       .execute()
     return { ...row, allowed: new Set(listed.map((l) => l.job_type_id)) }
   })
-  // A pin names a live machine of the tenant; a revoked one could never run the job.
+  // A pin names a live machine of the tenant; a revoked one could never run the job. Shared lock: a revoke waits for
+  // this transaction, and then its sweep of pinned queued runs (failRevokedRuns) sees the new ones.
   const machine = cached(async (name) => {
     const row = await trx
       .selectFrom('machines')
       .select('id')
       .where('name', '=', name)
       .where('revoked_at', 'is', null)
+      .forShare()
       .executeTakeFirst()
     return row?.id ?? fail('DR201', { kind: 'machine', key: name })
   })
