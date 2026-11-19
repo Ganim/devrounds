@@ -93,10 +93,12 @@ export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
         .executeTakeFirstOrThrow()
       if (machine.revoked_at !== null) fail('DR201', { kind: 'machine', key: machine.name })
     }
-    const retryId = await queueRetry(trx, ctx.tenantId, previous.job_id)
-    // Read with the job locked (queueRetry). claim_run never takes a job behind a red dependency, so the new run would
-    // wait queued for good: it is skipped at once, as settling would have, and reopens nothing.
+    // Locked before the dependencies are read, as queueRetry would lock it. claim_run never takes a job behind a red
+    // dependency, so the new run would wait queued for good: it is skipped at once, as settling would have, and
+    // reopens nothing. Its cause is requeue: it never runs, so it must not cost the job an automatic retry later.
+    await trx.selectFrom('jobs').select('id').where('id', '=', previous.job_id).forNoKeyUpdate().execute()
     const red = await redDependency(trx, previous.job_id)
+    const retryId = await queueRetry(trx, ctx.tenantId, previous.job_id, sql<Date>`now()`, red ? 'requeue' : 'retry')
     if (red) {
       await trx
         .updateTable('runs')
@@ -141,8 +143,11 @@ async function reopenDependents(trx: Trx, tenantId: string, jobId: string): Prom
     for (const row of rows) {
       if (row.machine_id !== null) {
         // Shared, as in retryRun, so a revoke cannot commit between this check and the new run. Taken after job rows,
-        // against the machine → job order, but safely: this transaction holds no run or job of a job pinned to this
-        // machine yet (the first one it would add takes this lock first), so a revoke holding it waits on nothing here.
+        // against the machine → job order. A revoke of this machine in flight would lock unpinned jobs too (the job
+        // of an active unpinned run, the open dependents of a failed pinned job), so the safety is elsewhere: a
+        // dependent gets here only when skipped with no red dependency, and only a pin to an already revoked machine
+        // leaves it in that state, so that revoke has committed. Should the case still arise, Postgres aborts one
+        // side with 40P01 (deadlock detected) rather than hang.
         const machine = await trx
           .selectFrom('machines')
           .select('revoked_at')

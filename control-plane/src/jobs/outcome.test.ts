@@ -377,12 +377,13 @@ test('revoke ends a pinned retry committed by a transaction it waited on', async
 
   let release: () => void = () => {}
   const released = new Promise<void>((resolve) => (release = resolve))
-  let locked: () => void = () => {}
-  const isLocked = new Promise<void>((resolve) => (locked = resolve))
+  let locked: (pid: number) => void = () => {}
+  const isLocked = new Promise<number>((resolve) => (locked = resolve))
   // Transaction A: what applyRunEvent → settleJob does for a retryable failure, held open until the revoke waits.
   const holder = withTenant(s.t.db, s.ctx.tenantId, async (trx) => {
     await trx.selectFrom('runs').select('id').where('id', '=', r).forNoKeyUpdate().execute()
-    locked()
+    const { rows } = await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(trx)
+    locked(rows[0].pid)
     await released
     await trx
       .updateTable('runs')
@@ -392,13 +393,13 @@ test('revoke ends a pinned retry committed by a transaction it waited on', async
     const job = await trx.selectFrom('runs').select('job_id').where('id', '=', r).executeTakeFirstOrThrow()
     await queueRetry(trx, s.ctx.tenantId, job.job_id)
   })
-  await isLocked
+  const holderPid = await isLocked
   const revoking = revokeMachine(s.ctx, 'build-01')
-  // The revoke is waiting on R's row lock.
+  // A backend blocked by A: only this test's revoke waits on A's locks, so the race below is really exercised.
   for (let i = 0; ; i++) {
     const { rows } = await sql<{ n: number }>`
       select count(*)::int as n from pg_stat_activity
-      where wait_event_type = 'Lock' and query like '%for no key update of r%'`.execute(s.t.admin)
+      where ${holderPid}::int = any(pg_blocking_pids(pid))`.execute(s.t.admin)
     if (rows[0].n > 0) break
     assert.ok(i < 200, 'the revoke never waited on the run')
     await new Promise((resolve) => setTimeout(resolve, 25))
@@ -428,7 +429,7 @@ test('a retry of a skipped job behind a red dependency is skipped at once, namin
     const retried = await retryRun(s.ctx, runOf(view, ref))
     assert.deepEqual(
       [retried.attempt, retried.cause, retried.state, retried.outcome.failureSummary],
-      [2, 'retry', 'skipped', 'skipped: dependency a failed'],
+      [2, 'requeue', 'skipped', 'skipped: dependency a failed'],
       ref,
     )
     assert.equal(await s.jobState(runOf(view, ref)), 'skipped', ref)
