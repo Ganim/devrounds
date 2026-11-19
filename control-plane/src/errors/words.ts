@@ -126,7 +126,7 @@ export const WORDS: Record<ErrorCode, Words> = {
   },
   DR452: {
     text: 'Machine token is missing, invalid or revoked.',
-    hint: 'Pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.',
+    hint: 'Stop the executor service first (`devrounds-executor service uninstall`, run from the build), then pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.',
     httpStatus: 401,
     keys: [],
   },

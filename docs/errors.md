@@ -168,7 +168,7 @@ Machine token is missing, invalid or revoked.
 
 ### Fix
 
-Pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.
+Stop the executor service first (`devrounds-executor service uninstall`, run from the build), then pair again with `devrounds-executor pair --url <url> --code <code>` and a new code from `devrounds machine pair-code`.
 
 ## DR453
 
