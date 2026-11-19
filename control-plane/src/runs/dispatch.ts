@@ -89,6 +89,11 @@ export async function claimedOffer(
  * The Offer of every run of `machineId` still offered, oldest first, for the gateway to send again after each
  * HelloAck: an Offer lost with a session that dropped between the claim's commit and the send would leave its run
  * offered for good. The executor ignores the Offer of a run it already knows.
+ *
+ * This is the derived outbox: there is no outbox table. Every control plane to executor command (Offer, Withdraw via
+ * the HelloAck's `withdrawn`, orphan Stop) is a function of committed state, so the send after a commit may be lost
+ * and is recomputed from the rows after each HelloAck. An offer that expired is requeued and its run no longer
+ * qualifies here; a delivered one is deduplicated by the executor, so re-sending is harmless.
  */
 export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[]> {
   return run(ctx, async (trx) => {

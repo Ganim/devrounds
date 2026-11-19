@@ -6,6 +6,8 @@ import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { sql } from 'kysely'
+import { pruneIdempotencyKeys } from '../api/idempotency.ts'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { addTask, createProject } from '../planning/service.ts'
@@ -363,4 +365,96 @@ test('a config file that is not a JSON object answers DR502', async (t) => {
     assert.match(res.stderr, /^DR502 .*JSON object/, content)
     assert.ok(res.stderr.endsWith('\nnext: devrounds login --url <url> --token <token> --project <key>\n'), content)
   }
+})
+
+test('a mutation that times out is sent once more with the same Idempotency-Key and its answer is printed', async (t) => {
+  const seen: { key: unknown; method?: string; url?: string; body: string }[] = []
+  const fake = await fakeServer(async (req, res) => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    seen.push({ key: req.headers['idempotency-key'], method: req.method, url: req.url, body })
+    // The first request is held past the client timeout; the second one is answered.
+    if (seen.length === 1) return
+    json(res, { task: { key: 'P0-T01', state: 'in_progress' } })
+  })
+  t.after(fake.close)
+  const res = await runCli(['task', 'start', 'P0-T01'], { env: fake.env, configPath: NO_CONFIG, timeoutMs: 200 })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.equal(seen.length, 2)
+  assert.equal(typeof seen[0]?.key, 'string')
+  assert.equal(seen[0]?.key, seen[1]?.key)
+  assert.equal(seen[0]?.method, seen[1]?.method)
+  assert.equal(seen[0]?.url, seen[1]?.url)
+  assert.equal(seen[0]?.body, seen[1]?.body)
+})
+
+test('a refused connection is not retried', async () => {
+  const probe = createServer()
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const port = (probe.address() as AddressInfo).port
+  await new Promise<void>((resolve) => probe.close(() => resolve()))
+  const env = { DEVROUNDS_URL: `http://127.0.0.1:${port}`, DEVROUNDS_TOKEN: 'drt_x', DEVROUNDS_PROJECT: 'alpha' }
+  const res = await runCli(['task', 'start', 'P0-T01'], { env, configPath: NO_CONFIG, timeoutMs: 200 })
+  assert.equal(res.exitCode, 4)
+  assert.match(res.stderr, /unreachable at/)
+  assert.ok(!res.stderr.includes('outcome unknown'), res.stderr)
+  assert.ok(res.stderr.endsWith('\nnext: start the control plane (node control-plane/src/main.ts serve)\n'), res.stderr)
+})
+
+test('two timeouts report outcome unknown with next: devrounds events', async (t) => {
+  let requests = 0
+  const fake = await fakeServer(() => {
+    requests++
+  })
+  t.after(fake.close)
+  const res = await runCli(['task', 'start', 'P0-T01'], { env: fake.env, configPath: NO_CONFIG, timeoutMs: 200 })
+  assert.equal(res.exitCode, 4)
+  assert.equal(requests, 2)
+  assert.match(res.stderr, /outcome unknown\n/)
+  assert.ok(res.stderr.endsWith('\nnext: devrounds events\n'), res.stderr)
+})
+
+test('machine pair-code is not retried', async (t) => {
+  let requests = 0
+  const fake = await fakeServer(() => {
+    requests++
+  })
+  t.after(fake.close)
+  const res = await runCli(['machine', 'pair-code', '--name', 'laptop'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+    timeoutMs: 200,
+  })
+  assert.equal(res.exitCode, 4)
+  assert.equal(requests, 1)
+})
+
+test('idempotency keys older than 24 h are pruned', async () => {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  for (const [key, age] of [
+    ['old', '25 hours'],
+    ['fresh', '23 hours'],
+  ] as const) {
+    await t.admin
+      .insertInto('idempotency_keys')
+      .values({
+        tenant_id: tenant.tenantId,
+        key,
+        response: '{}',
+        created_at: sql<Date>`now() - ${sql.lit(age)}::interval`,
+      })
+      .execute()
+  }
+  const pruned = await pruneIdempotencyKeys(t.db, new Date(Date.now() - 24 * 60 * 60 * 1000))
+  assert.ok(pruned >= 1)
+  const left = await t.admin
+    .selectFrom('idempotency_keys')
+    .select('key')
+    .where('tenant_id', '=', tenant.tenantId)
+    .execute()
+  assert.deepEqual(
+    left.map((r) => r.key),
+    ['fresh'],
+  )
 })

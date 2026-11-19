@@ -36,8 +36,8 @@ export function fingerprintOf(method: string, url: string, body: unknown): strin
 // is safe because they changed nothing.
 //
 // The fingerprint (fingerprintOf) catches a client reusing one key for a different call or body: replaying the
-// first response would silently drop the second mutation, so that is DR101 instead. Expired rows are only removed
-// when their key comes back; a periodic sweep can come later if the table ever matters.
+// first response would silently drop the second mutation, so that is DR101 instead. Expired rows are removed when
+// their key comes back and, for keys that never do, by the hourly pruneIdempotencyKeys sweep.
 export async function runIdempotent(
   db: Kysely<Database>,
   tenantId: string,
@@ -96,4 +96,11 @@ export async function mutateIdempotent(
     body: await run({ ...ctx, trx }),
   }))
   return reply.code(stored.status).send(stored.body)
+}
+
+// The hourly sweep (serve): rows older than the cutoff across all tenants, through prune_idempotency_keys (0015) because
+// the app role sees one tenant at a time. Returns how many rows went.
+export async function pruneIdempotencyKeys(db: Kysely<Database>, cutoff: Date): Promise<number> {
+  const { rows } = await sql<{ pruned: number }>`select prune_idempotency_keys(${cutoff}) as pruned`.execute(db)
+  return rows[0]?.pruned ?? 0
 }

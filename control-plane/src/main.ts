@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sql } from 'kysely'
+import { pruneIdempotencyKeys } from './api/idempotency.ts'
 import { buildServer } from './api/server.ts'
 import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
@@ -44,9 +45,15 @@ async function serve(): Promise<void> {
   warn = (message) => app.log.warn(message)
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
-    pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
-      app.log.error({ err }, 'log segment prune failed'),
-    )
+    Promise.all([
+      pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
+        app.log.error({ err }, 'log segment prune failed'),
+      ),
+      // Keys live 24 h (runIdempotent); this removes the ones whose request never came back.
+      pruneIdempotencyKeys(db, new Date(Date.now() - IDEMPOTENCY_TTL_MS)).catch((err) =>
+        app.log.error({ err }, 'idempotency key prune failed'),
+      ),
+    ])
   const pruning = setInterval(prune, PRUNE_EVERY_MS)
   const stop = async () => {
     clearInterval(pruning)
@@ -78,6 +85,7 @@ async function serve(): Promise<void> {
 }
 
 const PRUNE_EVERY_MS = 60 * 60 * 1000
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
 
 const [command] = process.argv.slice(2)
 if (command === 'serve') {

@@ -81,10 +81,13 @@ class ApiError extends Error {
 // No answer from the control plane: exit 4, with the next step depending on whether a mutation may have landed.
 class Unreachable extends Error {
   next: string
+  // A mutation may have committed before the answer was lost (timeout, dropped connection); only then is a retry safe.
+  maybeLanded: boolean
 
-  constructor(message: string, next: string) {
+  constructor(message: string, next: string, maybeLanded = false) {
     super(message)
     this.next = next
+    this.maybeLanded = maybeLanded
   }
 }
 
@@ -95,7 +98,15 @@ type Api = {
   get<T>(path: string, query?: Record<string, string | undefined>): Promise<T>
   getText(path: string): Promise<string>
   // Every mutation sends a random Idempotency-Key, one per invocation: running the command again is a new request.
-  send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, contentType?: string): Promise<T>
+  // A timeout or dropped connection is retried once with the same key, so the server replays instead of applying twice;
+  // `retry: false` is for routes exempt from Idempotency-Key, where a second send could apply twice.
+  send<T>(
+    method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    contentType?: string,
+    options?: { retry?: boolean },
+  ): Promise<T>
   // The control plane URL, for next steps run elsewhere (the executor's pair command).
   url: string
   // The same client on paths under `/api/machines` instead of the configured project.
@@ -122,6 +133,7 @@ function apiFor(config: CliConfig, timeoutMs: number, scope?: string): Api {
         throw new Unreachable(
           `control plane at ${config.url} did not answer (${reason}); outcome unknown`,
           'devrounds events',
+          true,
         )
       }
       throw new Unreachable(`control plane unreachable at ${config.url}: ${reason}`, START_SERVER_NEXT)
@@ -158,11 +170,18 @@ function apiFor(config: CliConfig, timeoutMs: number, scope?: string): Api {
     async getText(path) {
       return (await call(path, { method: 'GET' })).text()
     },
-    async send(method, path, body, contentType = 'application/json') {
+    async send(method, path, body, contentType = 'application/json', options = {}) {
       const headers: Record<string, string> = { 'idempotency-key': randomUUID() }
       if (body !== undefined) headers['content-type'] = contentType
       const payload = body === undefined || typeof body === 'string' ? body : JSON.stringify(body)
-      return (await call(path, { method, headers, body: payload })).json()
+      const init = { method, headers, body: payload }
+      try {
+        return (await call(path, init)).json()
+      } catch (err) {
+        if (!(err instanceof Unreachable) || !err.maybeLanded || options.retry === false) throw err
+        // Same method, path, body and key: if the first request committed, the server answers with the stored response.
+        return (await call(path, init)).json()
+      }
     },
     url: config.url,
     machines: () => apiFor(config, timeoutMs, '/machines'),
@@ -711,7 +730,7 @@ export const COMMANDS: Spec[] = [
     run: async (inv, connect) => {
       const api = await connect()
       const name = text(inv, 'name') ?? fail('DR101', { path: '--name', reason: 'is required' })
-      const r = await api.machines().send<PairingCode>('POST', '/pairing-codes', { name })
+      const r = await api.machines().send<PairingCode>('POST', '/pairing-codes', { name }, undefined, { retry: false })
       return {
         failures: [],
         body: [fmt`pairing code for machine ${r.machineName}: ${r.code}`, fmt`expires at ${r.expiresAt}`],

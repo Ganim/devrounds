@@ -292,6 +292,9 @@ function serveSession(
         last_seq: Number(lastSeq),
         withdrawn,
       })
+      // The derived outbox (see pendingOffers in runs/dispatch.ts): no command is queued anywhere, each one is recomputed
+      // from committed state on every HelloAck, together with `withdrawn` above, so a send lost with a dropped session
+      // is simply made again.
       // Offers lost with an earlier session; on the chain, so they go out before any later frame is handled.
       for (const offer of await pendingOffers(ctx, machine.machineId)) reply(offer)
       // Orphan Stops lost the same way; they must precede this session's first Ack (see pendingOrphanStops).

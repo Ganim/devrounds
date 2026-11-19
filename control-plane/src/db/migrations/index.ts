@@ -13,6 +13,7 @@ import { claimRun } from './0011_claim_run.ts'
 import { jobRetry } from './0012_job_retry.ts'
 import { offerExpiry } from './0013_offer_expiry.ts'
 import { schedules } from './0014_schedules.ts'
+import { idempotencySweep } from './0015_idempotency_sweep.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -34,5 +35,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0012_job_retry': jobRetry,
     '0013_offer_expiry': offerExpiry(options),
     '0014_schedules': schedules(options),
+    '0015_idempotency_sweep': idempotencySweep(options),
   }
 }
