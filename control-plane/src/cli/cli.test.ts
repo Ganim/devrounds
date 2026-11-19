@@ -373,6 +373,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
     if (req.url?.includes('/machines')) return json(res, [{ name: 'm1', connected: true }])
     if (req.url?.includes('/events')) return json(res, [{ id: '1', kind: 'transition' }])
     if (req.url?.includes('/balance')) return json(res, [{ periodStart: '2026-11-17' }])
+    if (req.url?.includes('/indicators')) return json(res, [{ period: '2026-11-17', failureClasses: { infra: 1 } }])
     json(res, { project: { key: 'alpha' }, phases: [], unphased: [] })
   })
   t.after(fake.close)
@@ -384,6 +385,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
     ['machine', 'list'],
     ['events'],
     ['balance'],
+    ['indicators'],
     ['login', '--url', fake.env.DEVROUNDS_URL, '--token', 'drt_x', '--project', 'alpha'],
   ]
   for (const argv of commands) {

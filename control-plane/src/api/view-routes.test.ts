@@ -162,7 +162,7 @@ test('run list filters by state and job type', async () => {
   assert.equal((await get(`/api/projects/${projectKey}/runs?state=bogus`)).body.code, 'DR101')
 })
 
-test("another tenant's runs and jobs never appear", async () => {
+test("another tenant's runs, jobs and indicators never appear", async () => {
   const mine = await setup()
   const other = await setup()
   const myRun = await enqueue(mine.ctx, 'check')
@@ -177,12 +177,15 @@ test("another tenant's runs and jobs never appear", async () => {
   const jobs = await mine.get(`/api/projects/${projectKey}/jobs`)
   assert.equal(jobs.body.jobs.length, 1)
   assert.equal(jobs.body.jobs[0].lastRun.id, myRun.id)
+  // The other tenant's queued run is not in this tenant's default queue.
+  const now = await mine.get(`/api/projects/${projectKey}/indicators/now`)
+  assert.equal(now.body.queues.find((q: { key: string }) => q.key === 'default').depth, 1)
 
   // A project key that exists only in the other tenant is not found.
   const stranger = await t.newTenant()
   const strangerCtx: Ctx = { db: t.db, tenantId: stranger.tenantId, actor: { id: stranger.human.id, kind: 'human' } }
   await createProject(strangerCtx, { key: 'hidden', name: 'Hidden' })
-  for (const route of ['runs', 'jobs']) {
+  for (const route of ['runs', 'jobs', 'indicators', 'indicators/now']) {
     const res = await mine.get(`/api/projects/hidden/${route}`)
     assert.equal(res.status, 404)
     assert.equal(res.body.code, 'DR201')

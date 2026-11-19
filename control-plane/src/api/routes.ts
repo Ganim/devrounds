@@ -30,6 +30,7 @@ import {
 import { getPlan, listEvents } from '../planning/view.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
+import { periodWindow } from './period-window.ts'
 
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Text = Type.String({ minLength: 1 })
@@ -49,28 +50,6 @@ const TargetBody = { taskKey: Type.Optional(Key), phaseKey: Type.Optional(Key) }
 const Dependency = Type.Object({ blockedByKey: Key, reason: Type.Optional(Reason) }, { additionalProperties: false })
 
 const object = <T extends Record<string, TSchema>>(props: T) => Type.Object(props, { additionalProperties: false })
-
-// Balance windows: defaults when from/to are omitted, and caps so one request cannot ask for years of rows.
-const DAY_MS = 86_400_000
-const BALANCE_WINDOW = { day: { defaultDays: 13, maxDays: 366 }, week: { defaultDays: 7 * 11, maxDays: 3660 } }
-
-// Strict ISO 8601: a date, or a date-time with an explicit zone (a zoneless time would take the server's zone).
-const ISO_INSTANT =
-  /^(\d{4})-(\d{2})-(\d{2})(T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,9})?)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d))?$/
-
-// A date without a time is UTC midnight, not tenant midnight; callers wanting local days send instants.
-function instant(value: string | undefined, path: string): Date | undefined {
-  if (value === undefined) return undefined
-  const match = ISO_INSTANT.exec(value)
-  // Date.UTC rolls 2026-02-31 over into March; reading the day back catches it.
-  const [year, month, day] = [Number(match?.[1]), Number(match?.[2]), Number(match?.[3])]
-  const calendar = new Date(Date.UTC(year, month - 1, day))
-  const date = new Date(value)
-  if (!match || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day || Number.isNaN(date.getTime())) {
-    fail('DR101', { path, reason: 'expected an ISO 8601 date (YYYY-MM-DD) or date-time with a zone' })
-  }
-  return date
-}
 
 // Event ids are bigint; a longer cursor would make Postgres fail the cast, which is a 500.
 const BIGINT_MAX = 9_223_372_036_854_775_807n
@@ -121,18 +100,7 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
         }),
       },
     },
-    (request) => {
-      const { period } = request.query
-      const window = BALANCE_WINDOW[period]
-      const to = instant(request.query.to, 'querystring/to') ?? new Date()
-      const from =
-        instant(request.query.from, 'querystring/from') ?? new Date(to.getTime() - window.defaultDays * DAY_MS)
-      if (from.getTime() > to.getTime()) fail('DR101', { path: 'querystring/from', reason: 'must not be after to' })
-      if (to.getTime() - from.getTime() > window.maxDays * DAY_MS) {
-        fail('DR101', { path: 'querystring/from', reason: `a ${period} balance spans at most ${window.maxDays} days` })
-      }
-      return getBalance(ctxOf(request), request.params.key, { period, from, to })
-    },
+    (request) => getBalance(ctxOf(request), request.params.key, periodWindow('balance', request.query)),
   )
 
   app.get('/export', { schema: { params: ProjectParams } }, async (request, reply) => {

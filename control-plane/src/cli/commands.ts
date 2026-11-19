@@ -10,6 +10,7 @@ import { parseBatchFile } from '../jobs/batch-file.ts'
 import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
+import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
 import { type AgentOutput, BODY_BUDGET, fitBody, fmt, planShow, renderAgent, shellArg } from './output.ts'
 
@@ -746,6 +747,38 @@ export const COMMANDS: Spec[] = [
           fmt`in progress ${r.hoursInProgress} h · avg cycle ${r.avgCycleHours == null ? '-' : `${r.avgCycleHours} h`}`,
       )
       return { failures: [], body, next: 'devrounds plan show' }
+    },
+  },
+  {
+    path: ['indicators'],
+    usage:
+      'indicators [--period day|week] [--from <date>] [--to <date>] [--cursor <n>]   runs per local period and job ' +
+      'type, in the tenant time zone; the failure classes of each row with failures first',
+    args: 0,
+    pages: true,
+    options: { period: str, from: str, to: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const query = { period: text(inv, 'period'), from: text(inv, 'from'), to: text(inv, 'to') }
+      const rows = await api.get<IndicatorRow[]>('/indicators', query)
+      const failing = rows.filter((r) => Object.keys(r.failureClasses).length > 0)
+      const failures = failing.map(
+        (r) =>
+          fmt`${r.period} ${r.jobType} failed ${r.failed}: ` +
+          Object.entries(r.failureClasses)
+            .map(([failureClass, n]) => fmt`${failureClass} ${n}`)
+            .join(' · '),
+      )
+      const body = rows.map(
+        (r) =>
+          fmt`${r.period} ${r.jobType}  runs ${r.runs} · finished ${r.finished} · failed ${r.failed} · ` +
+          fmt`skipped ${r.skipped} · retries ${r.retries} · requeues ${r.requeues} · ` +
+          `queue wait p50 ${ms(r.queueWaitP50Ms)} p90 ${ms(r.queueWaitP90Ms)} · ` +
+          `admission p50 ${ms(r.admissionDelayP50Ms)} · run p50 ${ms(r.runTimeP50Ms)} p90 ${ms(r.runTimeP90Ms)} · ` +
+          fmt`peak p50 ${mib(r.peakP50Bytes)} max ${mib(r.peakMaxBytes)} · cpu ${r.cpuSeconds} s`,
+      )
+      if (rows.length === 0) body.push('no runs ended in this window')
+      return { failures, body, next: failing.length > 0 ? 'devrounds run list --state failed' : 'devrounds queue list' }
     },
   },
   {

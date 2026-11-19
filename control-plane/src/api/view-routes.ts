@@ -5,8 +5,10 @@ import type { Database, JobState, RunState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { JobSummary } from '../jobs/enqueue.ts'
 import { findProject, run, type TenantCtx } from '../planning/resolve.ts'
+import { indicatorsNow, runIndicators } from '../runs/indicators.ts'
 import type { RunSummary } from '../runs/view.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
+import { periodWindow } from './period-window.ts'
 
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const oneOf = <T extends string>(values: T[]) => Type.Unsafe<T>({ type: 'string', enum: values })
@@ -193,8 +195,8 @@ export function listJobs(
   })
 }
 
-// Read-only lists for the operational view and `devrounds run list`. Queues, a run and its log page are on the
-// routes of job-routes.ts and run-routes.ts.
+// Read-only lists and indicators for the operational view, `devrounds run list` and `devrounds indicators`. Queues,
+// a run and its log page are on the routes of job-routes.ts and run-routes.ts.
 export const viewRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = async (app, { db }) => {
   authenticateMembers(app, db)
 
@@ -221,5 +223,28 @@ export const viewRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = a
       },
     },
     (request) => listJobs(memberCtx(db, request), request.params.key, request.query),
+  )
+
+  app.get(
+    '/indicators',
+    {
+      schema: {
+        params: Type.Object({ key: Key }),
+        querystring: Type.Object(
+          {
+            period: Type.Unsafe<'day' | 'week'>({ type: 'string', enum: ['day', 'week'], default: 'day' }),
+            from: Type.Optional(Type.String()),
+            to: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    (request) =>
+      runIndicators(memberCtx(db, request), request.params.key, periodWindow('indicators window', request.query)),
+  )
+
+  app.get('/indicators/now', { schema: { params: Type.Object({ key: Key }) } }, (request) =>
+    indicatorsNow(memberCtx(db, request), request.params.key),
   )
 }

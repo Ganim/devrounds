@@ -12,10 +12,21 @@ import type {
   TaskView,
 } from '../../control-plane/src/planning/view.ts'
 import type { QueueView } from '../../control-plane/src/queues/service.ts'
+import type { IndicatorRow, IndicatorsNow } from '../../control-plane/src/runs/indicators.ts'
 import type { LogLine } from '../../control-plane/src/runs/log-store.ts'
 import type { RunSummary, RunView } from '../../control-plane/src/runs/view.ts'
 
-export type { BalanceRow, CriterionView, EventView, LinkView, PhaseView, PlanView, TaskView }
+export type {
+  BalanceRow,
+  CriterionView,
+  EventView,
+  IndicatorRow,
+  IndicatorsNow,
+  LinkView,
+  PhaseView,
+  PlanView,
+  TaskView,
+}
 
 // A server type as it arrives in JSON: every Date is an ISO string.
 type Wire<T> = T extends Date
