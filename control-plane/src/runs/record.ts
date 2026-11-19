@@ -6,6 +6,7 @@ import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { formatTraceParent, parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
+import { int4, int8 } from './int-columns.ts'
 import { nextRunState, type RunTransition, TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId } from './view.ts'
 
@@ -219,16 +220,16 @@ export async function applyRunEvent(
             reason: event.reason,
             need_bytes: event.need,
             available_bytes: event.available,
-            position: event.position,
+            position: int4(event.position),
           })
           .execute()
         return
       case 'RunStarted':
         await update({
           ...move('start'),
-          pid: event.pid,
+          pid: int4(event.pid),
           // FILETIME passes 2^53, so it stays a decimal string from the wire to the int8 column.
-          process_start_time: BigInt(event.start_time).toString(),
+          process_start_time: int8(event.start_time),
           boot_id: event.boot_id,
         })
         return
@@ -237,7 +238,13 @@ export async function applyRunEvent(
         await update({ clock_skew_ms })
         const inserted = await trx
           .insertInto('run_steps')
-          .values({ tenant_id: ctx.tenantId, run_id: runId, step: event.step, name: event.name, started_at: stamp })
+          .values({
+            tenant_id: ctx.tenantId,
+            run_id: runId,
+            step: int4(event.step),
+            name: event.name,
+            started_at: stamp,
+          })
           .onConflict((oc) => oc.columns(['run_id', 'step']).doNothing())
           .returning('id')
           .executeTakeFirst()
@@ -252,7 +259,7 @@ export async function applyRunEvent(
           .updateTable('run_steps')
           .set({ finished_at: stamp, outcome: event.outcome })
           .where('run_id', '=', runId)
-          .where('step', '=', event.step)
+          .where('step', '=', int4(event.step))
           .executeTakeFirst()
         if (step.numUpdatedRows === 0n) fail('DR201', { kind: 'step', key: `${runId}#${event.step}` })
         return
@@ -280,8 +287,8 @@ export async function applyRunEvent(
           p95_private_bytes: event.p95,
           p50_private_bytes: event.p50,
           cpu_seconds: event.cpu_seconds,
-          swept_processes: event.swept,
-          visible_windows: event.visible_windows,
+          swept_processes: int4(event.swept),
+          visible_windows: int4(event.visible_windows),
         })
         return
       }

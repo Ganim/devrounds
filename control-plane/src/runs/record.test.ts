@@ -288,6 +288,41 @@ test('steps and delays are recorded with the run', async () => {
   ])
 })
 
+test('counts past the int columns are stored at the column maximum instead of failing the event', async () => {
+  const { t, ctx, machineId, start } = await setup()
+  const created = await start()
+  await markOffered(ctx, created.id)
+  const at = new Date(Date.now() + SECOND)
+  const event = (e: RunEvent, ms: number) => applyRunEvent(ctx, machineId, e, later(at, ms))
+  const U32_MAX = 4294967295
+  await event({ kind: 'Delayed', run: created.id, reason: 'memory', position: U32_MAX, need: MIB, available: 0 }, 0)
+  await event({ kind: 'Admitted', run: created.id }, 100)
+  const U64_MAX = '18446744073709551615'
+  await event({ kind: 'RunStarted', run: created.id, pid: U32_MAX, start_time: U64_MAX, boot_id: 'b' }, 200)
+  await event({ kind: 'StepStarted', run: created.id, step: U32_MAX, name: 'build' }, 300)
+  await event({ kind: 'StepFinished', run: created.id, step: U32_MAX, outcome: 'finished' }, 400)
+  await event({ ...finished(created.id, 0), swept: U32_MAX, visible_windows: U32_MAX }, 500)
+
+  const row = await t.admin
+    .selectFrom('runs')
+    .select(['pid', 'process_start_time', 'swept_processes', 'visible_windows'])
+    .where('id', '=', created.id)
+    .executeTakeFirstOrThrow()
+  const INT4_MAX = 2147483647
+  assert.deepEqual(row, {
+    pid: INT4_MAX,
+    process_start_time: '9223372036854775807',
+    swept_processes: INT4_MAX,
+    visible_windows: INT4_MAX,
+  })
+  const view = await runView(ctx, created.id)
+  assert.equal(view.delays[0].position, INT4_MAX)
+  assert.deepEqual(
+    view.steps.map((step) => [step.step, step.outcome]),
+    [[INT4_MAX, 'finished']],
+  )
+})
+
 test('learned need is the median of the last 10 peaks, 536870912 without history', async () => {
   const { t, tenant, ctx, machineId, start } = await setup()
   const ids = async () =>
