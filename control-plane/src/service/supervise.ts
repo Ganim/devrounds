@@ -25,6 +25,9 @@ export function nextDelay(previousMs: number | null, uptimeMs: number): number {
 // slow under antivirus, so rarely).
 const PARENT_POLL_MS = 1_000
 const PARENT_REUSE_CHECK_MS = 5 * 60_000
+// The longest that PowerShell start may take: past it the start time counts as unknown, so a hung PowerShell (seen
+// under antivirus) cannot hold watchParent forever.
+const START_TIME_TIMEOUT_MS = 15_000
 // How long a serve gets to close after its IPC channel is dropped before this process exits anyway.
 const SERVE_STOP_MS = 10_000
 
@@ -83,6 +86,7 @@ async function startedAt(pid: number): Promise<number | undefined> {
   try {
     const { stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', query], {
       windowsHide: true,
+      timeout: START_TIME_TIMEOUT_MS,
     })
     const time = Date.parse(stdout.trim())
     return Number.isNaN(time) ? undefined : time

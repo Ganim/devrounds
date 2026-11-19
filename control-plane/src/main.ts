@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { sql } from 'kysely'
-import { pruneIdempotencyKeys } from './api/idempotency.ts'
+import { IDEMPOTENCY_TTL_MS, pruneIdempotencyKeys } from './api/idempotency.ts'
 import { buildServer } from './api/server.ts'
 import { startAuth } from './auth/session.ts'
 import { loadServerConfig } from './config.ts'
@@ -56,7 +56,7 @@ async function serve(): Promise<void> {
       pruneLogSegments(db, config.logsRoot, new Date(), config.logRetentionDays).catch((err) =>
         app.log.error({ err }, 'log segment prune failed'),
       ),
-      // Keys live 24 h (runIdempotent); this removes the ones whose request never came back.
+      // Keys live IDEMPOTENCY_TTL_MS (runIdempotent); this removes the ones whose request never came back.
       pruneIdempotencyKeys(db, new Date(Date.now() - IDEMPOTENCY_TTL_MS)).catch((err) =>
         app.log.error({ err }, 'idempotency key prune failed'),
       ),
@@ -103,7 +103,11 @@ async function portHolder(port: number): Promise<string> {
   const unknown = 'another process'
   if (process.platform !== 'win32') return unknown
   try {
-    const { stdout } = await promisify(execFile)('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true })
+    // Bounded: a hung netstat would keep this serve, which failed to listen, alive, and the supervisor never restarts it.
+    const { stdout } = await promisify(execFile)('netstat', ['-ano', '-p', 'TCP'], {
+      windowsHide: true,
+      timeout: NETSTAT_TIMEOUT_MS,
+    })
     for (const line of stdout.split('\n')) {
       const [proto, local, remote, , pid] = line.trim().split(/\s+/)
       if (proto !== 'TCP' || remote !== '0.0.0.0:0' || !pid) continue
@@ -116,7 +120,7 @@ async function portHolder(port: number): Promise<string> {
 }
 
 const PRUNE_EVERY_MS = 60 * 60 * 1000
-const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
+const NETSTAT_TIMEOUT_MS = 15_000
 
 const [command] = process.argv.slice(2)
 if (command === 'serve') {

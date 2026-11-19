@@ -11,6 +11,9 @@ export type StoredResponse = { status: number; body: unknown }
 
 type Row = StoredResponse & { fingerprint: string }
 
+/** How long a key replays its response: runIdempotent ignores an older row, and the hourly sweep (main.ts) removes it. */
+export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
+
 // JSON with keys sorted at every level, so two bodies that differ only in key order fingerprint the same.
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -27,7 +30,7 @@ export function fingerprintOf(method: string, url: string, body: unknown): strin
   return createHash('sha256').update(`${method} ${url}\n${text}`).digest('hex')
 }
 
-// Same key + same tenant within 24 h returns the stored response without running the mutation again.
+// Same key + same tenant within IDEMPOTENCY_TTL_MS returns the stored response without running the mutation again.
 //
 // The key row is inserted first and the mutation runs in the same transaction, so the stored response commits
 // together with the mutation or not at all. A concurrent duplicate blocks on the primary key until the first one
@@ -49,7 +52,7 @@ export async function runIdempotent(
     await trx
       .deleteFrom('idempotency_keys')
       .where('key', '=', key)
-      .where('created_at', '<', sql<Date>`now() - interval '24 hours'`)
+      .where('created_at', '<', sql<Date>`now() - make_interval(secs => ${IDEMPOTENCY_TTL_MS / 1000})`)
       .execute()
     const claimed = await trx
       .insertInto('idempotency_keys')
