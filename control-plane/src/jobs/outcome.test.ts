@@ -112,6 +112,9 @@ async function setup(retry?: Retry) {
   return { t, ctx, machineId, claim, offer, start, end, enqueue, runsOfJobOf, jobState, batch }
 }
 
+// A run of `check` pinned to build-01.
+const PINNED = { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' }
+
 const runOf = (view: { jobs: { ref: string; runId: string }[] }, ref: string) =>
   view.jobs.find((job) => job.ref === ref)?.runId as string
 
@@ -301,8 +304,8 @@ test('revoke requeues an unpinned offered run and fails a pinned one once, neith
 
 test('revoke ends a pinned queued run once and fails its job, with no retry rows', async () => {
   const s = await setup({ max_attempts: 3, backoff_s: 0, on: ['infra'] })
-  const queued = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
-  const running = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
+  const queued = (await enqueueRun(s.ctx, PINNED)).id
+  const running = (await enqueueRun(s.ctx, PINNED)).id
   await s.offer(running)
   await s.start(running)
   await revokeMachine(s.ctx, 'build-01')
@@ -323,7 +326,7 @@ test('revoke ends a pinned queued run once and fails its job, with no retry rows
 // A retry keeps the job's pin; on a revoked machine no claim would ever take it, so it would wait queued for good.
 test('a retry of a job pinned to a revoked machine answers DR201', async () => {
   const s = await setup()
-  const run = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:w' })).id
+  const run = (await enqueueRun(s.ctx, PINNED)).id
   assert.equal(await s.claim(), run)
   await s.end(run, { exit: 1 })
   await revokeMachine(s.ctx, 'build-01')
@@ -368,7 +371,7 @@ test('a retry of a red dependency reopens its skipped dependents, which wait for
 // ended with a retry R2 still pinned to the machine, and the revoke must still end R2 (a later snapshot sees it).
 test('revoke ends a pinned retry committed by a transaction it waited on', async () => {
   const s = await setup({ max_attempts: 3, backoff_s: 0, on: ['infra'] })
-  const r = (await enqueueRun(s.ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\w' })).id
+  const r = (await enqueueRun(s.ctx, PINNED)).id
   assert.equal(await s.claim(), r)
   await s.start(r)
 
