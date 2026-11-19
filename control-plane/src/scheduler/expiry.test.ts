@@ -80,6 +80,21 @@ test('expired_offers and rearm_offers are security definer, executable by the ap
   }
 })
 
+// P1-T51: queued runs have no machine until placed (0010), and nothing stopped a run from being offered without one.
+// expired_offers then returned a null machine, the name lookup in expireOffers found nothing, and the offer stayed
+// forever. 0017 makes that state impossible instead.
+test('a run cannot be offered, admitted or running without a machine', async () => {
+  const s = await setup()
+  const run = await s.enqueue()
+  for (const state of ['offered', 'admitted', 'running'] as const) {
+    await assert.rejects(
+      t.admin.updateTable('runs').set({ state }).where('id', '=', run).execute(),
+      (err: { code?: string }) => err.code === '23514',
+      state,
+    )
+  }
+})
+
 test('an unanswered offer expires after the timeout: run stopped/infra, a requeue run of the same job queued', async () => {
   const s = await setup()
   const run = await s.enqueue()

@@ -42,11 +42,13 @@ export async function expireOffers(
           .forNoKeyUpdate()
           .executeTakeFirst()
         if (!run) return null
-        const { name } = await trx
+        // Only for the summary: a missing machine must never keep the offer from being withdrawn.
+        const machine = await trx
           .selectFrom('machines')
           .select('name')
           .where('id', '=', row.machine_id)
-          .executeTakeFirstOrThrow()
+          .executeTakeFirst()
+        const name = machine?.name ?? row.machine_id
         const requeueId = await queueRetry(trx, row.tenant_id, run.job_id, sql<Date>`now()`, 'requeue')
         await trx
           .updateTable('runs')

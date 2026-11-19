@@ -15,6 +15,7 @@ import { offerExpiry } from './0013_offer_expiry.ts'
 import { schedules } from './0014_schedules.ts'
 import { idempotencySweep } from './0015_idempotency_sweep.ts'
 import { auth } from './0016_auth.ts'
+import { runsPlacedHaveMachine } from './0017_runs_placed_have_machine.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -38,5 +39,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0014_schedules': schedules(options),
     '0015_idempotency_sweep': idempotencySweep(options),
     '0016_auth': auth(options),
+    '0017_runs_placed_have_machine': runsPlacedHaveMachine,
   }
 }

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
+import { withTenant } from '../tenancy/scope.ts'
 import { testDb } from '../test-support/db.ts'
 import { listQueues, putQueue } from './service.ts'
 
@@ -26,7 +28,25 @@ test('queue list reports depth, in flight and the oldest queued time', async () 
   const second = await enqueue()
   await enqueue()
   // Offered and running count in flight, not in the depth; the oldest queued run is then the second one.
-  await t.admin.updateTable('runs').set({ state: 'offered' }).where('id', '=', first.id).execute()
+  // An offered run sits on a machine (runs_placed_machine_check).
+  const machine = await withTenant(t.db, ctx.tenantId, (trx) =>
+    trx
+      .insertInto('machines')
+      .values({
+        tenant_id: ctx.tenantId,
+        name: 'build-01',
+        token_hash: randomBytes(32),
+        os: 'windows',
+        executor_version: '0.1.0',
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow(),
+  )
+  await t.admin
+    .updateTable('runs')
+    .set({ state: 'offered', machine_id: machine.id })
+    .where('id', '=', first.id)
+    .execute()
   const older = new Date('2026-01-01T00:00:00Z')
   await t.admin.updateTable('runs').set({ queued_at: older }).where('id', '=', second.id).execute()
 
