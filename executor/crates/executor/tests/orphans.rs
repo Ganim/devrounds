@@ -390,6 +390,59 @@ fn kill_policy_ends_the_orphan_tree() {
     });
 }
 
+/// A leader that exited while its child lives on: the run is alive, since a
+/// recorded member still runs, and the kill policy ends that member.
+#[test]
+fn a_run_whose_leader_exited_but_a_member_lives_is_alive() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let stored = crash_after(
+        home.path(),
+        "orphan-5",
+        &[
+            "--children",
+            "1",
+            "--run-ms",
+            "1500",
+            "--linger-ms",
+            "30000",
+        ],
+        |stored| stored.identity.is_some() && stored.members.len() >= 2,
+    );
+    let tree = identities(&stored);
+    let leader = tree[..1].to_vec();
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime B");
+    runtime.block_on(async {
+        tokio::time::timeout(LIMIT, async {
+            assert_eq!(
+                gone_within(&leader, Duration::from_secs(10)).await,
+                [0u32; 0]
+            );
+            assert!(
+                !alive(&tree).is_empty(),
+                "the child must outlive the leader"
+            );
+            let b = executor(home.path()).await;
+            let orphans = scan_orphans(&b.store).await.expect("scan");
+            assert_eq!(
+                orphans
+                    .iter()
+                    .map(|(run, alive)| (run.run_id.as_str(), *alive))
+                    .collect::<Vec<_>>(),
+                [("orphan-5", true)]
+            );
+            b.runs.report_orphans(orphans).await.expect("report");
+            b.runs.handle(ServerMessage::Stop(Stop {
+                run: "orphan-5".to_owned(),
+                reason: StopReason::OrphanPolicy,
+            }));
+            assert_eq!(gone_within(&tree, Duration::from_secs(12)).await, [0u32; 0]);
+        })
+        .await
+        .expect("bounded");
+    });
+}
+
 /// A run whose leader exited while no executor ran: reported dead, its
 /// output shipped once, then forgotten after the ack.
 #[test]

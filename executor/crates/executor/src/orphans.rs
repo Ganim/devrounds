@@ -1,6 +1,7 @@
 //! Orphans: runs a previous executor process left in the store. At start,
 //! before anything is admitted, [`scan_orphans`] sorts them into alive (the
-//! leader still runs: same boot, same pid and start time) and dead, and the
+//! leader or a recorded member still runs: same boot, same pid and start
+//! time) and dead, and the
 //! run loop reports them in one `Orphans` event. An orphan is never adopted
 //! again (no sampler, no output tail, no `RunFinished`): an alive one waits
 //! for its job type's policy, the output it left ships as segments, and the
@@ -36,9 +37,10 @@ pub const RUN_DIR_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often a long-lived executor sweeps again after the pass at start.
 pub const SWEEP_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// Every run in the store, with whether its leader still runs: recorded in
-/// this boot and `proc::matches` its pid and start time. A run that never got
-/// a process is dead. A leader that cannot be checked counts as alive: a stop
+/// Every run in the store, with whether it still runs: recorded in this boot
+/// and its leader or any recorded member `proc::matches` its pid and start
+/// time. A run that never got a process is dead. A process that cannot be
+/// checked counts as alive: a stop
 /// of an orphan verifies every process it ends, while a run reported dead is
 /// failed for good.
 pub async fn scan_orphans(store: &Store) -> Result<Vec<(StoredRun, bool)>, DrError> {
@@ -54,10 +56,15 @@ pub async fn scan_orphans(store: &Store) -> Result<Vec<(StoredRun, bool)>, DrErr
             .map(|run| {
                 let alive = match (&run.identity, &boot) {
                     (Some(identity), Some(boot)) if identity.boot_id == *boot => {
-                        proc::matches(identity.pid, identity.start_time).unwrap_or_else(|error| {
-                            tracing::warn!(run = %run.run_id, %error, "orphan leader not checked; counted alive");
-                            true
-                        })
+                        // Members share the leader's boot. A child that outlives its leader keeps the run alive.
+                        std::iter::once((identity.pid, identity.start_time))
+                            .chain(run.members.iter().map(|member| (member.pid, member.start_time)))
+                            .any(|(pid, start_time)| {
+                                proc::matches(pid, start_time).unwrap_or_else(|error| {
+                                    tracing::warn!(run = %run.run_id, pid, %error, "orphan process not checked; counted alive");
+                                    true
+                                })
+                            })
                     }
                     _ => false,
                 };
