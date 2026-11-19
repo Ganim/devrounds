@@ -11,6 +11,7 @@ import { runsTraceSpanId } from './0009_runs_trace_span_id.ts'
 import { queues } from './0010_queues.ts'
 import { claimRun } from './0011_claim_run.ts'
 import { jobRetry } from './0012_job_retry.ts'
+import { offerExpiry } from './0013_offer_expiry.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -30,5 +31,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0010_queues': queues,
     '0011_claim_run': claimRun(options),
     '0012_job_retry': jobRetry,
+    '0013_offer_expiry': offerExpiry(options),
   }
 }

@@ -13,14 +13,14 @@ import { DevRoundsError } from '../errors/error.ts'
 import { Sessions } from '../executor/gateway.ts'
 import { FEATURES } from '../executor/protocol.ts'
 import { putJobType } from '../job-types/service.ts'
-import { enqueueRun } from '../jobs/enqueue.ts'
+import { enqueueRun, submitBatch } from '../jobs/enqueue.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { Scheduler } from '../scheduler/scheduler.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { TEST_DATABASE_URL, type TestDb, testDb } from '../test-support/db.ts'
-import { runEvents, stopRun } from './dispatch.ts'
+import { runEvents, stopRun, waitForRun } from './dispatch.ts'
 import { runView } from './view.ts'
 
 const projectKey = 'devrounds'
@@ -324,21 +324,97 @@ test('revoking a machine fails its runs that have not ended with class infra, an
   exec.close()
 })
 
-test('stop of a run on a revoked machine fails it; on an offline machine it answers DR350', async () => {
+// No claim takes a run pinned to a revoked machine, so it would wait queued for good.
+test('revoking a machine fails the queued runs pinned to it, retries included, and leaves the others queued', async () => {
+  const { ctx, token, dispatch } = await setup()
+  await putJobType(ctx, projectKey, {
+    key: 'flaky',
+    command: { program: 'pnpm', args: ['check'] },
+    retry: { max_attempts: 3, backoff_s: 0, on: ['infra'] },
+  })
+  // No executor is connected: every run stays queued.
+  const pinned = await dispatch()
+  const retried = await enqueueRun(ctx, { projectKey, jobTypeKey: 'flaky', machineName: 'build-01', cwd: 'C:\\work' })
+  const free = await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:\\work' })
+  const res = await fetch(`http://${host}/api/machines/build-01/revoke`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.status, 200, await res.text())
+
+  for (const run of [pinned.id, retried.id]) {
+    const view = await runView(ctx, run)
+    assert.deepEqual([view.state, view.outcome.failureClass], ['failed', 'infra'], run)
+    assert.match(view.outcome.failureSummary ?? '', /machine build-01 was revoked/)
+  }
+  // Each retry the policy queued was pinned to the same machine, and failed in turn.
+  const runs = await t.admin
+    .selectFrom('runs')
+    .select(['attempt', 'state'])
+    .where('job_id', '=', t.admin.selectFrom('runs').select('job_id').where('id', '=', retried.id))
+    .orderBy('attempt')
+    .execute()
+  assert.deepEqual(
+    runs.map((run) => [run.attempt, run.state]),
+    [
+      [1, 'failed'],
+      [2, 'failed'],
+      [3, 'failed'],
+    ],
+  )
+  assert.equal((await runView(ctx, free.id)).state, 'queued')
+})
+
+// A run skipped as a side effect of another run's end wakes its waiters too, or they only return at the deadline.
+test('a dependent skipped by a failed run answers its waiter at once', async () => {
+  const { ctx, machine } = await setup()
+  const exec = await executor(machine.token)
+  const batch = await submitBatch(ctx, projectKey, {
+    jobs: [
+      { ref: 'a', job_type: 'check', cwd: 'C:\\work', machine: 'build-01' },
+      { ref: 'b', job_type: 'check', cwd: 'C:\\work', depends_on: ['a'] },
+    ],
+  })
+  const runOf = (ref: string) => batch.jobs.find((job) => job.ref === ref)?.runId as string
+  assert.equal((await exec.next()).run, runOf('a'))
+  const began = Date.now()
+  const waiting = waitForRun(ctx, runOf('b'), 30)
+  await running(exec, runOf('a'))
+  await exec.event({ ...finished(runOf('a')), exit_code: 1 })
+  const view = await waiting
+
+  assert.equal(view.state, 'skipped')
+  assert.ok(Date.now() - began < 10_000, `took ${Date.now() - began} ms`)
+  exec.close()
+})
+
+test('stop of an offered run on an offline machine ends it at once and withdraws it', async () => {
   const { ctx, machine, dispatch } = await setup()
   const exec = await executor(machine.token)
-  const offered = await dispatch()
-  assert.equal((await exec.next()).type, 'Offer')
+  const [offered, admitted] = [await dispatch(), await dispatch()]
+  for (let i = 0; i < 2; i++) assert.equal((await exec.next()).type, 'Offer')
+  await exec.event({ kind: 'Admitted', run: admitted.id })
   exec.close()
   await until(() => !sessions.get(machine.machineId))
-  await assert.rejects(stopRun(ctx, sessions, offered.id), code('DR350'))
-  assert.equal((await runView(ctx, offered.id)).state, 'offered')
+
+  const stopped = await stopRun(ctx, sessions, offered.id)
+  assert.deepEqual([stopped.state, stopped.outcome.failureClass], ['stopped', 'cancelled'])
+  assert.ok(stopped.timeline.finishedAt)
+  const row = await t.admin
+    .selectFrom('runs')
+    .select('withdrawn_at')
+    .where('id', '=', offered.id)
+    .executeTakeFirstOrThrow()
+  assert.ok(row.withdrawn_at, 'listed in the next HelloAck, so the executor drops it')
+  // An admitted run may be running on that machine; only its executor can stop it.
+  await assert.rejects(stopRun(ctx, sessions, admitted.id), code('DR350'))
+  assert.equal((await runView(ctx, admitted.id)).state, 'admitted')
 
   // Revoked before revoking failed the machine's runs (or racing it): stop is the way out.
   await t.admin.updateTable('machines').set({ revoked_at: new Date() }).where('id', '=', machine.machineId).execute()
-  const stopped = await stopRun(ctx, sessions, offered.id)
-  assert.deepEqual([stopped.state, stopped.outcome.failureClass], ['failed', 'infra'])
-  assert.match(stopped.outcome.failureSummary ?? '', /machine build-01 was revoked/)
+  const failed = await stopRun(ctx, sessions, admitted.id)
+  assert.deepEqual([failed.state, failed.outcome.failureClass], ['failed', 'infra'])
+  assert.match(failed.outcome.failureSummary ?? '', /machine build-01 was revoked/)
 })
 
 test('a client that leaves GET /runs/:id?wait ends the wait and its listener', async () => {

@@ -7,14 +7,16 @@ import { notifyScheduler } from '../scheduler/notify.ts'
 const MAX_BACKOFF_S = 3600
 
 /**
- * Queues a new run of job `jobId` with cause retry and the next attempt number, placeable from `notBefore` (now by
- * default), and opens the job again; returns the run id. Used by settleJob and by a person's retryRun.
+ * Queues a new run of job `jobId` with `cause` (retry by default) and the next attempt number, placeable from
+ * `notBefore` (now by default), and opens the job again; returns the run id. Used by settleJob, by a person's retryRun
+ * and, with cause requeue, by the offer expiry (scheduler/expiry.ts).
  */
 export async function queueRetry(
   trx: Trx,
   tenantId: string,
   jobId: string,
   notBefore: RawBuilder<Date> = sql<Date>`now()`,
+  cause: 'retry' | 'requeue' = 'retry',
 ): Promise<string> {
   // Serializes the retries of one job (an automatic one and a person's), so two cannot pick the same attempt number.
   const job = await trx
@@ -34,7 +36,7 @@ export async function queueRetry(
       tenant_id: tenantId,
       job_id: jobId,
       attempt: last + 1,
-      cause: 'retry',
+      cause,
       not_before: notBefore,
       ...job,
     })
@@ -46,8 +48,8 @@ export async function queueRetry(
 
 /**
  * Settles the job of run `runId` after the run's terminal transition, in that transition's transaction (every caller:
- * applyRunEvent, applyOrphans, failRevokedRuns, prepareStop of a queued run). Returns the retry run queued, if any,
- * and the ids of the runs skipped.
+ * applyRunEvent, applyOrphans, failRevokedRuns, prepareStop of a queued run or of a withdrawn offer). Returns the retry
+ * run queued, if any, and the ids of the runs skipped.
  *
  * - finished: the job is finished, and the scheduler is woken for its dependents.
  * - failed with a class in the job type's retry_on, after fewer attempts than max_attempts: a retry run waits
@@ -57,7 +59,8 @@ export async function queueRetry(
  * - stopped: the job is stopped. A person stopped it, so its policy never retries it.
  *
  * A job that fails or stops skips every open job that waits on it through depends_on, transitively: those jobs could
- * never be claimed. A run not ended (or skipped, which only settleJob writes) changes nothing.
+ * never be claimed. A run not ended (or skipped, which only settleJob writes) changes nothing. Callers wake the waiters
+ * of the retry and skipped runs too (settledRuns), or `run show --wait` on them would only return at its deadline.
  */
 export async function settleJob(
   trx: Trx,
@@ -105,6 +108,11 @@ export async function settleJob(
     default:
       return { retryRunId: null, skipped: [] }
   }
+}
+
+/** The runs settleJob changed besides the one that ended. */
+export function settledRuns(settled: { retryRunId: string | null; skipped: string[] }): string[] {
+  return settled.retryRunId === null ? settled.skipped : [settled.retryRunId, ...settled.skipped]
 }
 
 // Sets the job's outcome; a red one (failed, stopped) skips its open dependents and returns their skipped runs.

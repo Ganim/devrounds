@@ -3,7 +3,7 @@ import type { RunsTable } from '../db/schema.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
-import { queueRetry, settleJob } from '../jobs/outcome.ts'
+import { queueRetry, settledRuns, settleJob } from '../jobs/outcome.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { ensureQueue } from '../queues/service.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -150,7 +150,7 @@ async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
 async function lockRun(trx: Trx, machineId: string, runId: string) {
   const row = await trx
     .selectFrom('runs')
-    .select(['state', 'clock_skew_ms', 'project_id', 'job_type_id', 'orphan_action'])
+    .select(['state', 'clock_skew_ms', 'project_id', 'job_type_id', 'orphan_action', 'offer_accepted_at'])
     .where('id', '=', runId)
     .where('machine_id', '=', machineId)
     .forNoKeyUpdate()
@@ -180,7 +180,8 @@ const END: Record<'finished' | 'failed' | 'stopped', RunTransition> = {
  * it, and clock_skew_ms keeps the largest gap seen, so no duration is ever negative.
  * LogSegment and Orphans change nothing here: the gateway stores segments (log-store.ts) and applies Orphans with
  * applyOrphans.
- * `log` gets the one warning a classification that ran out of pattern budget writes.
+ * `log` gets the one warning a classification that ran out of pattern budget writes. Returns the other runs the event
+ * changed (a retry queued, dependents skipped), whose waiters the caller wakes after the commit.
  */
 export async function applyRunEvent(
   ctx: TenantCtx,
@@ -188,10 +189,11 @@ export async function applyRunEvent(
   event: RunEvent,
   at: Date,
   log: PatternLog = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) },
-): Promise<void> {
-  if (event.kind === 'LogSegment' || event.kind === 'Orphans') return
+): Promise<string[]> {
+  if (event.kind === 'LogSegment' || event.kind === 'Orphans') return []
   requireRunId(event.run)
   const runId = event.run
+  let others: string[] = []
   await run(ctx, async (trx) => {
     const row = await lockRun(trx, machineId, runId)
     const { stamp, clock_skew_ms } = await clamp(trx, runId, at, row.clock_skew_ms)
@@ -201,7 +203,16 @@ export async function applyRunEvent(
       if (next.stamp) set[next.stamp] = stamp
       return set
     }
-    const update = (set: Updateable<RunsTable>) => trx.updateTable('runs').set(set).where('id', '=', runId).execute()
+    // Any answer to the offer accepts it, Delayed included: the executor has the run, so its offer no longer expires
+    // (scheduler/expiry.ts). The database's clock, like offer_expires_at.
+    const accepts = row.state === 'offered' && row.offer_accepted_at === null
+    const update = (set: Updateable<RunsTable>) =>
+      trx
+        .updateTable('runs')
+        .set(set)
+        .$if(accepts, (query) => query.set({ offer_accepted_at: sql<Date>`now()` }))
+        .where('id', '=', runId)
+        .execute()
     const requireRunning = () => {
       if (row.state !== 'running') fail('DR351', { run: runId, state: row.state })
     }
@@ -293,20 +304,25 @@ export async function applyRunEvent(
         })
         // Same transaction as the peak, so the next claim already places by it.
         await updateLearnedNeed(trx, row.project_id, row.job_type_id, machineId)
-        await settleJob(trx, ctx.tenantId, runId)
+        others = settledRuns(await settleJob(trx, ctx.tenantId, runId))
         // An ended run frees its memory, its queue slot and its dependents: the scheduler looks again at the commit.
         await notifyScheduler(trx, ctx.tenantId)
         return
       }
     }
   })
+  return others
 }
 
 /**
  * Fails, class infra, every run of the revoked machine `machineId` that has not ended (offered, admitted or running),
- * or only `runId` with it, inside `trx`; returns the ids failed. A revoked executor never reports again, so these runs
- * could never end otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative. Like
- * any run end, it settles each run's job (jobs/outcome.ts) and wakes the scheduler at the commit.
+ * or only `runId` with it, inside `trx`. A revoked executor never reports again, so these runs could never end
+ * otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative. Like any run end, it
+ * settles each run's job (jobs/outcome.ts) and wakes the scheduler at the commit.
+ *
+ * The queued runs of jobs pinned to the machine fail too, with the same class: no claim can take them. That includes
+ * the retries settling queues for those jobs (a retry keeps the pin), so it repeats until none is left; max_attempts
+ * bounds it. Returns every run changed: failed, retried and skipped, for the caller to wake their waiters.
  */
 export async function failRevokedRuns(
   trx: Trx,
@@ -326,9 +342,33 @@ export async function failRevokedRuns(
     .$if(runId !== undefined, (query) => query.where('id', '=', runId as string))
     .returning(['id', 'tenant_id'])
     .execute()
-  for (const row of rows) await settleJob(trx, row.tenant_id, row.id)
+  const changed = new Set<string>()
+  const settle = async (failed: { id: string; tenant_id: string }[]) => {
+    for (const row of failed) {
+      changed.add(row.id)
+      for (const other of settledRuns(await settleJob(trx, row.tenant_id, row.id))) changed.add(other)
+    }
+  }
+  await settle(rows)
+  for (;;) {
+    const pinned = await trx
+      .updateTable('runs')
+      .set({
+        state: 'failed',
+        finished_at: sql<Date>`now()`,
+        failure_class: 'infra',
+        failure_summary: `machine ${machine.name} was revoked; the job is pinned to it`,
+      })
+      .where('state', '=', 'queued')
+      .where('job_id', 'in', trx.selectFrom('jobs').select('id').where('machine_id', '=', machine.id))
+      .returning(['id', 'tenant_id'])
+      .execute()
+    if (pinned.length === 0) break
+    rows.push(...pinned)
+    await settle(pinned)
+  }
   if (rows.length > 0) await notifyScheduler(trx, rows[0].tenant_id)
-  return rows.map((row) => row.id)
+  return [...changed]
 }
 
 type OrphansEvent = Extract<RunEvent, { kind: 'Orphans' }>
@@ -344,7 +384,8 @@ export const UNSUPERVISED_SUMMARY = 'executor restarted; the run ended while uns
  * run failed with class infra, stamped like any executor event (see applyRunEvent). An alive repeat of a run already
  * orphaned to be killed answers its Stop again. An orphan its run cannot take (another machine's, already ended, or a
  * let_finish repeat) is logged and skipped, so the others still apply. An applied orphan ends its run, so it settles
- * the run's job (jobs/outcome.ts: no retry, the job fails) and wakes the scheduler at the commit.
+ * the run's job (jobs/outcome.ts: no retry, the job fails) and wakes the scheduler at the commit. `changed` lists the
+ * other runs settling changed (dependents skipped), whose waiters the caller wakes after the commit.
  */
 export async function applyOrphans(
   ctx: TenantCtx,
@@ -352,24 +393,30 @@ export async function applyOrphans(
   event: OrphansEvent,
   at: Date,
   log: OrphanLog = { warn: (data, message) => process.emitWarning(`${message} ${JSON.stringify(data)}`) },
-): Promise<StopMessage[]> {
+): Promise<{ stops: StopMessage[]; changed: string[] }> {
   return run(ctx, async (trx) => {
     const stops: StopMessage[] = []
+    const changed: string[] = []
     let applied = 0
     for (const { run: runId, alive } of event.runs) {
+      let plan: OrphanPlan
       try {
-        if (await applyOrphan(trx, ctx.tenantId, machineId, runId, alive, at)) {
-          stops.push({ type: 'Stop', run: runId, reason: 'orphan_policy' })
-        }
-        applied += 1
+        plan = await planOrphan(trx, machineId, runId, alive, at)
       } catch (err) {
-        // Every rejection is raised before the run's update, so the transaction stays usable for the next one.
+        // Only the checks run in here and they write nothing, so the transaction stays usable for the next orphan.
         if (!(err instanceof DevRoundsError)) throw err
         log.warn({ code: err.code, machineId, run: runId }, 'orphan not applied to its run')
+        continue
       }
+      // Past the checks every failure, a DevRoundsError included, aborts the whole event: a write already made must
+      // never be kept without the rest of its orphan.
+      await trx.updateTable('runs').set(plan.set).where('id', '=', runId).execute()
+      if (plan.ends) changed.push(...settledRuns(await settleJob(trx, ctx.tenantId, runId)))
+      if (plan.kill) stops.push({ type: 'Stop', run: runId, reason: 'orphan_policy' })
+      applied += 1
     }
     if (applied > 0) await notifyScheduler(trx, ctx.tenantId)
-    return stops
+    return { stops, changed }
   })
 }
 
@@ -396,36 +443,29 @@ export function pendingOrphanStops(ctx: TenantCtx, machineId: string): Promise<S
   })
 }
 
-// True when the run is to be stopped.
-async function applyOrphan(
-  trx: Trx,
-  tenantId: string,
-  machineId: string,
-  runId: string,
-  alive: boolean,
-  at: Date,
-): Promise<boolean> {
+// What one orphan does to its run: the update, whether the run ends (and so settles its job) and whether to stop it.
+type OrphanPlan = { set: Updateable<RunsTable>; ends: boolean; kill: boolean }
+
+// Reads and checks only, so a rejection (DR201, DR351, an input code) leaves nothing half written.
+async function planOrphan(trx: Trx, machineId: string, runId: string, alive: boolean, at: Date): Promise<OrphanPlan> {
   requireRunId(runId)
   const row = await lockRun(trx, machineId, runId)
   const { stamp, clock_skew_ms } = await clamp(trx, runId, at, row.clock_skew_ms)
-  const update = (set: Updateable<RunsTable>) => trx.updateTable('runs').set(set).where('id', '=', runId).execute()
   if (!alive) {
     const next = nextRunState(row.state, 'fail', runId)
-    await update({
+    const set: Updateable<RunsTable> = {
       state: next.state,
       finished_at: stamp,
       clock_skew_ms,
       failure_class: 'infra',
       failure_summary: UNSUPERVISED_SUMMARY,
-    })
-    await settleJob(trx, tenantId, runId)
-    return false
+    }
+    return { set, ends: true, kill: false }
   }
   // The executor restarted again before it acted on the Stop: it still owes the kill. The new report restarts the
   // window in which pendingOrphanStops sends the Stop again.
   if (row.state === 'orphaned' && row.orphan_action === 'killed') {
-    await update({ orphaned_at: stamp, clock_skew_ms })
-    return true
+    return { set: { orphaned_at: stamp, clock_skew_ms }, ends: false, kill: true }
   }
   const next = nextRunState(row.state, 'orphan', runId)
   const { orphan_policy } = await trx
@@ -434,13 +474,12 @@ async function applyOrphan(
     .where('id', '=', row.job_type_id)
     .executeTakeFirstOrThrow()
   const kill = orphan_policy === 'kill'
-  await update({
+  const set: Updateable<RunsTable> = {
     state: next.state,
     orphaned_at: stamp,
     clock_skew_ms,
     failure_class: 'infra',
     orphan_action: kill ? 'killed' : 'let_finish',
-  })
-  await settleJob(trx, tenantId, runId)
-  return kill
+  }
+  return { set, ends: true, kill }
 }

@@ -5,6 +5,7 @@ import { claimedOffer } from '../runs/dispatch.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { claimRun, defaultReserve } from './claim.ts'
+import { expireOffers } from './expiry.ts'
 import { SCHEDULER_CHANNEL } from './notify.ts'
 import { type Listener, listen } from './wake.ts'
 
@@ -119,6 +120,13 @@ export class Scheduler {
         : new Set(this.#woken)
       this.#everyone = false
       this.#woken.clear()
+      // First, so the machine of a withdrawn offer gets no new offer from this pass; each requeue's NOTIFY wakes its
+      // tenant for the next one.
+      try {
+        await expireOffers(this.#o.db, this.#o.sessions, this.#o.offerTimeoutS, this.#o.log)
+      } catch (err) {
+        this.#o.log.error({ err }, 'offer expiry failed')
+      }
       for (const tenantId of tenants) {
         try {
           await this.#placeTenant(tenantId)

@@ -41,6 +41,8 @@ export type ServerOptions = {
   telemetry?: Telemetry | null
   // Woken by the gateway after each HelloAck and MachineReport (scheduler/scheduler.ts); `serve` passes its own.
   scheduler?: SchedulerPoke
+  // The executor session ping interval (executor/gateway.ts PING_MS); tests pass a short one.
+  pingMs?: number
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -115,6 +117,7 @@ export function buildServer(opts: ServerOptions) {
     logsRoot,
     telemetry,
     scheduler: opts.scheduler,
+    pingMs: opts.pingMs,
   })
 
   const webDir = opts.webDir ?? DEFAULT_WEB_DIR

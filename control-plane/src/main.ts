@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sql } from 'kysely'
 import { buildServer } from './api/server.ts'
 import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
@@ -14,6 +15,15 @@ import { startTelemetry } from './telemetry/otel.ts'
 async function serve(): Promise<void> {
   const config = await loadServerConfig()
   const db = createDb(config.databaseUrl)
+  // Before the gateway listens, as a HelloAck pokes the scheduler and a tick expires offers: an offer still pending
+  // was made by an earlier process, and its executor may have answered while no control plane was up to hear it.
+  // Each gets a full timeout again instead of being withdrawn and requeued at the first tick.
+  try {
+    await sql`select rearm_offers(${config.offerTimeoutS})`.execute(db)
+  } catch (err) {
+    await db.destroy()
+    throw err
+  }
   // The app logger exists only once the server is built with the telemetry; until then SDK warnings go to stderr.
   let warn = (message: string) => console.error(message)
   const telemetry = await startTelemetry(config.otlpEndpoint, undefined, (message) => warn(message))

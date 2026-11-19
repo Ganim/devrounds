@@ -82,7 +82,7 @@ test('orphans with the kill policy get a Stop and stay orphaned with class infra
   const { ctx, machineId, runOf, row } = await setup()
   const runId = await runOf('check', 'running')
 
-  const replies = await applyOrphans(ctx, machineId, orphans([runId, true]), AT)
+  const { stops: replies } = await applyOrphans(ctx, machineId, orphans([runId, true]), AT)
 
   assert.deepEqual(replies, [{ type: 'Stop', run: runId, reason: 'orphan_policy' }])
   assert.deepEqual(await row(runId), {
@@ -101,7 +101,9 @@ test('an alive repeat of an orphan already killed answers its Stop again', async
   await applyOrphans(ctx, machineId, orphans([runId, true]), AT)
   const warned: unknown[] = []
 
-  const replies = await applyOrphans(ctx, machineId, orphans([runId, true]), AT, { warn: (d) => warned.push(d) })
+  const { stops: replies } = await applyOrphans(ctx, machineId, orphans([runId, true]), AT, {
+    warn: (d) => warned.push(d),
+  })
 
   assert.deepEqual(replies, [{ type: 'Stop', run: runId, reason: 'orphan_policy' }])
   assert.deepEqual(warned, [])
@@ -128,7 +130,7 @@ test('an orphan the control plane still has admitted is orphaned or failed all t
   const alive = await runOf('check', 'admitted')
   const dead = await runOf('check', 'admitted')
 
-  const replies = await applyOrphans(ctx, machineId, orphans([alive, true], [dead, false]), AT)
+  const { stops: replies } = await applyOrphans(ctx, machineId, orphans([alive, true], [dead, false]), AT)
 
   assert.deepEqual(replies, [{ type: 'Stop', run: alive, reason: 'orphan_policy' }])
   assert.equal((await row(alive)).state, 'orphaned')
@@ -139,7 +141,7 @@ test('let_finish sends nothing', async () => {
   const { ctx, machineId, runOf, row } = await setup()
   const runId = await runOf('serve', 'running')
 
-  assert.deepEqual(await applyOrphans(ctx, machineId, orphans([runId, true]), AT), [])
+  assert.deepEqual((await applyOrphans(ctx, machineId, orphans([runId, true]), AT)).stops, [])
   const after = await row(runId)
   assert.equal(after.state, 'orphaned')
   assert.equal(after.failure_class, 'infra')
@@ -154,7 +156,7 @@ test('a dead orphan fails with class infra, and one the record cannot take does 
   await applyOrphans(ctx, machineId, orphans([letFinish, true]), AT)
 
   const warned: unknown[] = []
-  const replies = await applyOrphans(
+  const { stops: replies } = await applyOrphans(
     ctx,
     machineId,
     orphans([letFinish, true], [dead, false], [neverStarted, false]),

@@ -192,7 +192,9 @@ async function main(): Promise<void> {
       return (await res.json()) as T
     }
     let notListening: unknown
-    await until('the control plane to listen', 30_000, () =>
+    // As main.test.ts START_BUDGET_MS: right after the release build, the antivirus scanning the new files has held
+    // serve's ~1100 module loads past 40 s on this machine, against 2 s once the disk is quiet.
+    await until('the control plane to listen', 120_000, () =>
       api('/machines').then(
         () => true,
         (err) => {

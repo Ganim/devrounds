@@ -56,7 +56,8 @@ export function listMachines(ctx: TenantCtx): Promise<MachineView[]> {
 
 /**
  * Revokes the live machine `name` and returns its id, with the runs it had not ended, now failed with class infra
- * in the same transaction: a revoked executor never reports again, so they would stay offered or running for good.
+ * in the same transaction (and every run that changed with them, see failRevokedRuns): a revoked executor never
+ * reports again, so they would stay offered or running for good, and no claim takes a run pinned to it.
  * Its session is not closed here: the caller closes it with closeRevoked once the transaction has committed, because
  * 4401 makes the executor stop for good and a rolled-back revoke would leave it stopped with a valid token. A session
  * that starts before the commit still ends, because recordHello's update waits on this row lock and then finds the
@@ -65,7 +66,7 @@ export function listMachines(ctx: TenantCtx): Promise<MachineView[]> {
 export async function revokeMachine(
   ctx: Ctx,
   name: string,
-): Promise<{ name: string; machineId: string; failedRuns: string[] }> {
+): Promise<{ name: string; machineId: string; changedRuns: string[] }> {
   requireHuman(ctx, 'revoke a machine')
   return run(ctx, async (trx) => {
     const row = await trx
@@ -76,7 +77,7 @@ export async function revokeMachine(
       .returning('id')
       .executeTakeFirst()
     if (!row) fail('DR201', { kind: 'machine', key: name })
-    return { name, machineId: row.id, failedRuns: await failRevokedRuns(trx, { id: row.id, name }) }
+    return { name, machineId: row.id, changedRuns: await failRevokedRuns(trx, { id: row.id, name }) }
   })
 }
 

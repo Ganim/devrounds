@@ -4,7 +4,14 @@ import { test } from 'node:test'
 import { sql } from 'kysely'
 import { migrateToLatest } from '../db/migrate.ts'
 import { foreignKeysWithoutIndex, tablesWithoutTenantPolicy } from '../test-support/catalog.ts'
-import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
+import {
+  isolatedTestDb,
+  TEST_ADMIN_URL,
+  TEST_APP_PASSWORD,
+  TEST_APP_ROLE,
+  TEST_DATABASE_URL,
+  testDb,
+} from '../test-support/db.ts'
 import { withTenant } from './scope.ts'
 
 function hashOf(token: Buffer): Buffer {
@@ -133,8 +140,10 @@ test('every foreign key has an index leading with its referencing columns', asyn
   assert.deepEqual(await foreignKeysWithoutIndex(admin), [])
 })
 
+// The probe schemas live in a database of their own: in the shared one, another file's migrator lists every schema and
+// then reads the tables of each, and fails on a probe schema dropped in between (3F000).
 test('the foreign key guard flags a key whose columns are not the leading columns of any index', async () => {
-  const { admin } = await testDb()
+  const { admin } = await isolatedTestDb('guard_probe')
   const schema = `guard_probe_${randomBytes(4).toString('hex')}`
   await sql.raw(`create schema ${schema}`).execute(admin)
   try {
@@ -164,7 +173,7 @@ test('the foreign key guard flags a key whose columns are not the leading column
 })
 
 test('the tenant policy guard flags a policy with the right name and a different expression', async () => {
-  const { admin } = await testDb()
+  const { admin } = await isolatedTestDb('guard_probe')
   const schema = `guard_probe_${randomBytes(4).toString('hex')}`
   const policy = sql.raw(`create policy tenant_isolation on ${schema}`)
   const wrong = sql.raw(`using (true) with check (true)`)

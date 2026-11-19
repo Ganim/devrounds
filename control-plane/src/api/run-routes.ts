@@ -127,7 +127,7 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
       target = await prepareStop(ctx, sessions, request.params.id, request.params.key)
       return target.view
     })
-    if (target?.ended) runEvents.emit('changed', request.params.id)
+    if (target?.ended) for (const changed of target.changed) runEvents.emit('changed', changed)
     // Same answer as stopRun: a session lost since the check is DR350, not a stop that silently went nowhere.
     else if (
       target &&

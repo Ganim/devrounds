@@ -1,16 +1,24 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
 import { after, before, test } from 'node:test'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { sql } from 'kysely'
+import WsClient from 'ws'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { createDb } from '../db/connection.ts'
 import { DevRoundsError } from '../errors/error.ts'
 import { putJobType } from '../job-types/service.ts'
+import { enqueueRun } from '../jobs/enqueue.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import { createProject } from '../planning/service.ts'
-import { runEvents } from '../runs/dispatch.ts'
+import { runEvents, stopRun } from '../runs/dispatch.ts'
 import { createRun, markOffered } from '../runs/record.ts'
+import { runView } from '../runs/view.ts'
+import { Scheduler } from '../scheduler/scheduler.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
+import { Sessions } from './gateway.ts'
 import { FEATURES } from './protocol.ts'
 
 let t: TestDb
@@ -125,6 +133,7 @@ test('Hello gets HelloAck with last_seq and a MachineReport is kept', async () =
     features: [...FEATURES],
     machine_id: machine.machineId,
     last_seq: 0,
+    withdrawn: [],
   })
   await session.send(REPORT)
   let row: { last_report: unknown; last_seen_at: Date | null } | undefined
@@ -508,4 +517,139 @@ test('after HelloAck, the Stop of every run of this machine orphaned to be kille
   assert.equal(((await again.next()) as { last_seq: number }).last_seq, 3)
   assert.deepEqual(await again.next(), { type: 'Stop', run, reason: 'orphan_policy' })
   again.close()
+})
+
+// Ends `run` as an expiry or a stop on an offline machine does, `age` ago.
+function withdraw(run: string, age: string) {
+  return t.admin
+    .updateTable('runs')
+    .set({
+      state: 'stopped',
+      failure_class: 'cancelled',
+      finished_at: sql<Date>`now() - ${age}::interval`,
+      withdrawn_at: sql<Date>`now() - ${age}::interval`,
+    })
+    .where('id', '=', run)
+    .execute()
+}
+
+test('HelloAck lists withdrawn runs of the last 7 days only to an executor with the withdraw feature', async () => {
+  const { tenant, machine } = await paired()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createPairingCode(ctx, 'build-02').then(({ code }) =>
+    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }),
+  )
+  const [recent, old, offered, other] = await offeredRuns(tenant, 'build-01', 'build-01', 'build-01', 'build-02')
+  await withdraw(recent, '6 days')
+  await withdraw(old, '8 days')
+  await withdraw(other, '1 hour')
+
+  const session = dial(machine.token)
+  await session.send(HELLO)
+  const helloAck = (await session.next()) as { withdrawn: string[] }
+  assert.deepEqual(helloAck.withdrawn, [recent])
+  assert.deepEqual(await session.next(), {
+    type: 'Offer',
+    run: offered,
+    job: { job_type: 'check', program: 'pnpm', args: ['check'], cwd: 'C:\\w', env_allow: ['PATH'], timeout_s: 600 },
+    memory_need: 536870912,
+    trace_parent: traceParentOf(offered),
+  })
+  session.close()
+  await session.closed
+
+  // An executor from before the feature would not know what to do with the list.
+  const older = dial(machine.token)
+  await older.send({ ...HELLO, features: FEATURES.filter((feature) => feature !== 'withdraw') })
+  const olderAck = (await older.next()) as { features: string[]; withdrawn: string[] }
+  assert.ok(!olderAck.features.includes('withdraw'))
+  assert.deepEqual(olderAck.withdrawn, [])
+  older.close()
+})
+
+test('a late Admitted for a withdrawn run is skipped and changes nothing', async () => {
+  const { tenant, machine } = await paired()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  const [run] = await offeredRuns(tenant, 'build-01')
+  // No live session: the stop withdraws the offer at once.
+  await stopRun(ctx, new Sessions(), run)
+  const row = () => t.admin.selectFrom('runs').selectAll().where('id', '=', run).executeTakeFirstOrThrow()
+  const before = await row()
+  assert.equal(before.state, 'stopped')
+  assert.ok(before.withdrawn_at)
+
+  const session = dial(machine.token)
+  await session.send(HELLO)
+  assert.deepEqual(((await session.next()) as { withdrawn: string[] }).withdrawn, [run])
+  // The executor admitted it before it read the HelloAck.
+  await session.send({ type: 'Event', seq: 1, at: AT, event: { kind: 'Admitted', run } })
+  assert.deepEqual(await session.next(), ack(1))
+  session.close()
+
+  assert.deepEqual(await row(), before)
+  assert.equal(await lastSeq(machine.machineId), 1)
+})
+
+test('a session that stops answering pings ends within 45 s and gets no offers', async () => {
+  // 45 s is 3 intervals of 15 s; the same count of a shorter interval keeps the test fast.
+  const pingMs = 200
+  const sessions = new Sessions()
+  const scheduler = new Scheduler({
+    db: t.db,
+    sessions,
+    offerTimeoutS: 120,
+    pollMs: 600_000,
+    telemetry: null,
+    log: { warn: () => {}, error: () => {} },
+  })
+  const server = buildServer({ db: t.db, logger: false, sessions, scheduler, pingMs })
+  await server.listen({ port: 0, host: '127.0.0.1' })
+  const host = `127.0.0.1:${(server.server.address() as AddressInfo).port}`
+  try {
+    const { tenant, machine } = await paired()
+    const ctx = { db: t.db, tenantId: tenant.tenantId, actor: { id: tenant.human.id, kind: 'human' as const } }
+    await createProject(ctx, { key: 'devrounds', name: 'DevRounds' })
+    await putJobType(ctx, 'devrounds', { key: 'check', command: { program: 'pnpm', args: ['check'] } })
+
+    // Node's WebSocket answers every ping: its session outlives several intervals.
+    const answering = dial(machine.token, host)
+    await answering.send(HELLO)
+    assert.equal(((await answering.next()) as { type: string }).type, 'HelloAck')
+    await sleep(pingMs * 5)
+    assert.ok(sessions.get(machine.machineId), 'a session that answers pings stays')
+    answering.close()
+    await answering.closed
+
+    const silent = new WsClient(`ws://${host}/api/executor/connect`, {
+      headers: { authorization: `Bearer ${machine.token}` },
+      autoPong: false,
+    })
+    const ended = new Promise<number>((resolve) => silent.on('close', (code) => resolve(code)))
+    const firstFrame = new Promise<{ type: string }>((resolve) =>
+      silent.once('message', (data) => resolve(JSON.parse(String(data)))),
+    )
+    await once(silent, 'open')
+    silent.send(JSON.stringify(HELLO))
+    assert.equal((await firstFrame).type, 'HelloAck')
+    const began = Date.now()
+    // terminate() drops the socket without a close frame.
+    assert.equal(await ended, 1006)
+    const took = Date.now() - began
+    assert.ok(took >= pingMs, `ended after ${took} ms, before a ping could be missed`)
+    // Three intervals, plus room for a loaded machine.
+    assert.ok(took < 3 * pingMs + 1000, `ended after ${took} ms`)
+    assert.equal(sessions.get(machine.machineId), undefined)
+
+    const queued = await enqueueRun(ctx, {
+      projectKey: 'devrounds',
+      jobTypeKey: 'check',
+      cwd: 'C:\\w',
+      machineName: 'build-01',
+    })
+    await scheduler.tick()
+    assert.equal((await runView(ctx, queued.id)).state, 'queued')
+  } finally {
+    await scheduler.stop()
+    await server.close()
+  }
 })

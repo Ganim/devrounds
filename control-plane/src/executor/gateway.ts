@@ -10,7 +10,7 @@ import { DevRoundsError } from '../errors/error.ts'
 import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../machines/pairing.ts'
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
 import type { TenantCtx, Trx } from '../planning/resolve.ts'
-import { pendingOffers, runEvents } from '../runs/dispatch.ts'
+import { pendingOffers, recentlyWithdrawn, runEvents } from '../runs/dispatch.ts'
 import { type LogCtx, storeSegment } from '../runs/log-store.ts'
 import { applyOrphans, applyRunEvent, pendingOrphanStops, reportFinished } from '../runs/record.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
@@ -25,9 +25,16 @@ import {
 } from './protocol.ts'
 
 // WebSocket close codes the executor acts on: 4400 protocol (no or bad Hello), 4401 token (pair again, see
-// CLOSE_REVOKED), 4409 replaced by a newer session of the same machine (do not reconnect and steal it back).
+// CLOSE_REVOKED), 4409 replaced by a newer session of the same machine (do not reconnect and steal it back). 4408
+// ends a session that let an offer run out (scheduler/expiry.ts); the executor reconnects as for any drop, and the
+// HelloAck of the new session lists the run as withdrawn.
 export const CLOSE_PROTOCOL = 4400
+export const CLOSE_OFFER_TIMEOUT = 4408
 export const CLOSE_REPLACED = 4409
+// A session is pinged this often and ended after two pings in a row go unanswered, so a half-open connection (a
+// machine that slept, a NAT that dropped the mapping) stops receiving offers within 3 intervals, 45 s.
+export const PING_MS = 15_000
+const MAX_MISSED_PONGS = 2
 // RFC 6455 "internal error"; data stays out of the reason like 5xx bodies (see server.ts).
 const CLOSE_INTERNAL = 1011
 export const HELLO_TIMEOUT_MS = 10_000
@@ -55,6 +62,7 @@ function reasonOf(error: DevRoundsError): string {
 const REASONS: Record<number, string> = {
   [CLOSE_REVOKED]: reasonOf(new DevRoundsError('DR452')),
   [CLOSE_REPLACED]: 'replaced by a newer session of this machine',
+  [CLOSE_OFFER_TIMEOUT]: 'an offer was not answered in time',
 }
 
 /** Live executor sessions of this process, one per machine. */
@@ -102,6 +110,7 @@ type GatewayOptions = {
   logsRoot: string
   telemetry?: Telemetry | null
   scheduler?: SchedulerPoke
+  pingMs?: number
 }
 
 // Moves machines.last_seq to `seq`, only while it is below: the row lock and condition keep a replaced session still
@@ -154,11 +163,11 @@ async function applyEvent(
       }
       const at = new Date(message.at)
       if (event.kind === 'Orphans') {
-        const replies = await applyOrphans({ ...ctx, trx }, machineId, event, at, log)
-        return { changed: event.runs.map((orphan) => orphan.run), replies }
+        const { stops, changed } = await applyOrphans({ ...ctx, trx }, machineId, event, at, log)
+        return { changed: [...event.runs.map((orphan) => orphan.run), ...changed], replies: stops }
       }
-      await applyRunEvent({ ...ctx, trx }, machineId, event, at, log)
-      return { changed: [event.run], replies: [] }
+      const others = await applyRunEvent({ ...ctx, trx }, machineId, event, at, log)
+      return { changed: [event.run, ...others], replies: [] }
     })
     for (const message of applied.replies) reply(message)
     // After the commit, so a waiting `GET /runs/:id?wait` reads the new state.
@@ -215,6 +224,24 @@ function serveSession(
     HELLO_TIMEOUT_MS,
   )
 
+  // terminate, not close: a peer that answers no ping would not answer the closing handshake either. The session
+  // leaves `sessions` first, so the scheduler stops placing on it before the socket is gone.
+  let missedPongs = 0
+  socket.on('pong', () => {
+    missedPongs = 0
+  })
+  const heartbeat = setInterval(() => {
+    if (missedPongs >= MAX_MISSED_PONGS) {
+      closed = true
+      if (machine && session) sessions.ended(machine.machineId, session)
+      log.warn({ machineId: machine?.machineId }, 'executor session answered no ping; ended')
+      socket.terminate()
+      return
+    }
+    missedPongs += 1
+    socket.ping()
+  }, opts.pingMs ?? PING_MS)
+
   const handle = async (text: string) => {
     if (closed || !machine) return
     const ctx = { db, tenantId: machine.tenantId, logsRoot: opts.logsRoot }
@@ -254,12 +281,16 @@ function serveSession(
       }
       if (closed) return
       tracker = new SeqTracker(lastSeq)
+      // An executor without the feature would ignore the list, so it gets none and the query is skipped.
+      const withdrawn = features.includes('withdraw') ? await recentlyWithdrawn(ctx, machine.machineId) : []
+      if (closed) return
       sessions.send(machine.machineId, {
         type: 'HelloAck',
         protocol: PROTOCOL,
         features,
         machine_id: machine.machineId,
         last_seq: Number(lastSeq),
+        withdrawn,
       })
       // Offers lost with an earlier session; on the chain, so they go out before any later frame is handled.
       for (const offer of await pendingOffers(ctx, machine.machineId)) reply(offer)
@@ -332,6 +363,7 @@ function serveSession(
   })
   socket.on('close', () => {
     clearTimeout(hello)
+    clearInterval(heartbeat)
     closed = true
     if (machine && session) sessions.ended(machine.machineId, session)
   })

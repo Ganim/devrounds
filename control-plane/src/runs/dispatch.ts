@@ -3,7 +3,7 @@ import { sql } from 'kysely'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
-import { settleJob } from '../jobs/outcome.ts'
+import { settledRuns, settleJob } from '../jobs/outcome.ts'
 import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { learnedNeed } from './learned-need.ts'
@@ -110,17 +110,40 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
   })
 }
 
-export const QUEUED_STOP_SUMMARY = 'stopped while queued; no machine ran it'
+/**
+ * The runs of `machineId` withdrawn in the last 7 days, oldest first, for HelloAck.withdrawn: the executor drops the
+ * ones it still holds, so a withdrawn offer it answers late never runs. 7 days is the executor's RUN_DIR_RETENTION,
+ * the longest it keeps any trace of a run.
+ */
+export function recentlyWithdrawn(ctx: TenantCtx, machineId: string): Promise<string[]> {
+  return run(ctx, async (trx) => {
+    const rows = await trx
+      .selectFrom('runs')
+      .select('id')
+      .where('machine_id', '=', machineId)
+      .where('withdrawn_at', '>', sql<Date>`now() - interval '7 days'`)
+      .orderBy('withdrawn_at')
+      .execute()
+    return rows.map((row) => row.id)
+  })
+}
 
+export const QUEUED_STOP_SUMMARY = 'stopped while queued; no machine ran it'
+export const OFFLINE_OFFER_STOP_SUMMARY = 'stopped while offered to an offline machine; withdrawn before it ran'
+
+/** `changed`: every run the stop changed, the stopped one first, for the caller to wake their waiters. */
 export type PreparedStop =
-  | { view: RunView; ended: true }
+  | { view: RunView; ended: true; changed: string[] }
   | { view: RunView; ended: false; machineId: string; machine: string }
 
 /**
  * Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. A run
- * still queued is on no executor: it stops here at once, class cancelled, and its job is settled (`ended`). On a
+ * still queued is on no executor: it stops here at once, class cancelled, and its job is settled (`ended`). An offered
+ * run on a machine with no live session stops the same way and is withdrawn: its executor drops it at the next
+ * HelloAck, so it never runs, and an answer that arrives before that is refused like any to an ended run. On a
  * revoked machine, whose executor never reports again, the run fails with class infra here instead (`ended`). An
- * ended run has no Stop to send.
+ * admitted or running run on an offline machine answers DR350: its process may be alive, only its executor can stop
+ * it. An ended run has no Stop to send.
  */
 export async function prepareStop(
   ctx: TenantCtx,
@@ -140,21 +163,23 @@ export async function prepareStop(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow()
     if (TERMINAL.includes(state)) fail('DR351', { run: runId, state })
-    if (state === 'queued') {
+    const cancel = async (summary: string, withdraw: boolean) => {
       const next = nextRunState(state, 'stop', runId)
       await trx
         .updateTable('runs')
         .set({
           state: next.state,
-          finished_at: sql<Date>`now()`,
+          finished_at: sql<Date>`greatest(now(), offered_at)`,
           failure_class: 'cancelled',
-          failure_summary: QUEUED_STOP_SUMMARY,
+          failure_summary: summary,
+          ...(withdraw ? { withdrawn_at: sql<Date>`now()` } : {}),
         })
         .where('id', '=', runId)
         .execute()
-      await settleJob(trx, ctx.tenantId, runId)
-      return { view: await loadRunView(trx, runId), ended: true }
+      const changed = [runId, ...settledRuns(await settleJob(trx, ctx.tenantId, runId))]
+      return { view: await loadRunView(trx, runId), ended: true as const, changed }
     }
+    if (state === 'queued') return cancel(QUEUED_STOP_SUMMARY, false)
     // Past queued, a claim has placed the run on a machine.
     const row = await trx
       .selectFrom('runs')
@@ -163,17 +188,21 @@ export async function prepareStop(
       .where('runs.id', '=', runId)
       .executeTakeFirstOrThrow()
     if (row.revoked_at !== null) {
-      await failRevokedRuns(trx, row, runId)
-      return { view: await loadRunView(trx, runId), ended: true }
+      const changed = await failRevokedRuns(trx, row, runId)
+      return { view: await loadRunView(trx, runId), ended: true, changed }
     }
-    if (!sessions.get(row.id)) fail('DR350', { machine: row.name })
+    if (!sessions.get(row.id)) {
+      if (state === 'offered') return cancel(OFFLINE_OFFER_STOP_SUMMARY, true)
+      fail('DR350', { machine: row.name })
+    }
     return { view: await loadRunView(trx, runId), machineId: row.id, machine: row.name, ended: false }
   })
 }
 
 /**
- * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350; a queued
- * run stops and a run on a revoked machine fails at once (see prepareStop).
+ * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, a run past offered on an offline
+ * machine DR350; a queued run or an offer to an offline machine stops and a run on a revoked machine fails at once
+ * (see prepareStop).
  */
 export async function stopRun(
   ctx: TenantCtx,
@@ -183,7 +212,7 @@ export async function stopRun(
 ): Promise<RunView> {
   const stop = await prepareStop(ctx, sessions, runId, projectKey)
   if (stop.ended) {
-    runEvents.emit('changed', runId)
+    for (const changed of stop.changed) runEvents.emit('changed', changed)
     return stop.view
   }
   if (!sessions.send(stop.machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {

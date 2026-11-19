@@ -8,7 +8,7 @@ import type { JobTypeFile } from '../job-types/file.ts'
 import { putJobType } from '../job-types/service.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
-import { stopRun } from '../runs/dispatch.ts'
+import { stopRun, waitForRun } from '../runs/dispatch.ts'
 import { applyOrphans, applyRunEvent, retryRun } from '../runs/record.ts'
 import { claimRun } from '../scheduler/claim.ts'
 import { withTenant } from '../tenancy/scope.ts'
@@ -214,6 +214,17 @@ test('stop of a queued run ends it cancelled without an executor', async () => {
   assert.equal(await s.jobState(runOf(view, 'a')), 'stopped')
   assert.equal(await s.jobState(runOf(view, 'b')), 'skipped')
   assert.equal(await s.claim(), null)
+})
+
+test('stop of a queued dependency answers the waiter of its skipped dependent at once', async () => {
+  const s = await setup()
+  const view = await s.batch([{ ref: 'a' }, { ref: 'b', depends_on: ['a'] }])
+  const began = Date.now()
+  const waiting = waitForRun(s.ctx, runOf(view, 'b'), 30)
+  await stopRun(s.ctx, new Sessions(), runOf(view, 'a'))
+
+  assert.equal((await waiting).state, 'skipped')
+  assert.ok(Date.now() - began < 10_000, `took ${Date.now() - began} ms`)
 })
 
 test('a finished dependency lets the dependent be claimed', async () => {

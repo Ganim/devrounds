@@ -39,16 +39,16 @@ export const machineRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; se
     '/:name/revoke',
     { schema: { headers: Headers, params: Type.Object({ name: Type.String({ minLength: 1, maxLength: 200 }) }) } },
     async (request, reply) => {
-      let revoked: { machineId: string; failedRuns: string[] } | undefined
+      let revoked: { machineId: string; changedRuns: string[] } | undefined
       const sent = await mutateIdempotent(db, request, reply, async (ctx) => {
-        const { name, machineId, failedRuns } = await revokeMachine(ctx, request.params.name)
-        revoked = { machineId, failedRuns }
+        const { name, machineId, changedRuns } = await revokeMachine(ctx, request.params.name)
+        revoked = { machineId, changedRuns }
         return { name }
       })
       // mutateIdempotent has committed by now; a replayed key revokes nothing and closes nothing.
       if (revoked) {
         closeRevoked(sessions, revoked.machineId)
-        for (const run of revoked.failedRuns) runEvents.emit('changed', run)
+        for (const run of revoked.changedRuns) runEvents.emit('changed', run)
       }
       return sent
     },

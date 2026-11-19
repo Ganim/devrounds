@@ -73,7 +73,15 @@ offered there. It wakes on a Postgres NOTIFY (`devrounds_scheduler`) when a run 
 connects or reports, and on a poll every `schedulerPollS` seconds (default 15, `DEVROUNDS_SCHEDULER_POLL_S`), which
 keeps placing runs if its LISTEN connection is down. `offerTimeoutS` (default 120, at least 5,
 `DEVROUNDS_OFFER_TIMEOUT_S`) is how long an executor has to answer an Offer. Both go in `server.json` or the
-environment.
+environment. An Offer with no answer in time (any event of the run, `Delayed` included, answers it) is withdrawn: the
+run stops with class infra, a new run of the same job is queued (cause `requeue`, which never counts toward the job
+type's `max_attempts`), and the executor's live session, if any, is closed with 4408. Stopping an offered run of a
+machine that is not connected ends it at once the same way, withdrawn, with class cancelled. The next `HelloAck` lists
+the runs withdrawn in the last 7 days, and the executor drops those it still holds before they start (one already
+started is stopped). At start, `serve` gives every pending Offer a full timeout again before its first tick, so offers
+made before a crash are not withdrawn while their executors reconnect. The control plane pings each executor session
+every 15 s and ends it after two pings go unanswered; the executor drops a session that sent no frame for 45 s and
+reconnects after 1 s, doubling to 30 s, each wait moved by up to ±20 %.
 
 ```
 pnpm footprint    # after 60 s with no job running: private bytes of both services against their budgets

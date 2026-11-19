@@ -7,7 +7,15 @@ import { fail } from '../errors/error.ts'
 // executor's messages ClientMessage and the control plane's ServerMessage.
 
 export const PROTOCOL = 1
-export const FEATURES = ['seq', 'steps', 'log-segments', 'orphans', 'trace-context', 'acked-through'] as const
+export const FEATURES = [
+  'seq',
+  'steps',
+  'log-segments',
+  'orphans',
+  'trace-context',
+  'acked-through',
+  'withdraw',
+] as const
 
 const U32 = Type.Integer({ minimum: 0, maximum: 4294967295 })
 // Rust sends u64; a JSON number above 2^53 would silently round here, so the schema refuses it. Seqs and byte counts
@@ -129,6 +137,9 @@ export const CONTROL_PLANE_MESSAGES = {
     features: Type.Array(Type.String()),
     machine_id: Type.String(),
     last_seq: U64,
+    // Feature withdraw: runs offered to this machine and withdrawn in the last 7 days (expired, or stopped while the
+    // machine was offline); the executor drops any it has not spawned. Empty without the feature.
+    withdrawn: Type.Array(Type.String()),
   }),
   Offer: Type.Object({
     type: Type.Literal('Offer'),
