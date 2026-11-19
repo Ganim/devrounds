@@ -11,6 +11,8 @@ import { runCli } from '../cli/commands.ts'
 import { DevRoundsError } from '../errors/error.ts'
 import { Sessions } from '../executor/gateway.ts'
 import { putJobType } from '../job-types/service.ts'
+import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
+import { revokeMachine } from '../machines/service.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { type IsolatedTestDb, isolatedTestDb, TEST_APP_ROLE } from '../test-support/db.ts'
@@ -262,4 +264,51 @@ test('schedule set and list over the API show the next fire in the tenant time z
     await app.close()
     await rm(scratch, { recursive: true, force: true })
   }
+})
+
+test('a daily schedule missed twice while serve was down fires once', async () => {
+  const s = await setup()
+  await s.put('morning', { everyS: undefined, dailyAt: '06:00' })
+  const now = new Date()
+  await s.dueAt('morning', new Date(now.getTime() - 2 * 86_400_000 - 1000))
+
+  assert.equal(await fireDueSchedules(t.db, now, log), 1)
+  assert.equal(await fireDueSchedules(t.db, now, log), 0)
+  assert.equal((await s.jobsOf('morning')).length, 1)
+  const next = (await s.row('morning')).next_due_at
+  assert.ok(next > now && next.getTime() - now.getTime() <= 86_400_000 + HOUR, next.toISOString())
+})
+
+test('saving the same schedule again keeps next_due_at; changing its timing restarts it', async () => {
+  const s = await setup()
+  await s.put('nightly', { everyS: 86_400 })
+  const before = (await s.row('nightly')).next_due_at
+  await s.put('nightly', { everyS: 86_400 })
+  assert.equal((await s.row('nightly')).next_due_at.getTime(), before.getTime())
+
+  await s.put('morning', { everyS: undefined, dailyAt: '06:00' })
+  const daily = (await s.row('morning')).next_due_at
+  await s.put('morning', { everyS: undefined, dailyAt: '06:00' })
+  assert.equal((await s.row('morning')).next_due_at.getTime(), daily.getTime())
+
+  await s.put('nightly', { everyS: 3600 })
+  assert.notEqual((await s.row('nightly')).next_due_at.getTime(), before.getTime())
+})
+
+test('a schedule pinned to a revoked machine makes no job and moves its clock', async () => {
+  const s = await setup()
+  const { code } = await createPairingCode(s.ctx, 'build-01')
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  await s.put('pinned', { machine: 'build-01' })
+  await revokeMachine(s.ctx, 'build-01')
+  const now = new Date()
+  await s.dueAt('pinned', new Date(now.getTime() - 1000))
+  const warnings: object[] = []
+
+  assert.equal(await fireDueSchedules(t.db, now, { warn: (data) => warnings.push(data), error: () => {} }), 0)
+
+  assert.deepEqual(await s.jobsOf('pinned'), [])
+  assert.equal((await s.row('pinned')).next_due_at.getTime(), now.getTime() + HOUR)
+  assert.equal(warnings.length, 1)
+  assert.match(JSON.stringify(warnings[0]), /machine/)
 })

@@ -116,6 +116,22 @@ async function fireOne(trx: Trx, tenantId: string, scheduleId: string, now: Date
     log.warn({ schedule: scheduleId, job: schedule.last_job_id }, 'schedule skipped; its previous job is still open')
     return false
   }
+  // A job pinned to a revoked machine could never run and would stay open, blocking every later fire.
+  if (schedule.machine_id !== null) {
+    const machine = await trx
+      .selectFrom('machines')
+      .select('revoked_at')
+      .where('id', '=', schedule.machine_id)
+      .executeTakeFirst()
+    if (machine?.revoked_at) {
+      await trx.updateTable('schedules').set({ next_due_at: nextDueAt }).where('id', '=', scheduleId).execute()
+      log.warn(
+        { schedule: scheduleId, machine: schedule.machine_id },
+        'schedule skipped; the machine it is pinned to is revoked',
+      )
+      return false
+    }
+  }
   const job = await trx
     .insertInto('jobs')
     .values({
@@ -205,7 +221,7 @@ export async function putSchedule(
       .executeTakeFirstOrThrow()
     const restart =
       current.every_s !== timing.every_s ||
-      current.daily_at?.slice(0, 5) !== timing.daily_at ||
+      (current.daily_at?.slice(0, 5) ?? null) !== timing.daily_at ||
       (enabled && !current.enabled)
     await trx
       .updateTable('schedules')
