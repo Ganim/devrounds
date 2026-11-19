@@ -8,6 +8,7 @@ import { createProject } from '../planning/service.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { testDb } from '../test-support/db.ts'
 import { indicatorsNow, runIndicators } from './indicators.ts'
+import { runView } from './view.ts'
 
 const projectKey = 'devrounds'
 const MIB = 1024 * 1024
@@ -245,7 +246,7 @@ test('now reports the oldest wait per queue and reserved vs free per machine', a
     .execute()
   await t.admin
     .updateTable('runs')
-    .set({ queued_at: new Date(Date.now() - 60_000) })
+    .set({ queued_at: new Date(Date.now() - 60_000), not_before: new Date(Date.now() - 60_000) })
     .where('id', '=', lintRun)
     .execute()
   await t.admin
@@ -286,4 +287,44 @@ test("another tenant's runs are not counted", async () => {
     rows.map((r) => [r.jobType, r.runs]),
     [['check', 1]],
   )
+})
+
+// A retry is queued when the run before it ends but no machine may take it before not_before: that backoff is not
+// waiting for a machine, in the run's own view or in its queue's oldest wait.
+test("a retry run's queue wait and its queue's oldest wait exclude its backoff", async () => {
+  const { t, tenant, ctx } = await setup()
+  const runs = await t.admin
+    .selectFrom('runs as r')
+    .innerJoin('job_types as jt', 'jt.id', 'r.job_type_id')
+    .select(['r.id', 'jt.key'])
+    .where('r.tenant_id', '=', tenant.tenantId)
+    .execute()
+  const runOf = (key: string) => runs.find((r) => r.key === key)?.id as string
+  const now = Date.now()
+  // check: queued 10 min ago, placeable 5 min ago; lint: queued 10 min ago, still in its backoff for 5 more min.
+  await t.admin
+    .updateTable('runs')
+    .set({ cause: 'retry', queued_at: new Date(now - 600_000), not_before: new Date(now - 300_000) })
+    .where('id', '=', runOf('check'))
+    .execute()
+  await t.admin
+    .updateTable('runs')
+    .set({ cause: 'retry', queued_at: new Date(now - 600_000), not_before: new Date(now + 300_000) })
+    .where('id', '=', runOf('lint'))
+    .execute()
+
+  const [queue] = (await indicatorsNow(ctx, projectKey)).queues
+  assert.equal(queue.depth, 2)
+  assert.ok(
+    queue.oldestWaitMs !== null && queue.oldestWaitMs >= 300_000 && queue.oldestWaitMs < 310_000,
+    String(queue.oldestWaitMs),
+  )
+
+  // Offered 2 s after its backoff ended: it waited 2 s for a machine, not 5 min 2 s.
+  await t.admin
+    .updateTable('runs')
+    .set({ not_before: new Date(now - 302_000), offered_at: new Date(now - 300_000) })
+    .where('id', '=', runOf('check'))
+    .execute()
+  assert.equal((await runView(ctx, runOf('check'))).durations.queueWaitMs, 2000)
 })

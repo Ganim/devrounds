@@ -25,7 +25,8 @@ export type RunView = {
   }
   // Null while either end is missing.
   durations: {
-    queueWaitMs: number | null // queued → offered
+    // Placeable (the later of queued_at and not_before) → offered: a retry's backoff is not waiting for a machine.
+    queueWaitMs: number | null
     admissionDelayMs: number | null // offered → admitted
     runTimeMs: number | null // started → finished
     totalMs: number | null // queued → finished
@@ -78,6 +79,7 @@ export function requireRunId(runId: string): void {
 const num = (value: string | null): number | null => (value === null ? null : Number(value))
 const between = (from: Date | null, to: Date | null): number | null =>
   from && to ? to.getTime() - from.getTime() : null
+const later = (a: Date, b: Date): Date => (a.getTime() >= b.getTime() ? a : b)
 
 /** With `projectKey`, a run of another project answers DR201 as if it did not exist. */
 export async function runView(ctx: TenantCtx, runId: string, projectKey?: string): Promise<RunView> {
@@ -132,7 +134,7 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
       finishedAt: row.finished_at,
     },
     durations: {
-      queueWaitMs: between(row.queued_at, row.offered_at),
+      queueWaitMs: between(later(row.queued_at, row.not_before), row.offered_at),
       admissionDelayMs: between(row.offered_at, row.admitted_at),
       runTimeMs: between(row.started_at, row.finished_at),
       totalMs: between(row.queued_at, row.finished_at),

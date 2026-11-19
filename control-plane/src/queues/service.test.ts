@@ -48,7 +48,7 @@ test('queue list reports depth, in flight and the oldest queued time', async () 
     .where('id', '=', first.id)
     .execute()
   const older = new Date('2026-01-01T00:00:00Z')
-  await t.admin.updateTable('runs').set({ queued_at: older }).where('id', '=', second.id).execute()
+  await t.admin.updateTable('runs').set({ queued_at: older, not_before: older }).where('id', '=', second.id).execute()
 
   assert.deepEqual(await listQueues(ctx, projectKey), [
     { key: 'fast', priority: 5, concurrency: null, jobTypes: ['check'], depth: 0, inFlight: 0, oldestQueuedAt: null },

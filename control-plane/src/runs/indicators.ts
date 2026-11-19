@@ -31,7 +31,7 @@ export type IndicatorRow = {
 }
 
 export type IndicatorsNow = {
-  // oldestWaitMs: since the oldest run still queued; null for an empty queue.
+  // oldestWaitMs: since the oldest placeable queued run became placeable (QueueView.oldestQueuedAt); null when none.
   queues: { key: string; depth: number; oldestWaitMs: number | null }[]
   machines: { name: string; freeBytes: number | null; reservedBytes: number; reserveBytes: number | null }[]
   learnedNeeds: { jobType: string; machine: string; needBytes: number; samples: number }[]

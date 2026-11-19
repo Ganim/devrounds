@@ -34,6 +34,8 @@ export type QueueView = {
   depth: number
   // Runs offered, admitted or running; the ones a concurrency cap counts.
   inFlight: number
+  // Since when the oldest placeable queued run waits: the later of queued_at and not_before, over the runs whose retry
+  // backoff is over, so a backoff never counts as waiting and no age is negative.
   oldestQueuedAt: Date | null
 }
 
@@ -129,10 +131,11 @@ async function queueViews(trx: Trx, projectId: string, onlyKey?: string): Promis
     select q.id, q.key, q.priority, q.concurrency,
       count(*) filter (where a.state = 'queued') as depth,
       count(*) filter (where a.state in ('offered', 'admitted', 'running')) as in_flight,
-      min(a.queued_at) filter (where a.state = 'queued') as oldest_queued_at
+      min(greatest(a.queued_at, a.not_before)) filter (where a.state = 'queued' and a.not_before <= now())
+        as oldest_queued_at
     from queues q
     left join (
-      select j.queue_id, r.state, r.queued_at
+      select j.queue_id, r.state, r.queued_at, r.not_before
       from runs r join jobs j on j.id = r.job_id
       where r.project_id = ${projectId} and r.state in ('queued', 'offered', 'admitted', 'running')
     ) a on a.queue_id = q.id
