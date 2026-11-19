@@ -204,7 +204,7 @@ Each was decided by Claude under Guilherme's standing rule for DevRounds ("don't
   Date | null }`.
 - `jobs/graph.ts`: `checkGraph(batch: string, jobs: { ref: string; dependsOn: string[] }[]): void` — DR101 at
   `/jobs/<i>/depends_on/<j>` for an unknown ref, DR101 at `/jobs/<i>/ref` for a duplicate ref, DR152 with `cycle` =
-  refs joined by ` → ` ending where it started (self-edge included).
+  refs joined by " → " ending where it started (self-edge included).
 - `jobs/batch-file.ts`: TypeBox `BatchInput = { jobs: [{ ref, job_type, cwd, machine?, queue?, task?, depends_on?:
   string[] }] }` (1..200 jobs), `parseBatchFile(text) -> BatchInput` (YAML through `yaml-file.ts`).
 - `jobs/enqueue.ts`: `enqueueRun(ctx, { projectKey, jobTypeKey, cwd, machineName?, queueKey?, taskKey? }) -> RunView`
