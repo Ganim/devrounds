@@ -1,12 +1,14 @@
 import { EventEmitter } from 'node:events'
+import { sql } from 'kysely'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
+import { settleJob } from '../jobs/outcome.ts'
 import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { learnedNeed } from './learned-need.ts'
 import { failRevokedRuns, runTraceParent } from './record.ts'
-import { TERMINAL } from './states.ts'
+import { nextRunState, TERMINAL } from './states.ts'
 import { loadRunView, type RunView, requireRunId, runView } from './view.ts'
 
 /** Emits `'changed'` with the run id after the gateway applied an event of that run. */
@@ -108,44 +110,70 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
   })
 }
 
+export const QUEUED_STOP_SUMMARY = 'stopped while queued; no machine ran it'
+
+export type PreparedStop =
+  | { view: RunView; ended: true }
+  | { view: RunView; ended: false; machineId: string; machine: string }
+
 /**
- * Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. On a
- * revoked machine, whose executor never reports again, the run fails with class infra here instead (`ended`), and no
- * Stop is to be sent.
+ * Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. A run
+ * still queued is on no executor: it stops here at once, class cancelled, and its job is settled (`ended`). On a
+ * revoked machine, whose executor never reports again, the run fails with class infra here instead (`ended`). An
+ * ended run has no Stop to send.
  */
 export async function prepareStop(
   ctx: TenantCtx,
   sessions: Sessions,
   runId: string,
   projectKey?: string,
-): Promise<{ view: RunView; machineId: string; machine: string; ended: boolean }> {
+): Promise<PreparedStop> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
-    const view = await loadRunView(trx, runId, projectKey)
-    if (TERMINAL.includes(view.state)) fail('DR351', { run: runId, state: view.state })
+    await loadRunView(trx, runId, projectKey)
+    // Locked before the state is read, so a claim (which skips locked rows) or an executor event cannot move the run
+    // while it is being stopped.
+    const { state } = await trx
+      .selectFrom('runs')
+      .select('state')
+      .where('id', '=', runId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow()
+    if (TERMINAL.includes(state)) fail('DR351', { run: runId, state })
+    if (state === 'queued') {
+      const next = nextRunState(state, 'stop', runId)
+      await trx
+        .updateTable('runs')
+        .set({
+          state: next.state,
+          finished_at: sql<Date>`now()`,
+          failure_class: 'cancelled',
+          failure_summary: QUEUED_STOP_SUMMARY,
+        })
+        .where('id', '=', runId)
+        .execute()
+      await settleJob(trx, ctx.tenantId, runId)
+      return { view: await loadRunView(trx, runId), ended: true }
+    }
+    // Past queued, a claim has placed the run on a machine.
     const row = await trx
       .selectFrom('runs')
       .innerJoin('machines', 'machines.id', 'runs.machine_id')
       .select(['machines.id', 'machines.name', 'machines.revoked_at'])
       .where('runs.id', '=', runId)
-      .executeTakeFirst()
-    // Only a run queued through jobs/enqueue.ts has no machine yet; no executor knows it, so there is nothing to
-    // stop until stopping a queued run is a state change of its own (P1-T45).
-    if (!row) fail('DR351', { run: runId, state: view.state })
+      .executeTakeFirstOrThrow()
     if (row.revoked_at !== null) {
-      const failed = await failRevokedRuns(trx, row, runId)
-      // Ended meanwhile (an event applied since the read): its state is the answer, as for any ended run.
-      if (failed.length === 0) fail('DR351', { run: runId, state: (await loadRunView(trx, runId)).state })
-      return { view: await loadRunView(trx, runId), machineId: row.id, machine: row.name, ended: true }
+      await failRevokedRuns(trx, row, runId)
+      return { view: await loadRunView(trx, runId), ended: true }
     }
     if (!sessions.get(row.id)) fail('DR350', { machine: row.name })
-    return { view, machineId: row.id, machine: row.name, ended: false }
+    return { view: await loadRunView(trx, runId), machineId: row.id, machine: row.name, ended: false }
   })
 }
 
 /**
- * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350; on a
- * revoked machine the run fails at once (see prepareStop).
+ * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, an offline machine DR350; a queued
+ * run stops and a run on a revoked machine fails at once (see prepareStop).
  */
 export async function stopRun(
   ctx: TenantCtx,
@@ -153,15 +181,15 @@ export async function stopRun(
   runId: string,
   projectKey?: string,
 ): Promise<RunView> {
-  const { view, machineId, machine, ended } = await prepareStop(ctx, sessions, runId, projectKey)
-  if (ended) {
+  const stop = await prepareStop(ctx, sessions, runId, projectKey)
+  if (stop.ended) {
     runEvents.emit('changed', runId)
-    return view
+    return stop.view
   }
-  if (!sessions.send(machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {
-    fail('DR350', { machine })
+  if (!sessions.send(stop.machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {
+    fail('DR350', { machine: stop.machine })
   }
-  return view
+  return stop.view
 }
 
 /**

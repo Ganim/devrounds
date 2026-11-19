@@ -3,6 +3,7 @@ import type { RunsTable } from '../db/schema.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
+import { queueRetry, settleJob } from '../jobs/outcome.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { ensureQueue } from '../queues/service.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -48,40 +49,33 @@ export function createRun(
       })
       .returning('id')
       .executeTakeFirstOrThrow()
-    return insertRun(trx, ctx.tenantId, job.id, 1)
+    const { id } = await trx
+      .insertInto('runs')
+      .values({
+        tenant_id: ctx.tenantId,
+        job_id: job.id,
+        project_id: project.id,
+        job_type_id: jobType.id,
+        machine_id: machine.id,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    return loadRunView(trx, id)
   })
 }
 
-/** A new run of the same job (same job type, machine, cwd and task), attempt + 1. Only an ended run is retried. */
+/**
+ * A person's retry: a new run of the same job (same job type, machine, cwd and task), attempt + 1, cause retry, and
+ * the job open again. Only an ended run is retried; the job type's max_attempts bounds automatic retries only.
+ */
 export async function retryRun(ctx: Ctx, runId: string): Promise<RunView> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
     const previous = await trx.selectFrom('runs').select(['job_id', 'state']).where('id', '=', runId).executeTakeFirst()
     if (!previous) fail('DR201', { kind: 'run', key: runId })
     if (!TERMINAL.includes(previous.state)) fail('DR351', { run: runId, state: previous.state })
-    // Serializes retries of one job, so two at once cannot pick the same attempt number.
-    await trx.selectFrom('jobs').select('id').where('id', '=', previous.job_id).forNoKeyUpdate().execute()
-    const { last } = await trx
-      .selectFrom('runs')
-      .select((eb) => eb.fn.max('attempt').as('last'))
-      .where('job_id', '=', previous.job_id)
-      .executeTakeFirstOrThrow()
-    return insertRun(trx, ctx.tenantId, previous.job_id, last + 1)
+    return loadRunView(trx, await queueRetry(trx, ctx.tenantId, previous.job_id))
   })
-}
-
-async function insertRun(trx: Trx, tenantId: string, jobId: string, attempt: number): Promise<RunView> {
-  const job = await trx
-    .selectFrom('jobs')
-    .select(['project_id', 'job_type_id', 'machine_id'])
-    .where('id', '=', jobId)
-    .executeTakeFirstOrThrow()
-  const { id } = await trx
-    .insertInto('runs')
-    .values({ tenant_id: tenantId, job_id: jobId, attempt, ...job })
-    .returning('id')
-    .executeTakeFirstOrThrow()
-  return loadRunView(trx, id)
 }
 
 /**
@@ -299,6 +293,7 @@ export async function applyRunEvent(
         })
         // Same transaction as the peak, so the next claim already places by it.
         await updateLearnedNeed(trx, row.project_id, row.job_type_id, machineId)
+        await settleJob(trx, ctx.tenantId, runId)
         // An ended run frees its memory, its queue slot and its dependents: the scheduler looks again at the commit.
         await notifyScheduler(trx, ctx.tenantId)
         return
@@ -311,7 +306,7 @@ export async function applyRunEvent(
  * Fails, class infra, every run of the revoked machine `machineId` that has not ended (offered, admitted or running),
  * or only `runId` with it, inside `trx`; returns the ids failed. A revoked executor never reports again, so these runs
  * could never end otherwise. finished_at is no earlier than any stamp on the run, so no duration is negative. Like
- * any run end, it wakes the scheduler at the commit.
+ * any run end, it settles each run's job (jobs/outcome.ts) and wakes the scheduler at the commit.
  */
 export async function failRevokedRuns(
   trx: Trx,
@@ -331,6 +326,7 @@ export async function failRevokedRuns(
     .$if(runId !== undefined, (query) => query.where('id', '=', runId as string))
     .returning(['id', 'tenant_id'])
     .execute()
+  for (const row of rows) await settleJob(trx, row.tenant_id, row.id)
   if (rows.length > 0) await notifyScheduler(trx, rows[0].tenant_id)
   return rows.map((row) => row.id)
 }
@@ -347,8 +343,8 @@ export const UNSUPERVISED_SUMMARY = 'executor restarted; the run ended while uns
  * its job type's `kill` policy answers Stop orphan_policy (orphan_action killed), `let_finish` sends nothing. A dead
  * run failed with class infra, stamped like any executor event (see applyRunEvent). An alive repeat of a run already
  * orphaned to be killed answers its Stop again. An orphan its run cannot take (another machine's, already ended, or a
- * let_finish repeat) is logged and skipped, so the others still apply. An applied orphan ends its run, so it wakes
- * the scheduler at the commit.
+ * let_finish repeat) is logged and skipped, so the others still apply. An applied orphan ends its run, so it settles
+ * the run's job (jobs/outcome.ts: no retry, the job fails) and wakes the scheduler at the commit.
  */
 export async function applyOrphans(
   ctx: TenantCtx,
@@ -362,7 +358,7 @@ export async function applyOrphans(
     let applied = 0
     for (const { run: runId, alive } of event.runs) {
       try {
-        if (await applyOrphan(trx, machineId, runId, alive, at)) {
+        if (await applyOrphan(trx, ctx.tenantId, machineId, runId, alive, at)) {
           stops.push({ type: 'Stop', run: runId, reason: 'orphan_policy' })
         }
         applied += 1
@@ -401,7 +397,14 @@ export function pendingOrphanStops(ctx: TenantCtx, machineId: string): Promise<S
 }
 
 // True when the run is to be stopped.
-async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: boolean, at: Date): Promise<boolean> {
+async function applyOrphan(
+  trx: Trx,
+  tenantId: string,
+  machineId: string,
+  runId: string,
+  alive: boolean,
+  at: Date,
+): Promise<boolean> {
   requireRunId(runId)
   const row = await lockRun(trx, machineId, runId)
   const { stamp, clock_skew_ms } = await clamp(trx, runId, at, row.clock_skew_ms)
@@ -415,6 +418,7 @@ async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: bo
       failure_class: 'infra',
       failure_summary: UNSUPERVISED_SUMMARY,
     })
+    await settleJob(trx, tenantId, runId)
     return false
   }
   // The executor restarted again before it acted on the Stop: it still owes the kill. The new report restarts the
@@ -437,5 +441,6 @@ async function applyOrphan(trx: Trx, machineId: string, runId: string, alive: bo
     failure_class: 'infra',
     orphan_action: kill ? 'killed' : 'let_finish',
   })
+  await settleJob(trx, tenantId, runId)
   return kill
 }

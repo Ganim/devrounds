@@ -1,10 +1,23 @@
 import { sql } from 'kysely'
+import type { FailureClass } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import type { ClassifyRule } from '../runs/classify.ts'
 import { findJobTypeIssue, type JobTypeDef, type JobTypeFile, withDefaults } from './file.ts'
 
-const COLUMNS = ['id', 'key', 'program', 'args', 'env_allow', 'timeout_s', 'orphan_policy', 'classify'] as const
+const COLUMNS = [
+  'id',
+  'key',
+  'program',
+  'args',
+  'env_allow',
+  'timeout_s',
+  'orphan_policy',
+  'classify',
+  'max_attempts',
+  'retry_backoff_s',
+  'retry_on',
+] as const
 
 type JobTypeRow = {
   id: string
@@ -15,6 +28,9 @@ type JobTypeRow = {
   timeout_s: number
   orphan_policy: 'kill' | 'let_finish'
   classify: unknown
+  max_attempts: number
+  retry_backoff_s: number
+  retry_on: FailureClass[]
 }
 
 export function toDef(row: JobTypeRow): JobTypeDef {
@@ -25,6 +41,7 @@ export function toDef(row: JobTypeRow): JobTypeDef {
     timeout_s: row.timeout_s,
     orphan_policy: row.orphan_policy,
     classify: row.classify as ClassifyRule[],
+    retry: { max_attempts: row.max_attempts, backoff_s: row.retry_backoff_s, on: row.retry_on },
   }
 }
 
@@ -39,8 +56,8 @@ export async function findJobType(trx: Trx, projectId: string, key: string): Pro
 }
 
 /**
- * Creates or replaces the job type `input.key` of the project. Runs read the classify rules when they finish, so a
- * change also applies to runs still in flight.
+ * Creates or replaces the job type `input.key` of the project. Runs read the classify rules and the retry policy
+ * when they end, so a change also applies to runs still in flight.
  */
 export async function putJobType(ctx: Ctx, projectKey: string, input: JobTypeFile): Promise<JobTypeDef> {
   const issue = findJobTypeIssue(input)
@@ -55,6 +72,9 @@ export async function putJobType(ctx: Ctx, projectKey: string, input: JobTypeFil
       timeout_s: def.timeout_s,
       orphan_policy: def.orphan_policy,
       classify: JSON.stringify(def.classify),
+      max_attempts: def.retry.max_attempts,
+      retry_backoff_s: def.retry.backoff_s,
+      retry_on: def.retry.on,
     }
     await trx
       .insertInto('job_types')

@@ -19,6 +19,10 @@ classify:
     exit_codes: [1]
   - class: environment
     log_pattern: ERR_PNPM_
+retry:
+  max_attempts: 3
+  backoff_s: 10
+  on: [infra, timeout]
 `
 
 test('a job type file round-trips through the project', async () => {
@@ -40,6 +44,7 @@ test('a job type file round-trips through the project', async () => {
     timeout_s: 3600,
     orphan_policy: 'kill',
     classify: [],
+    retry: { max_attempts: 1, backoff_s: 30, on: ['infra'] },
   })
   await assert.rejects(
     putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),
@@ -71,4 +76,12 @@ test('a rule without a condition or with a bad pattern is refused with DR101', (
       (err: unknown) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === path,
     )
   }
+})
+
+test('retry.on cannot name cancelled (DR101 at /retry/on/0)', () => {
+  const text = 'key: check\ncommand: { program: pnpm }\nretry:\n  on: [cancelled, infra]\n'
+  assert.throws(
+    () => parseJobTypeFile(text),
+    (err: unknown) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === '/retry/on/0',
+  )
 })

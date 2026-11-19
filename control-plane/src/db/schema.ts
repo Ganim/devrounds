@@ -189,6 +189,9 @@ export interface JobTypesTable {
   timeout_s: Generated<number>
   orphan_policy: Generated<OrphanPolicy>
   classify: Json
+  max_attempts: Generated<number>
+  retry_backoff_s: Generated<number>
+  retry_on: ColumnType<FailureClass[], FailureClass[] | undefined, FailureClass[]>
   updated_at: Timestamp
 }
 

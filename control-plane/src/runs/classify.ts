@@ -4,6 +4,7 @@ import type { FailureClass } from '../db/schema.ts'
 // Classes a job type rule may name. cancelled and unclassified only come from the run itself.
 export const RULE_CLASSES = ['check_red', 'environment', 'timeout', 'memory', 'infra'] as const
 export type RuleClass = (typeof RULE_CLASSES)[number]
+export const FAILURE_CLASSES = [...RULE_CLASSES, 'cancelled', 'unclassified'] as const satisfies FailureClass[]
 
 /** One job type rule; with both conditions given, both must match. */
 export type ClassifyRule = { class: RuleClass; exit_codes?: number[]; log_pattern?: string }

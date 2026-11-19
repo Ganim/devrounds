@@ -7,7 +7,7 @@ import type { Sessions } from '../executor/gateway.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
-import { prepareStop, runEvents, waitForRun } from '../runs/dispatch.ts'
+import { type PreparedStop, prepareStop, runEvents, waitForRun } from '../runs/dispatch.ts'
 import { readRunLog } from '../runs/log-store.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
@@ -122,20 +122,18 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
   )
 
   app.post('/runs/:id/stop', { schema: { params: RunParams, headers: Headers } }, async (request, reply) => {
-    let target: { machineId: string; machine: string; ended: boolean } | undefined
+    let target: PreparedStop | undefined
     const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
-      const { view, machineId, machine, ended } = await prepareStop(
-        ctx,
-        sessions,
-        request.params.id,
-        request.params.key,
-      )
-      target = { machineId, machine, ended }
-      return view
+      target = await prepareStop(ctx, sessions, request.params.id, request.params.key)
+      return target.view
     })
     if (target?.ended) runEvents.emit('changed', request.params.id)
     // Same answer as stopRun: a session lost since the check is DR350, not a stop that silently went nowhere.
-    else if (target && !sessions.send(target.machineId, { type: 'Stop', run: request.params.id, reason: 'cancel' })) {
+    else if (
+      target &&
+      !target.ended &&
+      !sessions.send(target.machineId, { type: 'Stop', run: request.params.id, reason: 'cancel' })
+    ) {
       fail('DR350', { machine: target.machine })
     }
     return answer
