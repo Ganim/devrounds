@@ -61,7 +61,7 @@ export class Scheduler {
     if (this.#stopped) return
     this.#poll = setInterval(() => {
       this.#everyone = true
-      void this.#wake()
+      this.#wake()
     }, this.#o.pollMs)
     this.#listener = listen(
       listenUrl,
@@ -71,7 +71,7 @@ export class Scheduler {
       () => {
         // NOTIFYs sent while the connection was down are lost; look at everyone once it is back.
         this.#everyone = true
-        void this.#wake()
+        this.#wake()
       },
     )
     await this.#listener.ready
@@ -79,29 +79,37 @@ export class Scheduler {
 
   poke(tenantId: string): void {
     this.#woken.add(tenantId)
-    void this.#wake()
+    this.#wake()
   }
 
   /** One pass over every tenant with a live session; resolves once no tick is running. */
   tick(): Promise<void> {
     this.#everyone = true
-    return this.#wake()
+    this.#wake()
+    return this.#idle()
   }
 
   async stop(): Promise<void> {
     this.#stopped = true
     clearInterval(this.#poll)
     await this.#listener?.close()
-    await this.#running
+    await this.#idle()
   }
 
-  #wake(): Promise<void> {
-    if (this.#stopped) return Promise.resolve()
-    // The running loop picks this wake up before it ends.
+  // Resolves once no loop runs, including one restarted for a wake that came as the previous one ended.
+  async #idle(): Promise<void> {
+    while (this.#running) await this.#running
+  }
+
+  #wake(): void {
+    if (this.#stopped) return
+    // A running loop picks this wake up at its next check.
     this.#running ??= this.#loop().finally(() => {
       this.#running = undefined
+      // A wake after the loop's last check, before this ran, found #running still set and started nothing; it is
+      // still pending, so start the loop for it here.
+      if (!this.#stopped && (this.#everyone || this.#woken.size > 0)) this.#wake()
     })
-    return this.#running
   }
 
   async #loop(): Promise<void> {

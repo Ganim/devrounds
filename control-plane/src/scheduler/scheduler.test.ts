@@ -390,3 +390,40 @@ test('a run that ends wakes the scheduler through NOTIFY for the run its queue h
   assert.deepEqual([offer.type, offer.run], ['Offer', second])
   exec.close()
 })
+
+// A wake that lands after the loop's last look at what is pending, but before the loop counts as ended, must still get
+// its pass, and a tick() there must not resolve before it. The window is a few microtasks wide, so every depth up to
+// 30 is tried; no database is reached because no tenant has a live session.
+test('a wake right after the last pending check of a tick still gets its own pass', async () => {
+  for (const late of ['poke', 'tick'] as const) {
+    for (let depth = 0; depth <= 30; depth++) {
+      // One entry per sessions.list(): every pass lists them once (a tick for its tenants, a poke to place `late`).
+      const passes: string[] = []
+      let lateTick: Promise<number> | undefined
+      let scheduler: Scheduler | undefined
+      const sessions = new (class extends Sessions {
+        override list() {
+          if (passes.length === 0) {
+            let hop: Promise<void> = Promise.resolve()
+            for (let i = 0; i < depth; i++) hop = hop.then(() => {})
+            void hop.then(() => {
+              if (late === 'poke') scheduler?.poke('late')
+              else lateTick = scheduler?.tick().then(() => passes.length)
+            })
+          }
+          passes.push('pass')
+          return []
+        }
+      })()
+      const log = { warn: () => {}, error: () => {} }
+      scheduler = new Scheduler({ db: t.db, sessions, offerTimeoutS: 120, pollMs: 60_000, telemetry: null, log })
+      await scheduler.tick()
+      // Every microtask and the loop it may start have settled.
+      await new Promise((resolve) => setImmediate(resolve))
+      const where = `${late} at depth ${depth}`
+      assert.ok(passes.length >= 2, `${where}: no pass of its own (${passes.length} lists)`)
+      if (late === 'tick') assert.ok(((await lateTick) ?? 0) >= 2, `${where}: resolved before its pass`)
+      await scheduler.stop()
+    }
+  }
+})
