@@ -32,6 +32,9 @@ function serve(port: number, logsRoot: string): { child: ChildProcess; stderr: (
       DEVROUNDS_PORT: String(port),
       DEVROUNDS_LOGS_ROOT: logsRoot,
       DEVROUNDS_OTLP_ENDPOINT: '',
+      // serve prunes expired segments of every tenant at start; with the default 14 days it would delete, in
+      // parallel, the segments log-store.test.ts plants at the epoch and expects its own prune to count.
+      DEVROUNDS_LOG_RETENTION_DAYS: '36500',
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
