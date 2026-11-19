@@ -136,21 +136,27 @@ export function recentlyWithdrawn(ctx: TenantCtx, machineId: string): Promise<st
 export const QUEUED_STOP_SUMMARY = 'stopped while queued; no machine ran it'
 export const OFFLINE_OFFER_STOP_SUMMARY = 'stopped while offered to an offline machine; withdrawn before it ran'
 export const REVOKED_OFFER_STOP_SUMMARY = 'stopped before it started on a revoked machine; withdrawn'
+export const UNANSWERED_OFFER_STOP_SUMMARY = 'stopped while offered, before its executor answered; withdrawn'
 
-/** `changed`: every run the stop changed, the stopped one first, for the caller to wake their waiters. */
+/**
+ * `changed`: every run the stop changed, the stopped one first, for the caller to wake their waiters. `sendTo`: the
+ * machine that may still hold an ended run's offer, to send Stop cancel to after the commit; a Stop lost there is
+ * harmless, as the run is withdrawn.
+ */
 export type PreparedStop =
-  | { view: RunView; ended: true; changed: string[] }
+  | { view: RunView; ended: true; changed: string[]; sendTo?: string }
   | { view: RunView; ended: false; machineId: string; machine: string }
 
 /**
  * Checks a stop is possible and returns the Stop to send; nothing changes until the executor reports the end. A run
  * still queued is on no executor: it stops here at once, class cancelled, and its job is settled (`ended`). An offered
- * run on a machine with no live session stops the same way and is withdrawn: its executor drops it at the next
- * HelloAck, so it never runs, and an answer that arrives before that is refused like any to an ended run. On a
+ * run its executor has not answered, or on a machine with no live session, stops the same way and is withdrawn: its
+ * executor drops it at the next HelloAck, so it never runs, and an answer that arrives before that is refused like any
+ * to an ended run. With a live session it still gets the Stop (`sendTo`). Ended in the database, it is no longer an
+ * offer the expiry (scheduler/expiry.ts) would requeue, so a lost Offer or a wedged executor cannot undo the stop. On a
  * revoked machine, whose executor never reports again, an offered or admitted run stops the same way, and a running
- * one fails with class infra here instead (failRevokedRuns; `ended`). An
- * admitted or running run on an offline machine answers DR350: its process may be alive, only its executor can stop
- * it. An ended run has no Stop to send.
+ * one fails with class infra here instead (failRevokedRuns; `ended`). An admitted or running run on an offline
+ * machine answers DR350: its process may be alive, only its executor can stop it. An ended run has no Stop to send.
  */
 export async function prepareStop(
   ctx: TenantCtx,
@@ -163,9 +169,9 @@ export async function prepareStop(
     await loadRunView(trx, runId, projectKey)
     // Locked before the state is read, so a claim (which skips locked rows) or an executor event cannot move the run
     // while it is being stopped.
-    const { state } = await trx
+    const { state, offer_accepted_at } = await trx
       .selectFrom('runs')
-      .select('state')
+      .select(['state', 'offer_accepted_at'])
       .where('id', '=', runId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow()
@@ -204,14 +210,17 @@ export async function prepareStop(
       if (state === 'offered') return cancel(OFFLINE_OFFER_STOP_SUMMARY, true)
       fail('DR350', { machine: row.name })
     }
+    if (state === 'offered' && offer_accepted_at === null) {
+      return { ...(await cancel(UNANSWERED_OFFER_STOP_SUMMARY, true)), sendTo: row.id }
+    }
     return { view: await loadRunView(trx, runId), machineId: row.id, machine: row.name, ended: false }
   })
 }
 
 /**
  * Asks the run's executor to stop it (Stop cancel). A run that ended answers DR351, a run past offered on an offline
- * machine DR350; a queued run or an offer to an offline machine stops and a run on a revoked machine fails at once
- * (see prepareStop).
+ * machine DR350; a queued run or an offer not answered yet stops and a run on a revoked machine fails at once (see
+ * prepareStop).
  */
 export async function stopRun(
   ctx: TenantCtx,
@@ -221,6 +230,7 @@ export async function stopRun(
 ): Promise<RunView> {
   const stop = await prepareStop(ctx, sessions, runId, projectKey)
   if (stop.ended) {
+    if (stop.sendTo !== undefined) sessions.send(stop.sendTo, { type: 'Stop', run: runId, reason: 'cancel' })
     for (const changed of stop.changed) runEvents.emit('changed', changed)
     return stop.view
   }

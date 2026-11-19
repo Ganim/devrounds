@@ -287,7 +287,9 @@ test('run routes stay within their project, stop answers DR350 when the Stop can
     assert.equal(((await res.json()) as { code: string }).code, 'DR201')
   }
 
-  // The session dropping between the check and the send.
+  // Accepted, so the stop goes through the executor (an unanswered offer would end at once): the session dropping
+  // between the check and the send.
+  await exec.event({ kind: 'Admitted', run: offered.id })
   const send = sessions.send
   sessions.send = () => false
   try {

@@ -12,7 +12,7 @@ import { enqueueRun } from '../jobs/enqueue.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
-import { waitForRun } from '../runs/dispatch.ts'
+import { stopRun, waitForRun } from '../runs/dispatch.ts'
 import { applyRunEvent } from '../runs/record.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { type IsolatedTestDb, isolatedTestDb, TEST_APP_ROLE } from '../test-support/db.ts'
@@ -261,4 +261,36 @@ test('an expired offer on a live session closes it with 4408', async () => {
     await scheduler.stop()
     await app.close()
   }
+})
+
+// On a live session a stop only sent Stop: an executor that never got the Offer, or is wedged, said nothing, and the
+// expiry then requeued the job the person had stopped.
+test('stop of an unaccepted offer on a live session ends it at once, and the expiry does not requeue it', async () => {
+  const s = await setup()
+  const sent: string[] = []
+  const sessions = new Sessions()
+  const socket = { send: (text: string) => sent.push(text), close: () => {} } as unknown as Parameters<
+    Sessions['open']
+  >[1]['socket']
+  sessions.open(s.machine.machineId, { tenantId: s.tenant.tenantId, socket })
+  const run = await s.enqueue()
+  assert.equal(await s.claim(1), run)
+
+  const stopped = await stopRun(s.ctx, sessions, run)
+  assert.deepEqual([stopped.state, stopped.outcome.failureClass], ['stopped', 'cancelled'])
+  assert.deepEqual(
+    sent.map((text) => JSON.parse(text)),
+    [{ type: 'Stop', run, reason: 'cancel' }],
+  )
+  await sleep(1500)
+  // Other tests of this file may leave expired offers of their own; this run must not be among the withdrawn.
+  assert.ok(!(await expireOffers(t.db, sessions, 1, log)).includes(run))
+
+  const runs = await s.runsOfJobOf(run)
+  assert.deepEqual(
+    runs.map((r) => [r.attempt, r.state, r.failure_class, r.withdrawn_at !== null]),
+    [[1, 'stopped', 'cancelled', true]],
+  )
+  // A late answer of the executor is refused like any to an ended run.
+  await assert.rejects(s.event({ kind: 'Admitted', run }), (err: Error & { code?: string }) => err.code === 'DR351')
 })
