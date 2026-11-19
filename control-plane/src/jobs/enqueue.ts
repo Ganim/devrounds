@@ -46,7 +46,7 @@ function cached<T>(load: (key: string) => Promise<T>): (key: string) => Promise<
 
 // Resolves the keys of one job inside the project. Lookups repeat across the jobs of a batch, so they are cached
 // per call.
-function resolver(trx: Trx, projectId: string) {
+export function resolver(trx: Trx, projectId: string) {
   const jobType = cached((key) => findJobType(trx, projectId, key))
   const queue = cached(async (key): Promise<QueueRow & { allowed: Set<string> }> => {
     const row = await ensureQueue(trx, projectId, key)

@@ -7,6 +7,7 @@ import { withTenant } from '../tenancy/scope.ts'
 import { claimRun, defaultReserve } from './claim.ts'
 import { expireOffers } from './expiry.ts'
 import { SCHEDULER_CHANNEL } from './notify.ts'
+import { fireDueSchedules } from './schedules.ts'
 import { type Listener, listen } from './wake.ts'
 
 // A machine whose last MachineReport is older than this may be gone or wedged; its free memory is not trusted.
@@ -126,6 +127,13 @@ export class Scheduler {
         await expireOffers(this.#o.db, this.#o.sessions, this.#o.offerTimeoutS, this.#o.log)
       } catch (err) {
         this.#o.log.error({ err }, 'offer expiry failed')
+      }
+      // Before placing, so a job made now is placed in this pass when its tenant has a session; its NOTIFY wakes the
+      // tenant otherwise.
+      try {
+        await fireDueSchedules(this.#o.db, new Date(this.#now()), this.#o.log)
+      } catch (err) {
+        this.#o.log.error({ err }, 'schedule fire failed')
       }
       for (const tenantId of tenants) {
         try {

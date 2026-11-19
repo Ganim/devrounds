@@ -1,7 +1,7 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
-// 0009_runs_trace_span_id.ts, 0010_queues.ts and 0011_claim_run.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
+// 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts and 0014_schedules.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -210,6 +210,27 @@ export interface JobsTable {
   state: Generated<JobState>
   created_by: string
   created_at: Timestamp
+  // The schedule whose fire made the job.
+  schedule_id: string | null
+}
+
+export interface SchedulesTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  key: string
+  job_type_id: string
+  cwd: string
+  queue_id: string
+  machine_id: string | null
+  every_s: number | null
+  // pg returns time as HH:MM:SS.
+  daily_at: string | null
+  enabled: Generated<boolean>
+  next_due_at: Timestamp
+  last_job_id: string | null
+  created_by: string
+  updated_at: Timestamp
 }
 
 export interface QueuesTable {
@@ -347,6 +368,7 @@ export interface Database {
   job_types: JobTypesTable
   jobs: JobsTable
   queues: QueuesTable
+  schedules: SchedulesTable
   queue_job_types: QueueJobTypesTable
   job_batches: JobBatchesTable
   job_dependencies: JobDependenciesTable

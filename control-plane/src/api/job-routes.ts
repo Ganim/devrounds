@@ -5,6 +5,7 @@ import type { Database } from '../db/schema.ts'
 import { BatchInput } from '../jobs/batch-file.ts'
 import { batchView, submitBatch } from '../jobs/enqueue.ts'
 import { listQueues, putQueue, QueueSettings } from '../queues/service.ts'
+import { listSchedules, putSchedule, ScheduleSettings } from '../scheduler/schedules.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -26,6 +27,19 @@ export const jobRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = as
 
   app.get('/queues', { schema: { params: Type.Object({ key: Key }) } }, (request) =>
     listQueues(memberCtx(db, request), request.params.key),
+  )
+
+  app.put(
+    '/schedules/:schedule',
+    { schema: { params: Type.Object({ key: Key, schedule: Key }), headers: Headers, body: ScheduleSettings } },
+    (request, reply) =>
+      mutateIdempotent(db, request, reply, (ctx) =>
+        putSchedule(ctx, request.params.key, { ...request.body, key: request.params.schedule }),
+      ),
+  )
+
+  app.get('/schedules', { schema: { params: Type.Object({ key: Key }) } }, (request) =>
+    listSchedules(memberCtx(db, request), request.params.key),
   )
 
   app.post(

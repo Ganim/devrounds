@@ -905,6 +905,54 @@ export const COMMANDS: Spec[] = [
     },
   },
   {
+    path: ['schedule', 'set'],
+    usage:
+      'schedule set <key> --job-type <jt> --cwd <path> (--daily HH:MM | --every <seconds>) [--queue <key>] ' +
+      '[--machine <name>] [--disable]   create or replace a schedule; --daily is the tenant time zone, --every >= 60',
+    args: 1,
+    options: {
+      'job-type': str,
+      cwd: str,
+      daily: str,
+      every: str,
+      queue: str,
+      machine: str,
+      disable: { type: 'boolean' },
+    },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const key = arg(inv, 0, '<key>')
+      const body = {
+        jobType: text(inv, 'job-type') ?? fail('DR101', { path: '--job-type', reason: 'is required' }),
+        cwd: text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' }),
+        queue: text(inv, 'queue'),
+        machine: text(inv, 'machine'),
+        everyS: integer(inv, 'every', 1),
+        dailyAt: text(inv, 'daily'),
+        enabled: inv.values.disable === true ? false : undefined,
+      }
+      const s = await api.send<ScheduleJson>('PUT', path('schedules', key), body)
+      return { failures: [], body: [scheduleLine(s)], next: 'devrounds schedule list' }
+    },
+  },
+  {
+    path: ['schedule', 'list'],
+    usage: 'schedule list [--cursor <n>]   next due is shown in the tenant time zone',
+    args: 0,
+    pages: true,
+    options: {},
+    run: async (_inv, connect) => {
+      const api = await connect()
+      const schedules = await api.get<ScheduleJson[]>('/schedules')
+      return {
+        failures: [],
+        body: schedules.length > 0 ? schedules.map(scheduleLine) : ['no schedules'],
+        next:
+          schedules.length > 0 ? 'devrounds queue list' : 'devrounds schedule set <key> --job-type <jt> --cwd <path>',
+      }
+    },
+  },
+  {
     path: ['batch', 'submit'],
     usage: 'batch submit <file.yaml>   queue the jobs of the file with their depends_on edges, all or nothing',
     args: 1,
@@ -966,6 +1014,30 @@ const queueLine = (q: QueueJson) =>
   fmt`${q.key}  priority ${q.priority} · concurrency ${q.concurrency ?? 'none'} · ` +
   fmt`job types ${q.jobTypes?.length ? q.jobTypes.join(', ') : 'any'} · depth ${q.depth} · in flight ${q.inFlight} · ` +
   fmt`oldest queued ${q.oldestQueuedAt}`
+
+// GET /schedules (scheduler/schedules.ts ScheduleView) as JSON.
+type ScheduleJson = {
+  key: string
+  jobType: string
+  every: number | null
+  dailyAt: string | null
+  enabled: boolean
+  nextDueAt: string
+  timeZone: string
+  lastJob: { id: string; state: string } | null
+}
+
+const scheduleLine = (s: ScheduleJson) => {
+  const next = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: s.timeZone,
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(s.nextDueAt))
+  return (
+    fmt`${s.key}  ${s.jobType} · ${s.dailyAt === null ? `every ${s.every} s` : `daily ${s.dailyAt}`} · ` +
+    fmt`${s.enabled ? `next due ${next} ${s.timeZone}` : 'disabled'} · last job ${s.lastJob?.id ?? 'none'} ${s.lastJob?.state ?? ''}`
+  ).trimEnd()
+}
 
 const batchJobLine = (j: BatchJson['jobs'][number]) => fmt`${j.ref}  ${j.state} · ${j.jobType} · run ${j.runId}`
 
