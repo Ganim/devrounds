@@ -318,12 +318,38 @@ const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
 const RUN_WAIT_S = 25
 
+// GET /runs (api/view-routes.ts), dates as ISO strings. The first ask takes the route's largest page.
+type RunListJson = {
+  runs: {
+    id: string
+    state: string
+    attempt: number
+    cause: string
+    jobType: string
+    queue: string
+    machine: string | null
+    queuedAt: string
+    finishedAt: string | null
+    failureClass: string | null
+    totalMs: number | null
+  }[]
+  nextCursor: string | null
+}
+const RUN_LIST_LIMIT = 100
+// The states `run show` reports as failures.
+const FAILED_RUN = ['failed', 'stopped', 'orphaned']
+
+const runListLine = (r: RunListJson['runs'][number]) =>
+  fmt`${r.id} ${r.state}${r.failureClass ? `: ${r.failureClass}` : ''} · ${r.jobType} · queue ${r.queue} · ` +
+  fmt`on ${r.machine ?? 'no machine'} · attempt ${r.attempt} (${r.cause}) · queued ${r.queuedAt}` +
+  (r.totalMs == null ? '' : fmt` · total ${r.totalMs} ms`)
+
 const mib = (bytes: number | null) => (bytes == null ? '-' : `${(bytes / 1048576).toFixed(1)} MiB`)
 const ms = (value: number | null) => (value == null ? '-' : `${value} ms`)
 
 // Failures first (state, class, summary), then timeline, durations, resources, steps and delays.
 function runShow(r: RunJson): Result {
-  const failed = r.state === 'failed' || r.state === 'stopped' || r.state === 'orphaned'
+  const failed = FAILED_RUN.includes(r.state)
   const exit = r.outcome.exitCode == null ? '' : fmt` (exit ${r.outcome.exitCode})`
   const failures = failed
     ? [
@@ -829,6 +855,50 @@ export const COMMANDS: Spec[] = [
         r = await api.get<RunJson>(path('runs', id), { wait: String(RUN_WAIT_S) })
       }
       return runShow(r)
+    },
+  },
+  {
+    path: ['run', 'list'],
+    usage:
+      'run list [--state <s>] [--job-type <k>] [--cursor <c>]   newest first, failed, stopped and orphaned runs ' +
+      'of the page first; --cursor is the one a cut output prints',
+    args: 0,
+    // Not `pages`: the cursor is the server's keyset cursor (api/view-routes.ts), not a body line index.
+    options: { state: str, 'job-type': str, cursor: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const query = { state: text(inv, 'state'), jobType: text(inv, 'job-type'), cursor: text(inv, 'cursor') }
+      // A page is one contiguous stretch of runs, so its cursor continues exactly. When the lines of a page pass the
+      // budget, the same page is asked again with as many runs as fit; that answer is printed whole, with its own
+      // cursor, so a run queued meanwhile can never be skipped. The limit only shrinks, and one run always fits.
+      let limit = RUN_LIST_LIMIT
+      let page: RunListJson
+      for (;;) {
+        page = await api.get<RunListJson>('/runs', { ...query, limit: String(limit) })
+        const fits = fitBody(page.runs.map(runListLine), { budget: BODY_BUDGET, cursor: 0 })
+        if (fits === page.runs.length) break
+        limit = fits
+      }
+      const failed = page.runs.filter((r) => FAILED_RUN.includes(r.state))
+      const body = page.runs.filter((r) => !failed.includes(r)).map(runListLine)
+      if (page.runs.length === 0) body.push(query.cursor === undefined ? 'no runs' : 'no runs after this cursor')
+      if (page.nextCursor !== null) {
+        const args = [
+          ...(query.state === undefined ? [] : ['--state', shellArg(query.state)]),
+          ...(query.jobType === undefined ? [] : ['--job-type', shellArg(query.jobType)]),
+        ]
+        body.push(`truncated; more: ${['devrounds run list', ...args, '--cursor', page.nextCursor].join(' ')}`)
+      }
+      return {
+        failures: failed.map(runListLine),
+        body,
+        next:
+          failed.length > 0
+            ? `devrounds run show ${shellArg(failed[0].id)}`
+            : page.runs.length > 0
+              ? `devrounds run show ${shellArg(page.runs[0].id)}`
+              : 'devrounds queue list',
+      }
     },
   },
   {

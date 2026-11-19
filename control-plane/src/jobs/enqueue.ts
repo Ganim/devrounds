@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { JobState } from '../db/schema.ts'
+import type { FailureClass, JobState, RunState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
@@ -23,6 +23,21 @@ export type BatchView = {
   id: string
   // By ref; runId is the job's latest run.
   jobs: { ref: string; jobId: string; runId: string; jobType: string; state: JobState }[]
+}
+
+// One row of GET /jobs (api/view-routes.ts listJobs).
+export type JobSummary = {
+  id: string
+  // Null for a job not made by a batch (`run start`, a schedule).
+  ref: string | null
+  batch: string | null
+  jobType: string
+  state: JobState
+  // Runs with cause first or retry: a requeue is not the job's fault and never counts (jobs/outcome.ts).
+  attempts: number
+  // Refs of the jobs it waits for (the id for one without a ref).
+  dependsOn: string[]
+  lastRun: { id: string; state: RunState; failureClass: FailureClass | null }
 }
 
 type JobValues = {

@@ -48,6 +48,23 @@ export type RunView = {
   delays: { at: Date; reason: DelayReason; needBytes: number; availableBytes: number | null; position: number }[]
 }
 
+// One row of GET /runs (api/view-routes.ts listRuns).
+export type RunSummary = {
+  id: string
+  state: RunState
+  attempt: number
+  cause: RunCause
+  jobType: string
+  queue: string
+  // Null until the run is placed on a machine.
+  machine: string | null
+  queuedAt: Date
+  finishedAt: Date | null
+  failureClass: FailureClass | null
+  // queued → finished; null while the run has not ended.
+  totalMs: number | null
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // Postgres answers a malformed uuid with an error, i.e. a 500, so ids from requests are checked first.

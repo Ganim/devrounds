@@ -119,6 +119,45 @@ test('events cut by the budget: next continues after the last event shown, more 
   assert.equal(lastShown, events[shown - 1].id)
 })
 
+test('run list cut by the budget asks again for the runs that fit and continues at the cursor of that answer', async (t) => {
+  // 100 runs whose lines pass 16 KiB; the stand-in answers `limit` runs and a cursor naming the last one.
+  const runs = Array.from({ length: 100 }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    state: i === 3 ? 'failed' : 'queued',
+    attempt: 1,
+    cause: 'first',
+    jobType: 'j'.repeat(200),
+    queue: 'default',
+    machine: null,
+    queuedAt: '2026-11-19T10:00:00.000Z',
+    finishedAt: null,
+    failureClass: i === 3 ? 'check_red' : null,
+    totalMs: null,
+  }))
+  const asked: string[] = []
+  const fake = await fakeServer((req, res) => {
+    const query = new URL(req.url ?? '', 'http://x').searchParams
+    asked.push(query.toString())
+    const limit = Number(query.get('limit'))
+    json(res, { runs: runs.slice(0, limit), nextCursor: `c${limit}` })
+  })
+  t.after(fake.close)
+
+  const { exitCode, stdout } = await runCli(['run', 'list', '--state', 'queued'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+  })
+  assert.equal(exitCode, 0)
+  const lines = stdout.trimEnd().split('\n')
+  const shown = lines.length - 2
+  assert.ok(shown > 1 && shown < 100, String(shown))
+  assert.deepEqual(asked, ['state=queued&limit=100', `state=queued&limit=${shown}`])
+  assert.match(lines[0], /^00000000-0000-4000-8000-000000000003 failed: check_red · /)
+  assert.match(lines[1], /^00000000-0000-4000-8000-000000000000 queued · /)
+  assert.equal(lines.at(-2), `truncated; more: devrounds run list --state queued --cursor c${shown}`)
+  assert.equal(lines.at(-1), `next: devrounds run show ${runs[3].id}`)
+})
+
 test('plan import never offers more: long lists are capped samples, and --cursor is rejected', async (t) => {
   // Longest allowed keys in all three lists: the worst case for the body size.
   const keys = (prefix: string) => Array.from({ length: 3000 }, (_, i) => `${prefix}${i}`.padEnd(200, 'x'))

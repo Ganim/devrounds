@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 // Types only: erased by esbuild, so the web bundle never pulls in server code. Keys are a contract (see view.ts).
+import type { JobSummary } from '../../control-plane/src/jobs/enqueue.ts'
+import type { MachineView } from '../../control-plane/src/machines/service.ts'
 import type { BalanceRow } from '../../control-plane/src/planning/balance.ts'
 import type {
   CriterionView,
@@ -9,8 +11,30 @@ import type {
   PlanView,
   TaskView,
 } from '../../control-plane/src/planning/view.ts'
+import type { QueueView } from '../../control-plane/src/queues/service.ts'
+import type { LogLine } from '../../control-plane/src/runs/log-store.ts'
+import type { RunSummary, RunView } from '../../control-plane/src/runs/view.ts'
 
 export type { BalanceRow, CriterionView, EventView, LinkView, PhaseView, PlanView, TaskView }
+
+// A server type as it arrives in JSON: every Date is an ISO string.
+type Wire<T> = T extends Date
+  ? string
+  : T extends (infer U)[]
+    ? Wire<U>[]
+    : T extends object
+      ? { [K in keyof T]: Wire<T[K]> }
+      : T
+
+export type RunSummaryJson = Wire<RunSummary>
+export type RunListJson = { runs: RunSummaryJson[]; nextCursor: string | null }
+export type JobListJson = { jobs: Wire<JobSummary>[]; nextCursor: string | null }
+export type QueueJson = Wire<QueueView>
+// GET /api/machines adds whether the machine has a live session.
+export type MachineJson = Wire<MachineView> & { connected: boolean }
+export type RunJson = Wire<RunView>
+// GET /runs/:id/logs: the cursor is a line seq.
+export type LogPageJson = { lines: LogLine[]; nextCursor: number | null }
 
 const PROJECT_KEY = 'devrounds.project'
 const POLL_MS = 10_000
@@ -63,14 +87,31 @@ export const signOut = (): Promise<unknown> => request('/api/auth/sign-out', { m
 
 export type Remote<T> = { data: T | null; error: ApiError | null }
 
-// Fetches `path` of the selected project now and every 10 s (P0 exception; P5 replaces polling with SSE). The previous
-// data stays on screen while a refresh is in flight or fails, so a hiccup does not blank the page.
-export function useRemote<T>(path: string): Remote<T> {
+/**
+ * Keyset paging of a list route (api/view-routes.ts): `older` follows the answer's nextCursor, `newer` goes back one
+ * page. The cursors belong to `filters`: other filters start over at the newest page, in the same render.
+ */
+export function usePages(filters: string) {
+  const [state, setState] = useState<{ filters: string; stack: string[] }>({ filters, stack: [] })
+  const stack = state.filters === filters ? state.stack : []
+  return {
+    cursor: stack.at(-1),
+    page: stack.length + 1,
+    older: (next: string) => setState({ filters, stack: [...stack, next] }),
+    newer: () => setState({ filters, stack: stack.slice(0, -1) }),
+  }
+}
+
+// Fetches `path` of the selected project (or, with `absolute`, the API path as given) now and every 10 s (P0
+// exception; P5 replaces polling with SSE). The previous data stays on screen while a refresh is in flight or fails,
+// so a hiccup does not blank the page.
+export function useRemote<T>(path: string, opts: { absolute?: boolean } = {}): Remote<T> {
   const [state, setState] = useState<Remote<T>>({ data: null, error: null })
+  const url = opts.absolute ? path : projectUrl(path)
   useEffect(() => {
     let live = true
     const load = () =>
-      request<T>(projectUrl(path)).then(
+      request<T>(url).then(
         (data) => live && setState({ data, error: null }),
         (error: ApiError) => live && setState((s) => ({ data: s.data, error })),
       )
@@ -81,6 +122,6 @@ export function useRemote<T>(path: string): Remote<T> {
       live = false
       clearInterval(timer)
     }
-  }, [path])
+  }, [url])
   return state
 }

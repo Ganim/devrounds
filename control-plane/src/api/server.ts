@@ -19,6 +19,7 @@ import { jobRoutes } from './job-routes.ts'
 import { machineRoutes } from './machine-routes.ts'
 import { projectRoutes } from './routes.ts'
 import { runRoutes } from './run-routes.ts'
+import { viewRoutes } from './view-routes.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -120,6 +121,7 @@ export function buildServer(opts: ServerOptions) {
   const telemetry = opts.telemetry ?? null
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(viewRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
   app.register(executorRoutes, {
     prefix: '/api/executor',

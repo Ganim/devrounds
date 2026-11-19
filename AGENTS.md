@@ -40,7 +40,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
   Check the idle budgets with `pnpm footprint` and the executor end to end with `pnpm e2e`.
 - Run a job with `devrounds run start <jobType> --cwd <path> [--machine <name>]` (queued; the scheduler offers it to a
   machine with room, `--machine` pins it), then read its outcome with `devrounds run show <id> --wait` (failures
-  first: state, class, summary).
+  first: state, class, summary). List runs newest first with `devrounds run list [--state <s>] [--job-type <k>]`
+  (failed, stopped and orphaned first; a cut output prints the `--cursor` that continues it).
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.

@@ -216,3 +216,68 @@ button.link {
   text-decoration: underline;
   padding: 0;
 }
+/* Run and job states (operational view). */
+.pill.queued,
+.pill.offered,
+.pill.admitted,
+.pill.offline {
+  color: #1c2128;
+}
+.pill.running {
+  background: var(--in_progress);
+}
+.pill.finished {
+  background: var(--done);
+}
+.pill.failed,
+.pill.orphaned {
+  background: var(--blocked);
+}
+.pill.stopped,
+.pill.skipped {
+  background: #8a929e;
+}
+.mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+.filters {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.filters select,
+.filters input {
+  font: inherit;
+  padding: 3px 6px;
+}
+.pager {
+  margin: 10px 0;
+}
+button.link:disabled {
+  color: var(--muted);
+  cursor: default;
+  text-decoration: none;
+}
+pre.log,
+pre.summary {
+  font:
+    13px / 1.4 ui-monospace,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 8px 0;
+}
+pre.log {
+  background: #1c2128;
+  color: #e6e8eb;
+  padding: 12px 14px;
+  max-height: 600px;
+  overflow: auto;
+}
+pre.summary {
+  background: #fdecea;
+  padding: 8px 10px;
+}

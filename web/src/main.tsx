@@ -3,9 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { getSession, type PlanView, signOut, useRemote } from './api.ts'
 import { BalancePage } from './BalancePage.tsx'
 import { HistoryPage } from './HistoryPage.tsx'
+import { JobsPage } from './JobsPage.tsx'
 import { Login } from './Login.tsx'
+import { MachinesPage } from './MachinesPage.tsx'
 import { PhasePage } from './PhasePage.tsx'
+import { QueuesPage } from './QueuesPage.tsx'
 import { RoadmapPage } from './Roadmap.tsx'
+import { RunPage } from './RunPage.tsx'
+import { RunsPage } from './RunsPage.tsx'
 import './style.css'
 
 const useHash = (): string => {
@@ -19,8 +24,8 @@ const useHash = (): string => {
 }
 
 // A hand-typed hash like #/phase/% is not valid percent-encoding; treat it as the roadmap instead of throwing.
-function phaseOf(route: string): string | undefined {
-  const raw = /^\/phase\/(.+)$/.exec(route)?.[1]
+function keyOf(route: string, prefix: 'phase' | 'run'): string | undefined {
+  const raw = new RegExp(`^/${prefix}/(.+)$`).exec(route)?.[1]
   if (raw === undefined) return undefined
   try {
     return decodeURIComponent(raw)
@@ -29,21 +34,31 @@ function phaseOf(route: string): string | undefined {
   }
 }
 
+// Pages of the operational view, after the planning ones in the nav.
+const OPS: [string, string][] = [
+  ['/machines', 'Machines'],
+  ['/queues', 'Queues'],
+  ['/jobs', 'Jobs'],
+  ['/runs', 'Runs'],
+]
+
 function App({ onSignedOut }: { onSignedOut: () => void }) {
-  const route = useHash()
+  // The query part carries list filters (#/runs?state=failed).
+  const [route, search = ''] = useHash().split('?', 2)
   const plan = useRemote<PlanView>('/plan')
   // An expired or removed session goes back to the sign-in form instead of showing a dead page.
   useEffect(() => {
     if (plan.error?.code === 'DR401') onSignedOut()
   }, [plan.error, onSignedOut])
 
-  const phaseKey = phaseOf(route)
+  const phaseKey = keyOf(route, 'phase')
+  const runId = keyOf(route, 'run')
   const totals = (plan.data?.phases ?? []).reduce(
     (sum, p) => ({ done: sum.done + p.progress.done, total: sum.total + p.progress.total - p.progress.cancelled }),
     { done: 0, total: 0 },
   )
   const link = (href: string, label: string, active: boolean) => (
-    <a href={`#${href}`} className={active ? 'active' : ''}>
+    <a key={href} href={`#${href}`} className={active ? 'active' : ''}>
       {label}
     </a>
   )
@@ -51,6 +66,11 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
   if (phaseKey !== undefined) page = <PhasePage phaseKey={phaseKey} plan={plan} />
   else if (route === '/balance') page = <BalancePage />
   else if (route === '/history') page = <HistoryPage />
+  else if (route === '/machines') page = <MachinesPage />
+  else if (route === '/queues') page = <QueuesPage />
+  else if (route === '/jobs') page = <JobsPage />
+  else if (route === '/runs') page = <RunsPage filters={new URLSearchParams(search)} />
+  else if (runId !== undefined) page = <RunPage runId={runId} />
   return (
     <>
       <header className="top">
@@ -59,6 +79,7 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
           {link('/', 'Roadmap', route === '/' || phaseKey !== undefined)}
           {link('/balance', 'Balance', route === '/balance')}
           {link('/history', 'History', route === '/history')}
+          {OPS.map(([href, label]) => link(href, label, route === href || (href === '/runs' && runId !== undefined)))}
         </nav>
         <span className="totals">
           {plan.data ? `${totals.done}/${totals.total} tasks done in ${plan.data.phases.length} phases ` : ''}

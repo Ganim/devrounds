@@ -34,7 +34,9 @@ devrounds-admin login create --tenant <name> --member <human> --email <email>   
 
 The web view at http://127.0.0.1:4992/ signs in with that email and password (Better Auth, schema `auth`). A session
 cookie only reads: every change goes through the CLI or the API with a token (DR402). `devrounds-admin login remove`
-deletes a login and its sessions. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
+deletes a login and its sessions. Besides the roadmap, the view shows machines (free memory, the needs reserved by
+offers and the reserve), queues, jobs, runs and one run with its log, at `#/machines`, `#/queues`, `#/jobs`, `#/runs`
+and `#/run/<id>`. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
 removes the task.
 
 ## Executor
