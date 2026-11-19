@@ -2,6 +2,424 @@ project:
   key: devrounds
   name: DevRounds
 phases:
+  - key: P1
+    title: Foundation
+    goal: Executor, protocol, queues and jobs run locally beside cx-env, within their own footprint budgets.
+    blocked_by:
+      - P0
+    criteria:
+      - Executor stays at or under 50 MB private bytes idle
+      - Control plane stays at or under 300 MB private bytes idle
+      - A job runs end to end on the executor with every spawn hidden and supervised
+      - Final whole-phase review passed
+    tasks:
+      - key: P1-T01
+        title: Confirm spec §11 decisions and the P1 design
+        criteria:
+          - text: "Spec §11 confirmed and P1 design written (Guilherme: implement without waiting for approval, 17/11)"
+            evidence: commit:6b386d475d7fbdc3917731a7d27b25b0a867d139
+        state: done
+      - key: P1-T02
+        title: Build-vs-adopt spike (queue/scheduler, Better Auth)
+        blocked_by:
+          - P1-T01
+        criteria:
+          - text: Spike doc records license, measured idle private bytes and fit for Hatchet, pg-boss, Graphile Worker, DBOS and an own scheduler
+            evidence: commit:559403f9d0dd1212966246292ebb0a1b0fd16f2b
+          - text: Better Auth fit with tenants, members and RLS is recorded with its idle cost
+            evidence: commit:559403f9d0dd1212966246292ebb0a1b0fd16f2b
+          - text: The recommendation is recorded as the controller call (Guilherme pre-approved stage decisions 17/11)
+            evidence: note:Controller ruled own scheduler on P0 Postgres + Better Auth identity-only (auth schema RLS exception), pre-approved by Guilherme 17/11; spike doc commit 559403f9d0dd1212966246292ebb0a1b0fd16f2b
+        state: done
+      - key: P1-T03
+        title: Executor workspace from copied devlanes crates
+        blocked_by:
+          - P1-T01
+        criteria:
+          - text: NOTICE names every copied crate with its upstream path and commit e2e4f1ca
+            evidence: commit:98d2d08b0184d59e9132c72599b6dbd52df3e950
+          - text: Rust code allows lints only in the accepted list
+            evidence: commit:98d2d08b0184d59e9132c72599b6dbd52df3e950
+          - text: cargo test, clippy -D warnings and fmt --check pass on the executor workspace
+            evidence: commit:98d2d08b0184d59e9132c72599b6dbd52df3e950
+        state: done
+      - key: P1-T04
+        title: Job Object supervision with run-owned output
+        blocked_by:
+          - P1-T03
+        criteria:
+          - text: Every descendant is a job member and breakaway is refused
+            evidence: commit:f31f736e6d3c04d53f7060271cfb5e82c7ec646e
+          - text: A stop ends the whole tree within the 10 s grace; dropping the executor's handles leaves the run running
+            evidence: commit:f31f736e6d3c04d53f7060271cfb5e82c7ec646e
+          - text: Output goes to files owned by the run
+            evidence: commit:f31f736e6d3c04d53f7060271cfb5e82c7ec646e
+        state: done
+      - key: P1-T05
+        title: Every spawn hidden
+        blocked_by:
+          - P1-T04
+        criteria:
+          - text: No job member owns a visible window, including cmd wrappers and the console-ctrl helper
+            evidence: commit:1e31f499249129056efcae406f32b35001d90063
+          - text: A cmd wrapper gets arguments with spaces and & exactly
+            evidence: commit:1e31f499249129056efcae406f32b35001d90063
+          - text: The executor starts processes only through sys-windows spawn
+            evidence: commit:1e31f499249129056efcae406f32b35001d90063
+        state: done
+      - key: P1-T06
+        title: Start-gate admission with AIMD
+        blocked_by:
+          - P1-T17
+        criteria:
+          - text: A memory hold reports Delayed(memory) and admits once memory fits; admission never refuses
+            evidence: commit:fab2b56
+          - text: The AIMD window halves on high CPU and grows by one under headroom
+            evidence: commit:fab2b56
+        state: done
+      - key: P1-T07
+        title: Protocol Hello, features and seq
+        blocked_by:
+          - P1-T03
+        criteria:
+          - text: Every message fixture round-trips in Rust and validates in TypeBox
+            evidence: commit:f80b457
+          - text: Unknown message types and event kinds are ignored; a bad known message answers DR150
+            evidence: commit:f80b457
+        state: done
+      - key: P1-T08
+        title: Queues and placement - scheduler replaces direct dispatch
+        blocked_by:
+          - P1-T02
+          - P1-T44
+        criteria:
+          - An enqueued run is offered within 1 s through LISTEN/NOTIFY, and within one poll interval with LISTEN down
+          - run start queues without a connected machine; the scheduler places it when one connects
+          - An Offer lost between claim and send is re-sent after the next HelloAck and runs once
+        state: in_progress
+      - key: P1-T09
+        title: Log segments
+        blocked_by:
+          - P1-T39
+        criteria:
+          - text: Segments ship through the outbox, are stored and indexed by run and seq, and read back by cursor
+            evidence: commit:3e65f78
+          - text: Segments older than the retention are pruned with their files
+            evidence: commit:3e65f78
+        state: done
+      - key: P1-T10
+        title: Machine pairing and executor session
+        blocked_by:
+          - P1-T07
+        criteria:
+          - text: A pairing code works once, expires after 10 minutes, and five failures lock pairing for 10 minutes
+            evidence: commit:83a0172
+          - text: The machine token is stored only as its SHA-256 and revoke closes the live session
+            evidence: commit:83a0172
+          - text: A second session for the same machine replaces the first
+            evidence: commit:83a0172
+        state: done
+      - key: P1-T11
+        title: Orphans
+        blocked_by:
+          - P1-T09
+          - P1-T39
+        criteria:
+          - text: After an executor restart a surviving run is reported orphaned and never re-adopted
+            evidence: commit:9af6b69
+          - text: The kill policy ends the orphan's tree
+            evidence: commit:9af6b69
+        state: done
+      - key: P1-T12
+        title: isolation/none
+        blocked_by:
+          - P1-T04
+        criteria:
+          - text: Only allowlisted variables reach the child
+            evidence: commit:d227d4d
+          - text: A missing or relative cwd is an environment failure
+            evidence: commit:d227d4d
+        state: done
+      - key: P1-T13
+        title: Idempotency and outbox
+        blocked_by:
+          - P1-T08
+        criteria:
+          - The CLI retries a timed-out mutation once with the same Idempotency-Key
+          - Idempotency keys older than 24 h are pruned hourly
+      - key: P1-T14
+        title: OpenTelemetry exporter, off by default
+        blocked_by:
+          - P1-T11
+          - P1-T39
+        criteria:
+          - text: Without an endpoint no exporter is loaded or built
+            evidence: commit:dcd72fc
+          - text: With an endpoint, control plane and executor spans of one run share a trace id
+            evidence: commit:dcd72fc
+        state: done
+      - key: P1-T15
+        title: Minimal operational view (jobs, runs, logs, machines)
+        blocked_by:
+          - P1-T08
+          - P1-T09
+          - P1-T10
+          - P1-T16
+          - P1-T45
+        criteria:
+          - The view shows machines (free, reserved), queues, jobs, runs and a run with its logs, tenant-scoped
+          - run list pages with an exact cursor continuation
+      - key: P1-T16
+        title: Session login with Better Auth
+        blocked_by:
+          - P1-T02
+        criteria:
+          - A human member logs in to the web view with email and password; the pasted-token exception is removed from AGENTS.md
+          - A session cookie only reads (DR402 on mutations); a Bearer token wins over a cookie
+          - Better Auth tables live in schema auth, created by devrounds-admin migrate, never by serve
+      - key: P1-T17
+        title: Footprint by private bytes
+        blocked_by:
+          - P1-T04
+        criteria:
+          - text: Footprint counts commit, not working set, summed over the run tree
+            evidence: commit:5585688
+          - text: The reported peak is exact even between samples
+            evidence: commit:2c8f88f
+        state: done
+      - key: P1-T18
+        title: Resource and queue-time indicators (spec §13)
+        blocked_by:
+          - P1-T08
+          - P1-T15
+          - P1-T17
+        criteria:
+          - Queue wait and run time p50/p90 and failure classes per job type per local calendar day
+          - Reserved vs free memory per machine, oldest wait per queue and learned need per job type are shown
+      - key: P1-T19
+        title: Catalog guard checks the tenant policy expression, not only its name
+        criteria:
+          - text: The guard fails on a table whose policy has the right name and a different expression
+            evidence: commit:dc13a13
+        state: done
+      - key: P1-T20
+        title: Indexes on referencing FK columns
+        criteria:
+          - text: Every composite FK has an index on its referencing columns
+            evidence: commit:06137e0
+        state: done
+      - key: P1-T21
+        title: editTask racing closePhase on the source phase
+        criteria:
+          - text: A task moved out while its source phase closes cannot deliver the phase on a stale read
+            evidence: commit:e22b65b
+        state: done
+      - key: P1-T22
+        title: Task start locks the blocking phases it reads
+        criteria:
+          - text: "Starting a task while a blocking phase is reopened is serialized: DR304 or a start against a delivered blocker, never both"
+            evidence: commit:99b3f66
+        state: done
+      - key: P1-T23
+        title: Moving the last open task out of a phase delivers the source phase
+        criteria:
+          - text: editTask moving the last open task out auto-delivers a closable source phase
+            evidence: commit:7d2aa1c
+        state: done
+      - key: P1-T24
+        title: Import closes an already-closable delivered phase before later task states
+        criteria:
+          - text: Importing such a phase with in_progress tasks in a later phase does not answer DR304
+            evidence: commit:5a27298
+        state: done
+      - key: P1-T25
+        title: Root-cause the 119/120 test flake
+        criteria:
+          - text: Root cause found and fixed, without a rerun
+            evidence: commit:c054ee4
+        state: done
+      - key: P1-T26
+        title: Prune and cap control plane logs
+        criteria:
+          - text: Old log files are pruned and a long-lived serve cannot grow one file without bound
+            evidence: commit:b62cd66
+        state: done
+      - key: P1-T27
+        title: service uninstall stops an orphan supervisor when the task is already gone
+        criteria:
+          - text: uninstall leaves no supervisor or serve process when the scheduled task is missing
+            evidence: commit:373aacd
+        state: done
+      - key: P1-T28
+        title: Supervisor survives a log write failure
+        criteria:
+          - text: A failed log write does not exit the supervisor
+            evidence: commit:2548af1
+        state: done
+      - key: P1-T29
+        title: "CLI: no 'undefined' in output and DR502 for a non-object config"
+        criteria:
+          - text: Missing values never print as undefined; a non-object config.json answers DR502
+            evidence: commit:5907c64
+        state: done
+      - key: P1-T30
+        title: "CLI: -h as an option value and EPIPE on a closed pipe"
+        criteria:
+          - text: A -h value is accepted and a closed stdout ends the CLI without a stack
+            evidence: commit:f41c067
+        state: done
+      - key: P1-T31
+        title: "CLI: per-command --help"
+        criteria:
+          - text: devrounds <command> --help prints that command's usage
+            evidence: commit:0d0cbba
+        state: done
+      - key: P1-T32
+        title: One error code for a missing reason (DR104 vs DR101 /reason)
+        criteria:
+          - text: Every missing reason answers the same code, with words that cover tasks and phases
+            evidence: commit:a7edeb5
+        state: done
+      - key: P1-T33
+        title: "next: points to criterion check at the end of a task or phase"
+        criteria:
+          - text: plan show and task start suggest devrounds criterion check while criteria are open
+            evidence: commit:d4a521d
+        state: done
+      - key: P1-T34
+        title: HTTP plan import records the requesting member
+        criteria:
+          - text: Every import event names the token's member
+            evidence: commit:f361314
+        state: done
+      - key: P1-T35
+        title: Balance ignores import-time transitions
+        criteria:
+          - text: Tasks moved to done by plan import do not count as done that day
+            evidence: commit:143df9f
+        state: done
+      - key: P1-T36
+        title: "AGENTS.md: local superuser exception and owner-side admin reads"
+        criteria:
+          - text: AGENTS.md lists the local postgres superuser as an accepted exception with its removal phase, and exempts admin owner-side commands from withTenant (with Guilherme's approval)
+            evidence: commit:077bf70
+        state: done
+      - key: P1-T37
+        title: devlanes-sync check
+        blocked_by:
+          - P1-T03
+        criteria:
+          - text: pnpm devlanes-sync lists every upstream devlanes commit touching a copied crate since its recorded sync point and fails while any is unreviewed
+            evidence: commit:2abc305f60e57426cc6527e2069a0d20f538519c
+          - text: Lists upstream commits since synced_commit that touch a mapped path, and ignores reviewed ones
+            evidence: commit:2abc305f60e57426cc6527e2069a0d20f538519c
+          - text: The check passes in the test suite against the cached fetch
+            evidence: commit:2abc305f60e57426cc6527e2069a0d20f538519c
+        state: done
+      - key: P1-T38
+        title: Run record (job types, jobs, runs, steps, delays, failure classes)
+        blocked_by:
+          - P1-T10
+        criteria:
+          - text: A run records each timeline stamp; derived durations are never negative under clock skew
+            evidence: commit:4832463
+          - text: Failure class follows the job type rules and built-in memory codes; unknown failures are unclassified
+            evidence: commit:4832463
+          - text: A retry is a new run of the same job with the next attempt number
+            evidence: commit:4832463
+        state: done
+      - key: P1-T39
+        title: Direct dispatch and the executor run loop
+        blocked_by:
+          - P1-T05
+          - P1-T06
+          - P1-T12
+          - P1-T38
+          - P1-T40
+        criteria:
+          - text: Dispatch to an offline machine answers DR350 and writes nothing
+            evidence: commit:1354409
+          - text: An offer reports Admitted, RunStarted and RunFinished in seq order, hidden
+            evidence: commit:1354409
+          - text: Stop while the run waits in the start-gate never spawns it
+            evidence: commit:1354409
+        state: done
+      - key: P1-T40
+        title: Executor store and outbox replay
+        blocked_by:
+          - P1-T10
+          - P1-T38
+        criteria:
+          - text: Events survive an executor restart and are replayed in order after reconnect, applied once
+            evidence: commit:5c6d72c
+          - text: Env values never reach the executor store
+            evidence: commit:9bbdfbb
+        state: done
+      - key: P1-T42
+        title: Executor login service, end-to-end proof and footprint budgets
+        blocked_by:
+          - P1-T09
+          - P1-T11
+          - P1-T14
+          - P1-T37
+        criteria:
+          - text: The executor runs as the DevRoundsExecutor scheduled task under its supervisor
+            evidence: commit:8c09b42
+          - text: pnpm e2e passes for the synthetic job and pnpm lint, hidden and supervised
+            evidence: commit:207a070
+          - text: pnpm footprint passes on the installed services after 60 s idle
+            evidence: commit:87d7fde
+        state: done
+      - key: P1-T43
+        title: Queues, batches and the scheduling schema
+        description: Queues, batches and depends_on schema; see docs/superpowers/plans/2026-11-19-p1-stage-2-scheduler.md.
+        criteria:
+          - A batch creates one queued run per job with its depends_on edges; a cycle answers DR152 and inserts nothing
+          - A job type not allowed on its queue answers DR153; the default queue is created on first use
+      - key: P1-T44
+        title: claim_run and learned needs
+        blocked_by:
+          - P1-T43
+        criteria:
+          - claim_run orders by queue priority then FIFO, honours the queue cap, depends_on and pins, and claims only the machine's tenant
+          - A burst of claims never offers more need than free memory minus reserve minus in-flight needs
+          - Learned needs live in a table updated from run peaks, 512 MiB without history
+      - key: P1-T45
+        title: Job outcomes - retries, backoff and skip-on-red
+        blocked_by:
+          - P1-T08
+        criteria:
+          - A retryable failure queues the next attempt with doubling backoff up to max_attempts
+          - A red, stopped or skipped dependency skips every dependent, none of them ever offered
+      - key: P1-T46
+        title: Offer expiry, withdraw, crash recovery and heartbeats
+        blocked_by:
+          - P1-T45
+        criteria:
+          - An unanswered offer expires, is withdrawn through HelloAck and requeued; Delayed keeps it
+          - A withdrawn run waiting in the executor's gate never spawns; serve start re-arms pending offers
+          - Dead sessions end within 45 s on both sides; re-pair keeps admission and otlp_endpoint
+      - key: P1-T47
+        title: Scheduled jobs
+        blocked_by:
+          - P1-T46
+        criteria:
+          - A due schedule enqueues one job; fires missed while serve was down fire once; an open previous job skips the fire
+      - key: P1-T48
+        title: End to end through the scheduler, budgets and the live install
+        blocked_by:
+          - P1-T13
+          - P1-T18
+          - P1-T47
+        criteria:
+          - pnpm e2e passes the DAG, retry, offer-expiry and schedule scenarios with every run placed by the scheduler
+          - pnpm footprint passes on the installed services with the scheduler and Better Auth loaded
+      - key: P1-T49
+        title: Final whole-phase review
+        blocked_by:
+          - P1-T48
+        criteria:
+          - The whole-phase review has no open Critical or Important finding
   - key: P0
     title: Manifesto and project planning
     goal: The control plane holds DevRounds's own roadmap (tenant, project, phases, tasks, criteria, history, balance) and agents and Guilherme work from it through the API, the agent CLI and the roadmap view.
@@ -153,256 +571,6 @@ phases:
           - text: plan show after the import shows P0 at 91% (10/11) and next devrounds task start P0-T11
             evidence: "note:after plan import roadmap/seed-2026-11-16.yaml, plan show printed P0 91% done 10 of 11 and next: devrounds task start P0-T11"
         state: done
-  - key: P1
-    title: Foundation
-    goal: Executor, protocol, queues and jobs run locally beside cx-env, within their own footprint budgets.
-    blocked_by:
-      - P0
-    criteria:
-      - Executor stays at or under 50 MB private bytes idle
-      - Control plane stays at or under 300 MB private bytes idle
-      - A job runs end to end on the executor with every spawn hidden and supervised
-      - Final whole-phase review passed
-    tasks:
-      - key: P1-T01
-        title: Confirm spec §11 decisions and the P1 design
-        criteria:
-          - text: "Spec §11 confirmed and P1 design written (Guilherme: implement without waiting for approval, 17/11)"
-            evidence: commit:6b386d475d7fbdc3917731a7d27b25b0a867d139
-        state: done
-      - key: P1-T02
-        title: Build-vs-adopt spike (queue/scheduler, Better Auth)
-        blocked_by:
-          - P1-T01
-        criteria:
-          - Spike doc records license, measured idle private bytes and fit for Hatchet, pg-boss, Graphile Worker, DBOS and an own scheduler
-          - Better Auth fit with tenants, members and RLS is recorded with its idle cost
-          - The recommendation is recorded as the controller call (Guilherme pre-approved stage decisions 17/11)
-      - key: P1-T03
-        title: Executor workspace from copied devlanes crates
-        blocked_by:
-          - P1-T01
-        criteria:
-          - NOTICE names every copied crate with its upstream path and commit e2e4f1ca
-          - Rust code allows lints only in the accepted list
-          - cargo test, clippy -D warnings and fmt --check pass on the executor workspace
-      - key: P1-T04
-        title: Job Object supervision with run-owned output
-        blocked_by:
-          - P1-T03
-        criteria:
-          - Every descendant is a job member and breakaway is refused
-          - A stop ends the whole tree within the 10 s grace; dropping the executor's handles leaves the run running
-          - Output goes to files owned by the run
-      - key: P1-T05
-        title: Every spawn hidden
-        blocked_by:
-          - P1-T04
-        criteria:
-          - No job member owns a visible window, including cmd wrappers and the console-ctrl helper
-          - A cmd wrapper gets arguments with spaces and & exactly
-          - The executor starts processes only through sys-windows spawn
-      - key: P1-T06
-        title: Start-gate admission with AIMD
-        blocked_by:
-          - P1-T17
-        criteria:
-          - A memory hold reports Delayed(memory) and admits once memory fits; admission never refuses
-          - The AIMD window halves on high CPU and grows by one under headroom
-      - key: P1-T07
-        title: Protocol Hello, features and seq
-        blocked_by:
-          - P1-T03
-        criteria:
-          - Every message fixture round-trips in Rust and validates in TypeBox
-          - Unknown message types and event kinds are ignored; a bad known message answers DR150
-      - key: P1-T08
-        title: Queues and placement (stage 2, after the spike)
-        blocked_by:
-          - P1-T02
-      - key: P1-T09
-        title: Log segments
-        blocked_by:
-          - P1-T39
-        criteria:
-          - Segments ship through the outbox, are stored and indexed by run and seq, and read back by cursor
-          - Segments older than the retention are pruned with their files
-      - key: P1-T10
-        title: Machine pairing and executor session
-        blocked_by:
-          - P1-T07
-        criteria:
-          - A pairing code works once, expires after 10 minutes, and five failures lock pairing for 10 minutes
-          - The machine token is stored only as its SHA-256 and revoke closes the live session
-          - A second session for the same machine replaces the first
-      - key: P1-T11
-        title: Orphans
-        blocked_by:
-          - P1-T39
-        criteria:
-          - After an executor restart a surviving run is reported orphaned and never re-adopted
-          - The kill policy ends the orphan's tree
-      - key: P1-T12
-        title: isolation/none
-        blocked_by:
-          - P1-T04
-        criteria:
-          - Only allowlisted variables reach the child
-          - A missing or relative cwd is an environment failure
-      - key: P1-T13
-        title: Idempotency and outbox
-        blocked_by:
-          - P1-T08
-        criteria:
-          - The CLI retries a timed-out mutation once with the same Idempotency-Key
-      - key: P1-T14
-        title: OpenTelemetry exporter, off by default
-        blocked_by:
-          - P1-T39
-        criteria:
-          - Without an endpoint no exporter is loaded or built
-          - With an endpoint, control plane and executor spans of one run share a trace id
-      - key: P1-T15
-        title: Minimal operational view (jobs, runs, logs, machines)
-        blocked_by:
-          - P1-T08
-          - P1-T09
-          - P1-T10
-      - key: P1-T16
-        title: Session login with Better Auth
-        blocked_by:
-          - P1-T02
-      - key: P1-T17
-        title: Footprint by private bytes
-        blocked_by:
-          - P1-T04
-        criteria:
-          - Footprint counts commit, not working set, summed over the run tree
-          - The reported peak is exact even between samples
-      - key: P1-T18
-        title: Resource and queue-time indicators (spec §13)
-        blocked_by:
-          - P1-T08
-          - P1-T17
-      - key: P1-T19
-        title: Catalog guard checks the tenant policy expression, not only its name
-        criteria:
-          - The guard fails on a table whose policy has the right name and a different expression
-      - key: P1-T20
-        title: Indexes on referencing FK columns
-        criteria:
-          - Every composite FK has an index on its referencing columns
-      - key: P1-T21
-        title: editTask racing closePhase on the source phase
-        criteria:
-          - A task moved out while its source phase closes cannot deliver the phase on a stale read
-      - key: P1-T22
-        title: Task start locks the blocking phases it reads
-        criteria:
-          - "Starting a task while a blocking phase is reopened is serialized: DR304 or a start against a delivered blocker, never both"
-      - key: P1-T23
-        title: Moving the last open task out of a phase delivers the source phase
-        criteria:
-          - editTask moving the last open task out auto-delivers a closable source phase
-      - key: P1-T24
-        title: Import closes an already-closable delivered phase before later task states
-        criteria:
-          - Importing such a phase with in_progress tasks in a later phase does not answer DR304
-      - key: P1-T25
-        title: Root-cause the 119/120 test flake
-        criteria:
-          - Root cause found and fixed, without a rerun
-      - key: P1-T26
-        title: Prune and cap control plane logs
-        criteria:
-          - Old log files are pruned and a long-lived serve cannot grow one file without bound
-      - key: P1-T27
-        title: service uninstall stops an orphan supervisor when the task is already gone
-        criteria:
-          - uninstall leaves no supervisor or serve process when the scheduled task is missing
-      - key: P1-T28
-        title: Supervisor survives a log write failure
-        criteria:
-          - A failed log write does not exit the supervisor
-      - key: P1-T29
-        title: "CLI: no 'undefined' in output and DR502 for a non-object config"
-        criteria:
-          - Missing values never print as undefined; a non-object config.json answers DR502
-      - key: P1-T30
-        title: "CLI: -h as an option value and EPIPE on a closed pipe"
-        criteria:
-          - A -h value is accepted and a closed stdout ends the CLI without a stack
-      - key: P1-T31
-        title: "CLI: per-command --help"
-        criteria:
-          - devrounds <command> --help prints that command's usage
-      - key: P1-T32
-        title: One error code for a missing reason (DR104 vs DR101 /reason)
-        criteria:
-          - Every missing reason answers the same code, with words that cover tasks and phases
-      - key: P1-T33
-        title: "next: points to criterion check at the end of a task or phase"
-        criteria:
-          - plan show and task start suggest devrounds criterion check while criteria are open
-      - key: P1-T34
-        title: HTTP plan import records the requesting member
-        criteria:
-          - Every import event names the token's member
-      - key: P1-T35
-        title: Balance ignores import-time transitions
-        criteria:
-          - Tasks moved to done by plan import do not count as done that day
-      - key: P1-T36
-        title: "AGENTS.md: local superuser exception and owner-side admin reads"
-        criteria:
-          - AGENTS.md lists the local postgres superuser as an accepted exception with its removal phase, and exempts admin owner-side commands from withTenant (with Guilherme's approval)
-      - key: P1-T37
-        title: devlanes-sync check
-        blocked_by:
-          - P1-T03
-        criteria:
-          - pnpm devlanes-sync lists every upstream devlanes commit touching a copied crate since its recorded sync point and fails while any is unreviewed
-          - Lists upstream commits since synced_commit that touch a mapped path, and ignores reviewed ones
-          - The check passes in the test suite against the cached fetch
-      - key: P1-T38
-        title: Run record (job types, jobs, runs, steps, delays, failure classes)
-        blocked_by:
-          - P1-T10
-        criteria:
-          - A run records each timeline stamp; derived durations are never negative under clock skew
-          - Failure class follows the job type rules and built-in memory codes; unknown failures are unclassified
-          - A retry is a new run of the same job with the next attempt number
-      - key: P1-T39
-        title: Direct dispatch and the executor run loop
-        blocked_by:
-          - P1-T05
-          - P1-T06
-          - P1-T12
-          - P1-T38
-          - P1-T40
-        criteria:
-          - Dispatch to an offline machine answers DR350 and writes nothing
-          - An offer reports Admitted, RunStarted and RunFinished in seq order, hidden
-          - Stop while the run waits in the start-gate never spawns it
-      - key: P1-T40
-        title: Executor store and outbox replay
-        blocked_by:
-          - P1-T10
-          - P1-T38
-        criteria:
-          - Events survive an executor restart and are replayed in order after reconnect, applied once
-          - Env values never reach the executor store
-      - key: P1-T42
-        title: Executor login service, end-to-end proof and footprint budgets
-        blocked_by:
-          - P1-T09
-          - P1-T11
-          - P1-T14
-          - P1-T37
-        criteria:
-          - The executor runs as the DevRoundsExecutor scheduled task under its supervisor
-          - pnpm e2e passes for the synthetic job and pnpm lint, hidden and supervised
-          - pnpm footprint passes on the installed services after 60 s idle
   - key: P2
     title: Gates on DevRounds
     goal: The Clickmax pre-PR gates run on DevRounds instead of cx-env.
@@ -621,6 +789,16 @@ phases:
         title: Unique tenant names (bootstrap race)
         criteria:
           - Two concurrent bootstraps with the same tenant name create one tenant
+      - key: P6-T07
+        title: Pairing limiter per source, not global
+        description: "P1 PairingLimiter is per process and global: 5 bad codes from anyone lock pairing for every tenant for 10 min (DoS once the control plane is reachable beyond localhost). Key failures by source address (and keep a global ceiling)."
+        criteria:
+          - Failures from one source never lock pairing for another source
+      - key: P6-T08
+        title: Control plane supervise single-instance lock
+        description: "Stop-ScheduledTask only ends conhost; supervise.ts and serve survive as orphans and the 5-minute trigger starts a second supervisor beside them (incident 18/11). Mirror the executor's supervise.lock (OS-level LockFileEx). Restored 19/11: the stage-2 import reused its old key P1-T43."
+        criteria:
+          - A second supervisor started beside a running one exits without starting serve
   - key: P7
     title: Blueprints and code node
     goal: Projects start from blueprints and pre-built modules, and flows run code nodes.
