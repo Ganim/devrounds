@@ -27,6 +27,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 devrounds-metrics-windows = { path = "../metrics-windows" }

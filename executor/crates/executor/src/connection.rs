@@ -10,7 +10,11 @@
 //! `Resync` resends from the seq it names, so an event is applied once and in
 //! order whatever happens to the socket or the control plane.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    hash::{BuildHasher, Hasher, RandomState},
+    time::Duration,
+};
 
 use devrounds_core::DrError;
 use devrounds_protocol::{
@@ -33,6 +37,11 @@ use crate::config::{ControlPlaneUrl, ExecutorConfig};
 pub const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// A session with no frame for this long is dropped and dialed again. The
+/// control plane pings every 15 s, so 45 s is three pings missed: the socket
+/// is half open (the machine slept, a NAT dropped the mapping) and would
+/// otherwise wait for TCP to give up, which can take hours.
+pub const SILENCE: Duration = Duration::from_secs(45);
 /// Matches the control plane's `maxPayload`.
 pub const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 /// What one resend read takes from the outbox: a backlog left by a long
@@ -90,8 +99,10 @@ impl Connection {
     /// Keeps a session to the control plane at `config.url` until the token
     /// stops working (DR452), a newer session of this machine replaces this
     /// one (`Ok`) or the store fails (DR550). Refuses `ws://` to a
-    /// non-loopback host with DR551. Reconnects after 1 s, doubling to 30 s;
-    /// a session that got its `HelloAck` starts the backoff over.
+    /// non-loopback host with DR551. Reconnects after 1 s, doubling to 30 s,
+    /// each wait moved by up to ±20 % ([`jittered`]); a session that got its
+    /// `HelloAck` starts the backoff over. A session with no frame for
+    /// [`SILENCE`] is dropped like a closed one.
     pub async fn run<H: Handler>(
         &self,
         config: &ExecutorConfig,
@@ -115,12 +126,23 @@ impl Connection {
                     if acked {
                         backoff = FIRST_BACKOFF;
                     }
-                    tokio::time::sleep(backoff).await;
+                    tokio::time::sleep(jittered(backoff)).await;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
         }
     }
+}
+
+/// `base` moved by a random amount within ±20 %, so executors that lost the
+/// same control plane do not all dial it again in the same instant.
+pub fn jittered(base: Duration) -> Duration {
+    // RandomState is seeded per instance from the OS: enough randomness for a
+    // spread, without a dependency.
+    let bits = RandomState::new().build_hasher().finish();
+    let high = u32::try_from(bits >> 32).unwrap_or(u32::MAX);
+    let unit = f64::from(high) / f64::from(u32::MAX);
+    base.mul_f64(0.8 + 0.4 * unit)
 }
 
 /// One connection, from dialing to close. Errors only for what reconnecting
@@ -174,8 +196,14 @@ async fn session<H: Handler>(
     // The last seq this session has sent; events go out strictly after it.
     let mut sent = 0;
     let mut in_flight = InFlight::default();
+    let silence = tokio::time::sleep(SILENCE);
+    tokio::pin!(silence);
     loop {
         tokio::select! {
+            () = &mut silence => {
+                tracing::warn!("no frame from the control plane for 45 s; reconnecting");
+                return Ok(Ended::Dropped { acked });
+            }
             _ = reports.tick(), if acked => {
                 let report = ClientMessage::MachineReport(handler.report());
                 if sink.send(Message::text(encode_client(&report)?)).await.is_err() {
@@ -189,7 +217,12 @@ async fn session<H: Handler>(
                     return Ok(Ended::Dropped { acked });
                 }
             }
-            frame = stream.next() => match frame {
+            frame = stream.next() => {
+            // Any frame, a Ping included, shows the control plane is there.
+            if matches!(frame, Some(Ok(_))) {
+                silence.as_mut().reset(tokio::time::Instant::now() + SILENCE);
+            }
+            match frame {
                 Some(Ok(Message::Text(text))) => match decode_server(&text) {
                     Ok(ServerMessage::Unknown) => {}
                     Ok(message) => {
@@ -211,7 +244,11 @@ async fn session<H: Handler>(
                                 if !send_pending(&mut sink, store, &mut sent, &mut in_flight).await? {
                                     return Ok(Ended::Dropped { acked });
                                 }
+                                // Before `connected`: a run waiting for it must see its withdrawal
+                                // (`HelloAck.withdrawn`) first, or it would spawn on this session.
+                                handler.on_message(message);
                                 connected.send_replace(true);
+                                continue;
                             }
                             ServerMessage::Ack(Ack { seq }) => {
                                 store.ack_through(*seq).await?;
@@ -240,7 +277,8 @@ async fn session<H: Handler>(
                     return Ok(Ended::Dropped { acked });
                 }
                 None => return Ok(Ended::Dropped { acked }),
-            },
+            }
+            }
         }
     }
 }

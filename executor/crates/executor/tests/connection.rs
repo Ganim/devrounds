@@ -14,7 +14,7 @@ use devrounds_core::{DrError, gate::MemoryPressure};
 use devrounds_executor::{
     admission::AdmissionConfig,
     config::{CONFIG_FILE, ExecutorConfig, HomeLock, STORE_FILE, TOKEN_FILE},
-    connection::{Connection, Handler},
+    connection::{Connection, Handler, SILENCE, jittered},
     pair::pair,
 };
 use devrounds_protocol::{
@@ -24,6 +24,7 @@ use devrounds_store::Store;
 use devrounds_sys_windows::security::check_private_file;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{
@@ -236,6 +237,7 @@ async fn hello_then_machine_report_reach_the_server() {
             features: vec!["seq".to_owned()],
             machine_id: "m-1".to_owned(),
             last_seq: 0,
+            withdrawn: Vec::new(),
         });
         socket
             .send(Message::text(encode_server(&ack).expect("encode")))
@@ -266,6 +268,207 @@ async fn hello_then_machine_report_reach_the_server() {
     assert_eq!(sent, ClientMessage::MachineReport(report()));
     let messages = messages.lock().unwrap_or_else(PoisonError::into_inner);
     assert!(matches!(messages.first(), Some(ServerMessage::HelloAck(_))));
+}
+
+/// Accepts one session on `listener`, answers its Hello with a HelloAck
+/// listing `withdrawn`, then says nothing more; the socket stays open as long
+/// as the returned task runs.
+fn silent_control_plane(
+    listener: tokio::net::TcpListener,
+    withdrawn: Vec<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut socket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("handshake");
+        assert!(matches!(
+            next_message(&mut socket).await,
+            ClientMessage::Hello(_)
+        ));
+        let ack = ServerMessage::HelloAck(HelloAck {
+            protocol: PROTOCOL,
+            features: vec!["seq".to_owned(), "withdraw".to_owned()],
+            machine_id: "m-1".to_owned(),
+            last_seq: 0,
+            withdrawn,
+        });
+        socket
+            .send(Message::text(encode_server(&ack).expect("encode")))
+            .await
+            .expect("ack");
+        std::future::pending::<()>().await;
+    })
+}
+
+async fn local_config() -> (tokio::net::TcpListener, ExecutorConfig) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let config = ExecutorConfig {
+        url: format!("http://{}", listener.local_addr().expect("addr")),
+        machine_id: "m-1".to_owned(),
+        admission: AdmissionConfig::default(),
+        otlp_endpoint: None,
+    };
+    (listener, config)
+}
+
+/// Records whether the session already reported connected when each
+/// `HelloAck` arrived.
+struct ConnectedAtHelloAck {
+    connected: watch::Receiver<bool>,
+    seen: Arc<Mutex<Vec<bool>>>,
+}
+
+impl Handler for ConnectedAtHelloAck {
+    fn boot_id(&self) -> String {
+        "boot-1".to_owned()
+    }
+
+    fn report(&mut self) -> MachineReport {
+        report()
+    }
+
+    fn on_message(&mut self, message: ServerMessage) {
+        if matches!(message, ServerMessage::HelloAck(_)) {
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(*self.connected.borrow());
+        }
+    }
+}
+
+#[tokio::test]
+/// The run loop drops a withdrawn run on `HelloAck`; a run waiting for
+/// `connected` must not see it before that, or it would spawn first.
+async fn hello_ack_reaches_the_handler_before_connected() {
+    let (listener, config) = local_config().await;
+    let server = silent_control_plane(listener, vec!["run-gone".to_owned()]);
+    let dir = home();
+    let connection = connection(&dir).await;
+    let mut connected = connection.connected();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut handler = ConnectedAtHelloAck {
+        connected: connection.connected(),
+        seen: Arc::clone(&seen),
+    };
+    let client = tokio::spawn(async move { connection.run(&config, TOKEN, &mut handler).await });
+    bounded(connected.wait_for(|connected| *connected))
+        .await
+        .expect("connected");
+    client.abort();
+    server.abort();
+
+    assert_eq!(
+        *seen.lock().unwrap_or_else(PoisonError::into_inner),
+        [false]
+    );
+}
+
+#[tokio::test]
+/// The control plane pings every 15 s; a session that hears nothing for
+/// 45 s is half open and is dropped, not waited on until TCP gives up.
+async fn silent_control_plane_is_dropped_after_45_s() {
+    let (listener, config) = local_config().await;
+    let server = silent_control_plane(listener, Vec::new());
+    let dir = home();
+    let connection = connection(&dir).await;
+    let mut connected = connection.connected();
+    let client = tokio::spawn(async move {
+        connection
+            .run(&config, TOKEN, &mut Recorder::default())
+            .await
+    });
+    bounded(connected.wait_for(|connected| *connected))
+        .await
+        .expect("connected");
+    // From here only timers move the clock, so the drop lands on its
+    // deadline instead of after 45 real seconds.
+    tokio::time::pause();
+    let silent_since = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        connected.wait_for(|connected| !*connected),
+    )
+    .await
+    .expect("dropped before 120 s")
+    .expect("connection alive");
+    let silent_for = silent_since.elapsed();
+    client.abort();
+    server.abort();
+
+    // The HelloAck, the last frame, came a moment before the clock stopped.
+    assert!(
+        silent_for > Duration::from_secs(44) && silent_for <= SILENCE,
+        "{silent_for:?}"
+    );
+    assert_eq!(SILENCE, Duration::from_secs(45));
+}
+
+#[test]
+fn backoff_has_jitter_within_20_percent() {
+    let base = Duration::from_secs(10);
+    let waits: Vec<Duration> = (0..1000).map(|_| jittered(base)).collect();
+    let (min, max) = (
+        *waits.iter().min().expect("waits"),
+        *waits.iter().max().expect("waits"),
+    );
+    assert!(
+        min >= base.mul_f64(0.8) && max <= base.mul_f64(1.2),
+        "{min:?}..{max:?}"
+    );
+    // Spread over the range, not a fixed offset.
+    assert!(
+        min < base.mul_f64(0.9) && max > base.mul_f64(1.1),
+        "{min:?}..{max:?}"
+    );
+}
+
+#[tokio::test]
+/// Pairing again (a revoked machine, a new control plane) replaces the
+/// pairing and keeps what a person tuned.
+async fn repair_keeps_admission_and_otlp_endpoint() {
+    let dir = home();
+    let home = dir.path().join("executor");
+    let first = json!({ "machineId": "m-1", "machineName": "build-01", "token": TOKEN });
+    let (url, server) = fake_pair_server(200, first);
+    bounded(pair(&home, &url, "ABCD1234")).await.expect("pair");
+    server.join().expect("server");
+    let read_config = || -> ExecutorConfig {
+        serde_json::from_slice(&std::fs::read(home.join(CONFIG_FILE)).expect("config"))
+            .expect("config json")
+    };
+    let tuned = ExecutorConfig {
+        admission: AdmissionConfig {
+            initial_window: 3,
+            ..AdmissionConfig::default()
+        },
+        otlp_endpoint: Some("http://127.0.0.1:4318".to_owned()),
+        ..read_config()
+    };
+    std::fs::write(
+        home.join(CONFIG_FILE),
+        serde_json::to_vec_pretty(&tuned).expect("json"),
+    )
+    .expect("tune");
+
+    let second = json!({ "machineId": "m-2", "machineName": "build-01", "token": TOKEN });
+    let (url, server) = fake_pair_server(200, second);
+    bounded(pair(&home, &url, "EFGH5678"))
+        .await
+        .expect("pair again");
+    server.join().expect("server");
+
+    assert_eq!(
+        read_config(),
+        ExecutorConfig {
+            url,
+            machine_id: "m-2".to_owned(),
+            ..tuned
+        }
+    );
 }
 
 async fn next_message(socket: &mut WebSocketStream<tokio::net::TcpStream>) -> ClientMessage {

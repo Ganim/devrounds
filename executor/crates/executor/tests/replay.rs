@@ -73,6 +73,7 @@ async fn accept(listener: &TcpListener, last_seq: u64) -> Socket {
             features: vec!["seq".to_owned()],
             machine_id: "m-1".to_owned(),
             last_seq,
+            withdrawn: Vec::new(),
         }),
     )
     .await;

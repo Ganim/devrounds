@@ -9,7 +9,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use ureq::tls::{RootCerts, TlsConfig};
 
-use crate::config::{ControlPlaneUrl, ExecutorConfig, HomeLock, prepare_home, save_pairing};
+use crate::config::{
+    ControlPlaneUrl, ExecutorConfig, HomeLock, prepare_home, save_pairing, tuned_settings,
+};
 
 const PAIR_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -22,7 +24,8 @@ struct Paired {
 
 /// Pairs this machine with the control plane at `url` using `code`, then
 /// writes `<home>/machine-token` (owner-only) and `<home>/config.json`.
-/// Pairing again replaces both. DR550 when `home` cannot be made owner-only,
+/// Pairing again replaces both, keeping the `admission` and `otlp_endpoint`
+/// settings of the existing `config.json`. DR550 when `home` cannot be made owner-only,
 /// DR551 for a URL that is not allowed, DR352 when an executor runs on
 /// `home`, and the control plane's DR450/DR451 as it answered them.
 pub async fn pair(home: &Path, url: &str, code: &str) -> Result<(), DrError> {
@@ -38,11 +41,12 @@ pub async fn pair(home: &Path, url: &str, code: &str) -> Result<(), DrError> {
     let paired = tokio::task::spawn_blocking(move || post(&endpoint, &body))
         .await
         .map_err(|error| internal(format!("pairing task failed: {error}")))??;
+    let tuned = tuned_settings(home).await;
     let config = ExecutorConfig {
         url: url.http(""),
         machine_id: paired.machine_id,
-        admission: crate::admission::AdmissionConfig::default(),
-        otlp_endpoint: None,
+        admission: tuned.admission,
+        otlp_endpoint: tuned.otlp_endpoint,
     };
     save_pairing(home, &config, &paired.token).await
 }

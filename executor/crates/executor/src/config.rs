@@ -64,6 +64,30 @@ pub async fn load_pairing(home: &Path) -> Result<(ExecutorConfig, String), DrErr
     .await
 }
 
+/// The settings a person tuned in `config.json`, which pairing again keeps.
+#[derive(Debug, Default, Deserialize)]
+pub struct TunedSettings {
+    #[serde(default)]
+    pub admission: AdmissionConfig,
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
+}
+
+/// The tuned settings of `<home>/config.json`; the defaults when there is no
+/// such file or it does not parse, as for a first pairing. Only the pairing
+/// itself (URL, machine id) changes when a home is paired again.
+pub async fn tuned_settings(home: &Path) -> TunedSettings {
+    let path = home.join(CONFIG_FILE);
+    let read = blocking(move || Ok(fs::read(&path).ok())).await;
+    let Ok(Some(text)) = read else {
+        return TunedSettings::default();
+    };
+    serde_json::from_slice(&text).unwrap_or_else(|error| {
+        tracing::warn!(%error, "config.json does not parse; pairing writes the default settings");
+        TunedSettings::default()
+    })
+}
+
 /// `DEVROUNDS_EXECUTOR_HOME`, else `~/.devrounds/executor`.
 pub fn executor_home() -> Result<PathBuf, DrError> {
     if let Some(home) = std::env::var_os(HOME_ENV).filter(|home| !home.is_empty()) {

@@ -67,6 +67,19 @@ fn every_fixture_round_trips() {
 }
 
 #[test]
+/// A control plane that predates feature `withdraw` sends no `withdrawn`; it
+/// reads as none withdrawn.
+fn hello_ack_without_withdrawn_reads_as_empty() {
+    let message = decode_server(
+        r#"{"type":"HelloAck","protocol":1,"features":["seq"],"machine_id":"m","last_seq":0}"#,
+    );
+    match message {
+        Ok(ServerMessage::HelloAck(ack)) => assert!(ack.withdrawn.is_empty()),
+        other => panic!("expected a HelloAck, got {other:?}"),
+    }
+}
+
+#[test]
 /// Fixture names cover every message type and event kind, and nothing else.
 fn every_message_type_has_a_fixture() {
     let expected: BTreeSet<String> = CLIENT_TYPES

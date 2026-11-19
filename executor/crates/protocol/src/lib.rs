@@ -14,13 +14,14 @@ use serde_json::{Value, json};
 pub const PROTOCOL: u32 = 1;
 
 /// Optional capabilities this build speaks; a session uses the intersection.
-pub const FEATURES: [&str; 6] = [
+pub const FEATURES: [&str; 7] = [
     "seq",
     "steps",
     "log-segments",
     "orphans",
     "trace-context",
     "acked-through",
+    "withdraw",
 ];
 
 /// The features both sides speak, in the order of `ours`.
@@ -227,6 +228,13 @@ pub struct HelloAck {
     pub features: Vec<String>,
     pub machine_id: String,
     pub last_seq: u64,
+    /// Feature `withdraw`: runs of this machine the control plane withdrew
+    /// in the last 7 days (an offer that ran out, or a stop while the machine
+    /// was offline). The executor drops, without an event, any it holds that
+    /// has not spawned, and stops one that has as for a Stop cancel. Empty
+    /// without the feature, and absent from control planes that predate it.
+    #[serde(default)]
+    pub withdrawn: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

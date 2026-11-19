@@ -4,7 +4,7 @@
 //! every step as an event through the store outbox.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc, Mutex, PoisonError,
@@ -87,6 +87,8 @@ struct Shared {
     telemetry: Option<Telemetry>,
     /// Runs offered and not finished yet, each with its stop flag.
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
+    /// Active runs a `HelloAck` listed as withdrawn; their stop flag is set too.
+    withdrawn: Mutex<HashSet<String>>,
     /// Runs with a live process.
     running: AtomicU32,
     /// The highest seq an `Ack` frame of this process acked. Unlike the
@@ -140,6 +142,7 @@ impl RunLoop {
                 log_options: deps.log_options,
                 telemetry: deps.telemetry,
                 active: Mutex::new(HashMap::new()),
+                withdrawn: Mutex::new(HashSet::new()),
                 running: AtomicU32::new(0),
                 live_ack: watch::channel(0).0,
             }),
@@ -154,10 +157,31 @@ impl RunLoop {
     /// Acts on one control plane message; returns at once. `Offer` starts a
     /// run task (a repeated offer of a run still active or known to the
     /// store is ignored), `Stop` asks an active run or orphan to stop (an
-    /// unknown run is ignored). Must be called
-    /// inside a tokio runtime.
+    /// unknown run is ignored). `HelloAck.withdrawn` stops each active run it
+    /// names: one that has not spawned is dropped without an event (the
+    /// control plane already ended it and requeued its job, so an answer
+    /// would only be refused), one that has is stopped as for a Stop cancel;
+    /// an unknown run is ignored. The connection hands `HelloAck` over before
+    /// it reports connected, so no withdrawn run spawns on that session. Must
+    /// be called inside a tokio runtime.
     pub fn handle(&self, message: ServerMessage) {
         match message {
+            ServerMessage::HelloAck(ack) => {
+                let active = self.active();
+                for run in ack.withdrawn {
+                    let Some(flag) = active.get(&run) else {
+                        tracing::debug!(%run, "withdrawn run not active ignored");
+                        continue;
+                    };
+                    tracing::warn!(%run, "the control plane withdrew this run; stopping it");
+                    self.shared
+                        .withdrawn
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(run);
+                    flag.send_replace(true);
+                }
+            }
             ServerMessage::Offer(offer) => {
                 let mut active = self.active();
                 if active.contains_key(&offer.run) {
@@ -271,7 +295,10 @@ async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bo
         admitted: None,
         started: None,
     };
-    let ending = run_once(&shared, offer, stopped, &mut times).await;
+    let Some(ending) = run_once(&shared, offer, stopped, &mut times).await else {
+        drop_withdrawn(&shared, &run).await;
+        return;
+    };
     if let (Some(telemetry), Some((trace_parent, job_type))) = (&shared.telemetry, &traced) {
         telemetry.export_run(&RunTrace {
             run: &run,
@@ -308,11 +335,51 @@ async fn run_task(shared: Arc<Shared>, offer: Offer, stopped: watch::Receiver<bo
     } else if let Err(error) = shared.store.forget_run(&run).await {
         tracing::warn!(%run, %error, "finished run not removed from the store");
     }
+    finish_task(&shared, &run);
+}
+
+/// Takes a run that ended off the active and withdrawn sets.
+fn finish_task(shared: &Shared, run: &str) {
+    shared
+        .withdrawn
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(run);
     shared
         .active
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .remove(&run);
+        .remove(run);
+}
+
+/// Forgets a withdrawn run that never spawned: no event, no run directory,
+/// no store row, as if it had never been offered here.
+async fn drop_withdrawn(shared: &Shared, run: &str) {
+    tracing::info!(%run, "withdrawn run dropped before it spawned");
+    let run_dir = shared.runs_dir.join(run);
+    let removed = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&run_dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    })
+    .await;
+    if let Ok(Err(error)) = removed {
+        tracing::warn!(%run, %error, "run directory of a withdrawn run not removed");
+    }
+    if let Err(error) = shared.store.forget_run(run).await {
+        tracing::warn!(%run, %error, "withdrawn run not removed from the store");
+    }
+    finish_task(shared, run);
+}
+
+/// The ending of a run stopped before it spawned; `None` when it was
+/// withdrawn, which ends it without a `RunFinished`.
+fn stopped_before_spawn(shared: &Shared, run: &str) -> Option<Ending> {
+    let withdrawn = shared
+        .withdrawn
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(run);
+    (!withdrawn).then(|| Ending::before_start(FinishReason::Stopped, None))
 }
 
 /// Resolves once a stop was asked for; never if the flag's sender is gone.
@@ -342,13 +409,14 @@ fn usable_run_id(run: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Fills `times` as the run reaches admission and its spawn.
+/// Fills `times` as the run reaches admission and its spawn. `None` for a
+/// withdrawn run stopped before it spawned (see [`RunLoop::handle`]).
 async fn run_once(
     shared: &Shared,
     offer: Offer,
     mut stopped: watch::Receiver<bool>,
     times: &mut RunTimes,
-) -> Ending {
+) -> Option<Ending> {
     let Offer {
         run,
         job,
@@ -357,7 +425,10 @@ async fn run_once(
     } = offer;
     if !usable_run_id(&run) {
         let summary = format!("run id {run:?} is not a usable directory name");
-        return Ending::before_start(FinishReason::SpawnFailed, Some(summary));
+        return Some(Ending::before_start(
+            FinishReason::SpawnFailed,
+            Some(summary),
+        ));
     }
     let run_dir = shared.runs_dir.join(&run);
     let stored = StoredRun {
@@ -369,15 +440,18 @@ async fn run_once(
         members: Vec::new(),
     };
     if let Err(error) = shared.store.put_run(stored).await {
-        return Ending::before_start(FinishReason::Infra, Some(error.to_string()));
+        return Some(Ending::before_start(
+            FinishReason::Infra,
+            Some(error.to_string()),
+        ));
     }
     let spec = match prepare(shared, &run, &job, run_dir).await {
         Ok(spec) => spec,
-        Err(ending) => return ending,
+        Err(ending) => return Some(ending),
     };
 
     let Some(slot) = admit(shared, &run, &job, memory_need, &mut stopped).await else {
-        return Ending::before_start(FinishReason::Stopped, None);
+        return stopped_before_spawn(shared, &run);
     };
 
     // Spawn only on a live session. Store::raise_floor (Task 12) detects a
@@ -388,12 +462,12 @@ async fn run_once(
         biased;
         () = stop_asked(&mut stopped) => {
             slot.release(Release::Failed);
-            return Ending::before_start(FinishReason::Stopped, None);
+            return stopped_before_spawn(shared, &run);
         }
         ready = connected.wait_for(|connected| *connected) => {
             if ready.is_err() {
                 slot.release(Release::Failed);
-                return Ending::before_start(FinishReason::Infra, Some("the connection ended".to_owned()));
+                return Some(Ending::before_start(FinishReason::Infra, Some("the connection ended".to_owned())));
             }
         }
     }
@@ -408,14 +482,17 @@ async fn run_once(
         Err(error) => {
             slot.release(Release::Failed);
             let summary = format!("{} could not start: {error}", job.program);
-            return Ending::before_start(FinishReason::SpawnFailed, Some(summary));
+            return Some(Ending::before_start(
+                FinishReason::SpawnFailed,
+                Some(summary),
+            ));
         }
     };
     times.started = Some(SystemTime::now());
     shared.running.fetch_add(1, Ordering::SeqCst);
     let ending = follow(shared, &run, &job, unit, slot, output, stopped).await;
     shared.running.fetch_sub(1, Ordering::SeqCst);
-    ending
+    Some(ending)
 }
 
 /// The run directory and the launch spec, off the async threads.
