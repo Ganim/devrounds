@@ -4,7 +4,8 @@ import { isolate } from './0001_core.ts'
 import type { MigrationOptions } from './index.ts'
 
 // A run's output, as the executor shipped it: one row per segment, the zstd JSON lines in a file on the control
-// plane's disk (`path`, absolute), indexed by the run's own line seqs. (run_id, first_seq) makes a resent segment a
+// plane's disk (`path`, relative to the logs root and kept only for people reading the table: log-store.ts derives the
+// file from the ids), indexed by the run's own line seqs. (run_id, first_seq) makes a resent segment a
 // no-op and orders a run's segments for reading by cursor.
 const TABLES = [
   `create table log_segments (

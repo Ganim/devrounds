@@ -87,7 +87,7 @@ scripts/devlanes-sync.ts, scripts/footprint.ts, scripts/e2e/executor.e2e.ts
   definer functions pin `search_path = pg_catalog, public, pg_temp` and grant execute only to the app role; cross-tenant
   lookups answer DR201; Biome `--error-on-warnings`, no inline suppressions; `node --test`.
 - Error codes: the `x5x` block of each range belongs to executor, protocol and runs: DR150, DR151, DR350, DR351,
-  DR352, DR450, DR451, DR452, DR453, DR550, DR551. Text only in `errors/words.ts`; the executor emits
+  DR352, DR450, DR451, DR452, DR453, DR550, DR551, DR552. Text only in `errors/words.ts`; the executor emits
   `DrError::new("DR###", json)` and prints `DR### <data json>` plus `see docs/errors.md`. Not-found stays DR201
   (`kind`: `machine`, `run`, `job type`).
 - Footprint is private bytes (commit) of the whole tree, never working set (spec §16.5).
