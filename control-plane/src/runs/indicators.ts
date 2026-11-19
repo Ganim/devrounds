@@ -18,7 +18,9 @@ export type IndicatorRow = {
   retries: number
   requeues: number
   // Percentiles are interpolated (percentile_cont); null when no run of the row has both ends of the span.
-  queueWaitP50Ms: number | null // queued → offered
+  // Placeable → offered: from not_before when that is later than queued_at, so a retry's backoff (jobs/outcome.ts),
+  // during which claim_run may not take it, is not counted as waiting for a machine.
+  queueWaitP50Ms: number | null
   queueWaitP90Ms: number | null
   admissionDelayP50Ms: number | null // offered → admitted
   runTimeP50Ms: number | null // started → finished
@@ -75,7 +77,9 @@ export function runIndicators(
       .where('id', '=', ctx.tenantId)
       .executeTakeFirstOrThrow()
     const local = (at: unknown) => sql`date_trunc(${opts.period}, ${at} at time zone ${tenant.timezone})`
-    const ms = (from: string, to: string) => sql`(extract(epoch from ${sql.ref(to)} - ${sql.ref(from)}) * 1000)::float8`
+    const ms = (from: unknown, to: unknown) => sql`(extract(epoch from ${to} - ${from}) * 1000)::float8`
+    // not_before is not null (0010_queues.ts), so greatest never yields null where queued_at is set.
+    const placeable = sql`greatest(e.queued_at, e.not_before)`
     const p = (fraction: number, value: unknown) =>
       sql`percentile_cont(${fraction}::float8) within group (order by ${value})`
     const { rows } = await sql<Row>`
@@ -106,11 +110,11 @@ export function runIndicators(
         c.failure_classes,
         count(*) filter (where e.cause = 'retry') as retries,
         count(*) filter (where e.cause = 'requeue') as requeues,
-        ${p(0.5, ms('e.queued_at', 'e.offered_at'))} as queue_wait_p50,
-        ${p(0.9, ms('e.queued_at', 'e.offered_at'))} as queue_wait_p90,
-        ${p(0.5, ms('e.offered_at', 'e.admitted_at'))} as admission_p50,
-        ${p(0.5, ms('e.started_at', 'e.finished_at'))} as run_time_p50,
-        ${p(0.9, ms('e.started_at', 'e.finished_at'))} as run_time_p90,
+        ${p(0.5, ms(placeable, sql.ref('e.offered_at')))} as queue_wait_p50,
+        ${p(0.9, ms(placeable, sql.ref('e.offered_at')))} as queue_wait_p90,
+        ${p(0.5, ms(sql.ref('e.offered_at'), sql.ref('e.admitted_at')))} as admission_p50,
+        ${p(0.5, ms(sql.ref('e.started_at'), sql.ref('e.finished_at')))} as run_time_p50,
+        ${p(0.9, ms(sql.ref('e.started_at'), sql.ref('e.finished_at')))} as run_time_p90,
         ${p(0.5, sql`e.peak_private_bytes::float8`)} as peak_p50,
         max(e.peak_private_bytes) as peak_max,
         sum(e.cpu_seconds) as cpu_seconds

@@ -42,6 +42,8 @@ async function setup() {
     finishedAt: string
     runS?: number
     waitS?: number
+    // A retry waits out its backoff before any machine may take it (not_before).
+    backoffS?: number
     state?: 'finished' | 'failed' | 'stopped' | 'skipped'
     failureClass?: 'check_red' | 'unclassified' | 'infra'
     cause?: 'first' | 'retry' | 'requeue'
@@ -50,14 +52,15 @@ async function setup() {
   }
   // Attempts are unique per job; the queued run holds attempt 1.
   let attempt = 1
-  // An ended run: queued, offered `waitS` later, admitted 1 s after the offer, started then, finished `runS` later.
+  // An ended run: queued, placeable `backoffS` later (not_before), offered `waitS` after that, admitted 1 s after the offer, started then, finished `runS` later.
   const ended = async (e: Ended) => {
     const job = jobs.get(e.jobType ?? 'check') as { jobId: string; jobTypeId: string; projectId: string }
     const finished = Date.parse(e.finishedAt)
     const started = finished - (e.runS ?? 1) * 1000
     const admitted = started
     const offered = admitted - 1000
-    const queued = offered - (e.waitS ?? 1) * 1000
+    const notBefore = offered - (e.waitS ?? 1) * 1000
+    const queued = notBefore - (e.backoffS ?? 0) * 1000
     await t.admin
       .insertInto('runs')
       .values({
@@ -70,6 +73,7 @@ async function setup() {
         cause: e.cause ?? 'first',
         failure_class: e.failureClass ?? null,
         queued_at: new Date(queued),
+        not_before: new Date(notBefore),
         offered_at: new Date(offered),
         admitted_at: new Date(admitted),
         started_at: new Date(started),
@@ -189,6 +193,15 @@ test('retries and requeues are counted by cause', async () => {
 
   const [row] = await runIndicators(ctx, projectKey, DAY_10)
   assert.deepEqual([row.runs, row.retries, row.requeues], [4, 2, 1])
+})
+
+test('queue wait of a retry starts when its backoff ends', async () => {
+  const { ctx, ended } = await setup()
+  // Queued at 14:54:57, not before 14:59:57 (a 300 s backoff), offered at 14:59:59: it waited 2 s for a machine.
+  await ended({ finishedAt: '2026-11-10T15:00:00Z', cause: 'retry', backoffS: 300, waitS: 2 })
+
+  const [row] = await runIndicators(ctx, projectKey, DAY_10)
+  assert.deepEqual([row.queueWaitP50Ms, row.queueWaitP90Ms], [2000, 2000])
 })
 
 test('now reports the oldest wait per queue and reserved vs free per machine', async () => {
