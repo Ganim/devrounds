@@ -4,6 +4,7 @@ import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
+import { ensureQueue } from '../queues/service.ts'
 import { formatTraceParent, parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
 import { type ClassifyRule, classifyRun } from './classify.ts'
 import { int4, int8 } from './int-columns.ts'
@@ -12,7 +13,8 @@ import { loadRunView, type RunView, requireRunId } from './view.ts'
 
 const INT_MAX = 2147483647
 
-/** Records a job and its first run, queued. The machine is the live machine named `machineName`. */
+/** Records a job (in the project's `default` queue) and its first run, queued. The machine is the live machine named
+ * `machineName`. Direct dispatch only: the scheduler's jobs go through jobs/enqueue.ts. */
 export function createRun(
   ctx: Ctx,
   i: { projectKey: string; jobTypeKey: string; machineName: string; cwd: string; taskKey?: string },
@@ -28,6 +30,7 @@ export function createRun(
       .executeTakeFirst()
     if (!machine) fail('DR201', { kind: 'machine', key: i.machineName })
     const task = i.taskKey === undefined ? null : await findTask(trx, project.id, i.taskKey)
+    const queue = await ensureQueue(trx, project.id)
     const job = await trx
       .insertInto('jobs')
       .values({
@@ -37,6 +40,7 @@ export function createRun(
         task_id: task?.id ?? null,
         cwd: i.cwd,
         machine_id: machine.id,
+        queue_id: queue.id,
         created_by: ctx.actor.id,
       })
       .returning('id')

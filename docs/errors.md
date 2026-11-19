@@ -42,6 +42,22 @@ Executor protocol {got} is not supported; this control plane speaks {supported}.
 
 Update the older of the executor and the control plane so both speak protocol {supported}.
 
+## DR152
+
+Jobs of batch {batch} depend on each other in a cycle: {cycle}.
+
+### Fix
+
+Remove one depends_on entry of the jobs in {cycle} so every job can start after the ones it waits for, then submit the batch again.
+
+## DR153
+
+Job type {jobType} is not allowed on queue {queue}.
+
+### Fix
+
+Pick a queue that lists {jobType} (see `devrounds queue list`), or add it with `devrounds queue set {queue} --job-types <a,b>`.
+
 ## DR201
 
 No {kind} {key} found.

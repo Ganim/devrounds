@@ -6,6 +6,7 @@ import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
+import { parseBatchFile } from '../jobs/batch-file.ts'
 import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
@@ -294,7 +295,7 @@ type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
 // GET /runs/:id/logs (runs/log-store.ts LogPage, with the cursor as a number).
 type LogPageJson = { lines: { seq: number; text: string }[]; nextCursor: number | null }
 
-const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned']
+const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
 const RUN_WAIT_S = 25
 
@@ -849,7 +850,119 @@ export const COMMANDS: Spec[] = [
       }
     },
   },
+  {
+    path: ['queue', 'set'],
+    usage:
+      'queue set <key> [--priority <n>] [--concurrency <n>|none] [--job-types <a,b>|none]   ' +
+      'create or change a queue; none removes the cap or lets every job type in',
+    args: 1,
+    options: { priority: str, concurrency: str, 'job-types': str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const key = arg(inv, 0, '<key>')
+      const priority = text(inv, 'priority')
+      if (priority !== undefined && !/^-?\d{1,10}$/.test(priority)) {
+        fail('DR101', { path: '--priority', reason: 'must be an integer' })
+      }
+      const concurrency = orNull(text(inv, 'concurrency'))
+      const jobTypes = orNull(text(inv, 'job-types'))
+      const body = {
+        priority: priority === undefined ? undefined : Number(priority),
+        concurrency: concurrency == null ? concurrency : (integer(inv, 'concurrency', 1) as number),
+        jobTypes:
+          jobTypes == null
+            ? jobTypes === null
+              ? []
+              : undefined
+            : jobTypes
+                .split(',')
+                .map((jobType) => jobType.trim())
+                .filter(Boolean),
+      }
+      const q = await api.send<QueueJson>('PUT', path('queues', key), body)
+      return { failures: [], body: [queueLine(q)], next: 'devrounds queue list' }
+    },
+  },
+  {
+    path: ['queue', 'list'],
+    usage: 'queue list [--cursor <n>]   depth = runs queued, in flight = offered, admitted or running',
+    args: 0,
+    pages: true,
+    options: {},
+    run: async (_inv, connect) => {
+      const api = await connect()
+      const queues = await api.get<QueueJson[]>('/queues')
+      return {
+        failures: [],
+        body: queues.length > 0 ? queues.map(queueLine) : ['no queues'],
+        next: queues.length > 0 ? 'devrounds plan show' : 'devrounds queue set <key>',
+      }
+    },
+  },
+  {
+    path: ['batch', 'submit'],
+    usage: 'batch submit <file.yaml>   queue the jobs of the file with their depends_on edges, all or nothing',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const file = arg(inv, 0, '<file.yaml>')
+      const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
+        fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
+      )
+      // Parsed here so a problem points at its line in the file; the server checks the jobs again.
+      const b = await api.send<BatchJson>('POST', '/batches', parseBatchFile(yaml))
+      return { failures: [], body: b.jobs.map(batchJobLine), next: `devrounds batch show ${shellArg(b.id)}` }
+    },
+  },
+  {
+    path: ['batch', 'show'],
+    usage: 'batch show <id>   failed and skipped jobs first, then the rest',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const b = await api.get<BatchJson>(path('batches', arg(inv, 0, '<id>')))
+      const failed = b.jobs.filter((j) => j.state === 'failed' || j.state === 'skipped')
+      const next =
+        failed.length > 0
+          ? `devrounds run show ${shellArg(failed[0].runId)}`
+          : b.jobs.some((j) => j.state === 'open')
+            ? `devrounds batch show ${shellArg(b.id)}`
+            : 'devrounds plan show'
+      return {
+        failures: failed.map(batchJobLine),
+        body: [
+          fmt`batch ${b.id} · ${b.jobs.length} jobs`,
+          ...b.jobs.filter((j) => !failed.includes(j)).map(batchJobLine),
+        ],
+        next,
+      }
+    },
+  },
 ]
+
+// GET /queues (queues/service.ts QueueView) and GET /batches/:id (jobs/enqueue.ts BatchView) as JSON.
+type QueueJson = {
+  key: string
+  priority: number
+  concurrency: number | null
+  jobTypes: string[]
+  depth: number
+  inFlight: number
+  oldestQueuedAt: string | null
+}
+type BatchJson = {
+  id: string
+  jobs: { ref: string; jobId: string; runId: string; jobType: string; state: string }[]
+}
+
+const queueLine = (q: QueueJson) =>
+  fmt`${q.key}  priority ${q.priority} · concurrency ${q.concurrency ?? 'none'} · ` +
+  fmt`job types ${q.jobTypes?.length ? q.jobTypes.join(', ') : 'any'} · depth ${q.depth} · in flight ${q.inFlight} · ` +
+  fmt`oldest queued ${q.oldestQueuedAt}`
+
+const batchJobLine = (j: BatchJson['jobs'][number]) => fmt`${j.ref}  ${j.state} · ${j.jobType} · run ${j.runId}`
 
 type PairingCode = { code: string; expiresAt: string; machineName: string }
 type MachineView = { name: string; os: string; executorVersion: string; lastSeenAt: string | null; connected: boolean }

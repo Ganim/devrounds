@@ -102,7 +102,6 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
       .select([
         'runs.id',
         'runs.project_id',
-        'runs.machine_id',
         'runs.trace_id',
         'runs.trace_span_id',
         'jobs.cwd',
@@ -119,7 +118,13 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
       .execute()
     const offers: Offer[] = []
     for (const row of rows) {
-      offers.push(await offerOf(trx, { ...row, traceParent: runTraceParent(row) }, { ...row, id: row.job_type_id }))
+      offers.push(
+        await offerOf(
+          trx,
+          { ...row, machine_id: machineId, traceParent: runTraceParent(row) },
+          { ...row, id: row.job_type_id },
+        ),
+      )
     }
     return offers
   })
@@ -150,7 +155,7 @@ export async function prepareStop(
   sessions: Sessions,
   runId: string,
   projectKey?: string,
-): Promise<{ view: RunView; machineId: string; ended: boolean }> {
+): Promise<{ view: RunView; machineId: string; machine: string; ended: boolean }> {
   requireRunId(runId)
   return run(ctx, async (trx) => {
     const view = await loadRunView(trx, runId, projectKey)
@@ -158,17 +163,20 @@ export async function prepareStop(
     const row = await trx
       .selectFrom('runs')
       .innerJoin('machines', 'machines.id', 'runs.machine_id')
-      .select(['runs.machine_id', 'machines.revoked_at'])
+      .select(['machines.id', 'machines.name', 'machines.revoked_at'])
       .where('runs.id', '=', runId)
-      .executeTakeFirstOrThrow()
+      .executeTakeFirst()
+    // Only a run queued through jobs/enqueue.ts has no machine yet; no executor knows it, so there is nothing to
+    // stop until stopping a queued run is a state change of its own (P1-T45).
+    if (!row) fail('DR351', { run: runId, state: view.state })
     if (row.revoked_at !== null) {
-      const failed = await failRevokedRuns(trx, { id: row.machine_id, name: view.machine }, runId)
+      const failed = await failRevokedRuns(trx, row, runId)
       // Ended meanwhile (an event applied since the read): its state is the answer, as for any ended run.
       if (failed.length === 0) fail('DR351', { run: runId, state: (await loadRunView(trx, runId)).state })
-      return { view: await loadRunView(trx, runId), machineId: row.machine_id, ended: true }
+      return { view: await loadRunView(trx, runId), machineId: row.id, machine: row.name, ended: true }
     }
-    if (!sessions.get(row.machine_id)) fail('DR350', { machine: view.machine })
-    return { view, machineId: row.machine_id, ended: false }
+    if (!sessions.get(row.id)) fail('DR350', { machine: row.name })
+    return { view, machineId: row.id, machine: row.name, ended: false }
   })
 }
 
@@ -182,13 +190,13 @@ export async function stopRun(
   runId: string,
   projectKey?: string,
 ): Promise<RunView> {
-  const { view, machineId, ended } = await prepareStop(ctx, sessions, runId, projectKey)
+  const { view, machineId, machine, ended } = await prepareStop(ctx, sessions, runId, projectKey)
   if (ended) {
     runEvents.emit('changed', runId)
     return view
   }
   if (!sessions.send(machineId, { type: 'Stop', run: runId, reason: 'cancel' })) {
-    fail('DR350', { machine: view.machine })
+    fail('DR350', { machine })
   }
   return view
 }

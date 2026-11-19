@@ -1,7 +1,7 @@
 import type { RunState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 
-export type RunTransition = 'offer' | 'delay' | 'admit' | 'start' | 'finish' | 'fail' | 'stop' | 'orphan'
+export type RunTransition = 'offer' | 'delay' | 'admit' | 'start' | 'finish' | 'fail' | 'stop' | 'orphan' | 'skip'
 export type RunStamp = 'offered_at' | 'admitted_at' | 'started_at' | 'finished_at'
 
 type Move = { from: readonly RunState[]; to: RunState | 'same'; stamp?: RunStamp }
@@ -16,11 +16,12 @@ const MOVES: Record<RunTransition, Move> = {
   start: { from: ['admitted'], to: 'running', stamp: 'started_at' },
   finish: { from: ['running'], to: 'finished', stamp: 'finished_at' },
   fail: { from: ['offered', 'admitted', 'running'], to: 'failed', stamp: 'finished_at' },
-  stop: { from: ['offered', 'admitted', 'running'], to: 'stopped', stamp: 'finished_at' },
+  stop: { from: ['queued', 'offered', 'admitted', 'running'], to: 'stopped', stamp: 'finished_at' },
   orphan: { from: ['admitted', 'running'], to: 'orphaned' },
+  skip: { from: ['queued'], to: 'skipped', stamp: 'finished_at' },
 }
 
-export const TERMINAL: readonly RunState[] = ['finished', 'failed', 'stopped', 'orphaned']
+export const TERMINAL: readonly RunState[] = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 
 /** The state after `transition`, and the column to stamp; DR351 naming `run` when `state` does not allow it. */
 export function nextRunState(

@@ -1,4 +1,4 @@
-import type { DelayReason, FailureClass, RunState, StepOutcome } from '../db/schema.ts'
+import type { DelayReason, FailureClass, RunCause, RunState, StepOutcome } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 
@@ -9,7 +9,12 @@ export type RunView = {
   state: RunState
   attempt: number
   jobType: string
-  machine: string
+  // Null until the run is placed on a machine.
+  machine: string | null
+  queue: string
+  cause: RunCause
+  // The run is not placed before this time (a retry's backoff).
+  notBefore: Date
   task: string | null
   timeline: {
     queuedAt: Date
@@ -45,9 +50,12 @@ export type RunView = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** DR201 unless `runId` can name a run; Postgres would answer a malformed uuid with an error, i.e. a 500. */
+// Postgres answers a malformed uuid with an error, i.e. a 500, so ids from requests are checked first.
+export const isUuid = (value: string): boolean => UUID.test(value)
+
+/** DR201 unless `runId` can name a run. */
 export function requireRunId(runId: string): void {
-  if (!UUID.test(runId)) fail('DR201', { kind: 'run', key: runId })
+  if (!isUuid(runId)) fail('DR201', { kind: 'run', key: runId })
 }
 
 const num = (value: string | null): number | null => (value === null ? null : Number(value))
@@ -66,10 +74,11 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
     .selectFrom('runs as r')
     .innerJoin('jobs as j', 'j.id', 'r.job_id')
     .innerJoin('job_types as jt', 'jt.id', 'r.job_type_id')
-    .innerJoin('machines as m', 'm.id', 'r.machine_id')
+    .innerJoin('queues as q', 'q.id', 'j.queue_id')
+    .leftJoin('machines as m', 'm.id', 'r.machine_id')
     .leftJoin('tasks as t', 't.id', 'j.task_id')
     .selectAll('r')
-    .select(['jt.key as job_type_key', 'm.name as machine_name', 't.key as task_key'])
+    .select(['jt.key as job_type_key', 'm.name as machine_name', 'q.key as queue_key', 't.key as task_key'])
     .where('r.id', '=', runId)
     .$if(projectId !== undefined, (query) => query.where('r.project_id', '=', projectId as string))
     .executeTakeFirst()
@@ -94,6 +103,9 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
     attempt: row.attempt,
     jobType: row.job_type_key,
     machine: row.machine_name,
+    queue: row.queue_key,
+    cause: row.cause,
+    notBefore: row.not_before,
     task: row.task_key,
     timeline: {
       queuedAt: row.queued_at,

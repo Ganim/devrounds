@@ -14,6 +14,7 @@ import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { executorRoutes, MAX_PAYLOAD, Sessions } from '../executor/gateway.ts'
 import { PairingLimiter } from '../machines/pairing.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
+import { jobRoutes } from './job-routes.ts'
 import { machineRoutes } from './machine-routes.ts'
 import { projectRoutes } from './routes.ts'
 import { runRoutes } from './run-routes.ts'
@@ -102,6 +103,7 @@ export function buildServer(opts: ServerOptions) {
   const logsRoot = opts.logsRoot ?? defaultLogsRoot()
   const telemetry = opts.telemetry ?? null
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot, telemetry })
+  app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
   app.register(executorRoutes, { prefix: '/api/executor', db: opts.db, sessions, limiter, logsRoot, telemetry })
 

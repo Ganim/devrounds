@@ -34,6 +34,18 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 400,
     keys: ['got', 'supported'],
   },
+  DR152: {
+    text: 'Jobs of batch {batch} depend on each other in a cycle: {cycle}.',
+    hint: 'Remove one depends_on entry of the jobs in {cycle} so every job can start after the ones it waits for, then submit the batch again.',
+    httpStatus: 400,
+    keys: ['batch', 'cycle'],
+  },
+  DR153: {
+    text: 'Job type {jobType} is not allowed on queue {queue}.',
+    hint: 'Pick a queue that lists {jobType} (see `devrounds queue list`), or add it with `devrounds queue set {queue} --job-types <a,b>`.',
+    httpStatus: 400,
+    keys: ['jobType', 'queue'],
+  },
   DR201: {
     text: 'No {kind} {key} found.',
     hint: 'Check the {kind} key with `devrounds plan show`; keys are case-sensitive.',

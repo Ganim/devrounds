@@ -1,7 +1,7 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
-// Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts and 0008_runs_orphaned_at.ts
-// (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
+// Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
+// 0009_runs_trace_span_id.ts and 0010_queues.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -162,7 +162,18 @@ type NullableInt8 = ColumnType<
 >
 
 export type OrphanPolicy = 'kill' | 'let_finish'
-export type RunState = 'queued' | 'offered' | 'admitted' | 'running' | 'finished' | 'failed' | 'stopped' | 'orphaned'
+export type RunState =
+  | 'queued'
+  | 'offered'
+  | 'admitted'
+  | 'running'
+  | 'finished'
+  | 'failed'
+  | 'stopped'
+  | 'orphaned'
+  | 'skipped'
+export type RunCause = 'first' | 'retry' | 'requeue'
+export type JobState = 'open' | 'finished' | 'failed' | 'stopped' | 'skipped'
 export type FailureClass = 'check_red' | 'environment' | 'timeout' | 'memory' | 'infra' | 'cancelled' | 'unclassified'
 export type DelayReason = 'memory' | 'concurrency' | 'memory_critical'
 export type StepOutcome = 'finished' | 'failed'
@@ -188,9 +199,44 @@ export interface JobsTable {
   job_type_id: string
   task_id: string | null
   cwd: string
-  machine_id: string
+  // Null: any machine; set: pinned to that machine.
+  machine_id: string | null
+  queue_id: string
+  batch_id: string | null
+  ref: string | null
+  state: Generated<JobState>
   created_by: string
   created_at: Timestamp
+}
+
+export interface QueuesTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  key: string
+  priority: Generated<number>
+  concurrency: number | null
+  created_at: Timestamp
+}
+
+export interface QueueJobTypesTable {
+  tenant_id: string
+  queue_id: string
+  job_type_id: string
+}
+
+export interface JobBatchesTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  created_by: string
+  created_at: Timestamp
+}
+
+export interface JobDependenciesTable {
+  tenant_id: string
+  job_id: string
+  depends_on_job_id: string
 }
 
 export interface RunsTable {
@@ -199,10 +245,14 @@ export interface RunsTable {
   project_id: string
   job_id: string
   job_type_id: string
-  machine_id: string
+  // Null until the run is placed on a machine.
+  machine_id: string | null
   attempt: Generated<number>
   state: Generated<RunState>
   queued_at: Timestamp
+  not_before: Timestamp
+  memory_need: NullableInt8
+  cause: Generated<RunCause>
   offered_at: NullableTimestamp
   admitted_at: NullableTimestamp
   started_at: NullableTimestamp
@@ -280,6 +330,10 @@ export interface Database {
   pairing_codes: PairingCodesTable
   job_types: JobTypesTable
   jobs: JobsTable
+  queues: QueuesTable
+  queue_job_types: QueueJobTypesTable
+  job_batches: JobBatchesTable
+  job_dependencies: JobDependenciesTable
   runs: RunsTable
   run_steps: RunStepsTable
   run_delays: RunDelaysTable

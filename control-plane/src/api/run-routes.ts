@@ -119,8 +119,13 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
   app.post('/runs/:id/stop', { schema: { params: RunParams, headers: Headers } }, async (request, reply) => {
     let target: { machineId: string; machine: string; ended: boolean } | undefined
     const answer = await mutateIdempotent(db, request, reply, async (ctx) => {
-      const { view, machineId, ended } = await prepareStop(ctx, sessions, request.params.id, request.params.key)
-      target = { machineId, machine: view.machine, ended }
+      const { view, machineId, machine, ended } = await prepareStop(
+        ctx,
+        sessions,
+        request.params.id,
+        request.params.key,
+      )
+      target = { machineId, machine, ended }
       return view
     })
     if (target?.ended) runEvents.emit('changed', request.params.id)
