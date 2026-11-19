@@ -6,7 +6,7 @@ import fastifyWebsocket from '@fastify/websocket'
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyServerOptions } from 'fastify'
 import type { Kysely } from 'kysely'
 import pkg from '../../package.json' with { type: 'json' }
-import type { SessionAuth } from '../auth/session.ts'
+import { CLIENT_IP_HEADER, type SessionAuth } from '../auth/session.ts'
 import type { TokenOwner } from '../auth/tokens.ts'
 import { defaultLogsRoot } from '../config.ts'
 import { toDevRoundsError } from '../convert-error.ts'
@@ -145,17 +145,33 @@ export function buildServer(opts: ServerOptions) {
   return app
 }
 
-// Better Auth reads the request body itself from the raw stream, so this plugin's parser leaves every body unread.
-// Encapsulated: the rest of the API keeps its JSON and YAML parsers.
+// Better Auth parses bodies itself. This plugin reads every body as text under the server's bodyLimit and hands it over
+// as `raw.body`, which Better Auth's node handler uses once the stream is consumed. Encapsulated: the rest of the API
+// keeps its JSON and YAML parsers.
 async function authRoutes(app: FastifyInstance, { sessionAuth }: { sessionAuth: SessionAuth }): Promise<void> {
   app.removeAllContentTypeParsers()
-  app.addContentTypeParser('*', (_request, _payload, done) => done(null))
+  app.addContentTypeParser('*', { parseAs: 'string', bodyLimit: app.initialConfig.bodyLimit }, (_req, body, done) =>
+    done(null, body),
+  )
   app.route({
     method: ['GET', 'POST'],
     url: '/api/auth/*',
     handler: async (request, reply) => {
       reply.hijack()
-      await sessionAuth.handler(request.raw, reply.raw)
+      const raw = request.raw as typeof request.raw & { body?: unknown }
+      raw.body = request.body
+      raw.headers[CLIENT_IP_HEADER] = request.ip
+      try {
+        await sessionAuth.handler(raw, reply.raw)
+      } catch (err) {
+        // Hijacked: Fastify's error handler no longer answers, so an unanswered socket would hang until it times out.
+        request.log.error({ err }, 'session auth request failed')
+        if (!reply.raw.headersSent) {
+          const { text, hint } = explain('DR501')
+          reply.raw.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          reply.raw.end(JSON.stringify({ code: 'DR501', text, hint, data: {} }))
+        } else reply.raw.end()
+      }
     },
   })
 }

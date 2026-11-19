@@ -22,6 +22,18 @@ export type SessionAuth = {
 
 export type AuthConnection = { databaseUrl: string; port: number; secret: string }
 
+/** At most `max` requests per `window` seconds from one client address. */
+export type RateRule = { window: number; max: number }
+
+// Sign-in attempts per client address: enough for a person mistyping, far too few to guess a 20-character password.
+export const SIGN_IN_LIMIT: RateRule = { window: 60, max: 5 }
+
+/**
+ * The client address Better Auth keys its rate limits by. The /api/auth route sets it from the socket (request.ip),
+ * replacing whatever the client sent, so a caller cannot pick its own bucket.
+ */
+export const CLIENT_IP_HEADER = 'x-devrounds-client-ip'
+
 // Its own small pool with `search_path=auth`, so Better Auth's unqualified table names land in schema `auth`.
 export function authDb(databaseUrl: string): Kysely<unknown> {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 2, options: '-c search_path=auth' })
@@ -32,7 +44,7 @@ export function authDb(databaseUrl: string): Kysely<unknown> {
 // `login create` passes signUp: there is no self sign-up, the operator creates every login.
 export function authOptions(
   db: Kysely<unknown>,
-  o: { port: number; secret: string; signUp?: boolean },
+  o: { port: number; secret: string; signUp?: boolean; signInLimit?: RateRule },
 ): BetterAuthOptions {
   const origins = [`http://127.0.0.1:${o.port}`, `http://localhost:${o.port}`]
   return {
@@ -50,15 +62,26 @@ export function authOptions(
       // `login create` would link the member to a user that does not exist. createLogin drops that first session.
     },
     trustedOrigins: origins,
-    // The control plane listens on loopback over plain http, where a Secure cookie would never be sent back.
-    advanced: { cookiePrefix: 'devrounds', useSecureCookies: false },
+    // On in every environment: Better Auth enables it only under NODE_ENV=production, which `serve` never sets. Memory
+    // storage (one serve per machine in P1); the other paths keep Better Auth's default rule.
+    rateLimit: { enabled: true, customRules: { '/sign-in/email': o.signInLimit ?? SIGN_IN_LIMIT } },
+    advanced: {
+      cookiePrefix: 'devrounds',
+      // The control plane listens on loopback over plain http, where a Secure cookie would never be sent back.
+      useSecureCookies: false,
+      ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+    },
   }
 }
 
-export async function startAuth(o: AuthConnection): Promise<SessionAuth> {
+// Test-only options: signInLimit for tests that sign in many times from one address (serve always uses SIGN_IN_LIMIT),
+// silent for tests that fail sign-ins on purpose (serve keeps Better Auth's warnings, a trail of failed sign-ins).
+export async function startAuth(
+  o: AuthConnection & { signInLimit?: RateRule; silent?: boolean },
+): Promise<SessionAuth> {
   const [{ betterAuth }, { toNodeHandler }] = await Promise.all([import('better-auth'), import('better-auth/node')])
   const db = authDb(o.databaseUrl)
-  const auth = betterAuth(authOptions(db, o))
+  const auth = betterAuth({ ...authOptions(db, o), logger: { disabled: o.silent === true } })
   const handler = toNodeHandler(auth)
   return {
     handler,
@@ -70,6 +93,8 @@ export async function startAuth(o: AuthConnection): Promise<SessionAuth> {
   }
 }
 
+const USER_NAME = 'DevRounds user'
+
 // Sign-up reasons an operator can fix with another --email; anything else stays an internal error.
 const EMAIL_REASONS: Record<string, string> = {
   USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: 'already belongs to another login',
@@ -78,15 +103,13 @@ const EMAIL_REASONS: Record<string, string> = {
 
 // For `devrounds-admin login create` only: a short-lived instance with sign-up on, over the owner connection (the one
 // place a user is ever created). Returns the new user's id.
-export async function createUser(
-  o: AuthConnection,
-  user: { email: string; password: string; name: string },
-): Promise<string> {
+export async function createUser(o: AuthConnection, user: { email: string; password: string }): Promise<string> {
   const { betterAuth } = await import('better-auth')
   const db = authDb(o.databaseUrl)
   try {
     const auth = betterAuth(authOptions(db, { ...o, signUp: true }))
-    const created = await auth.api.signUpEmail({ body: user })
+    // Better Auth requires a name. Never the member's: nothing tenant-scoped is stored in schema `auth`.
+    const created = await auth.api.signUpEmail({ body: { ...user, name: USER_NAME } })
     return created.user.id
   } catch (err) {
     const reason = EMAIL_REASONS[(err as { body?: { code?: string } }).body?.code ?? '']

@@ -120,6 +120,7 @@ async function writeAuthSecret(path: string): Promise<string> {
     // Env vars alone may configure the admin; the secret then starts the file.
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await writeFile(path, `${JSON.stringify({ ...file, authSecret }, null, 2)}\n`, { mode: 0o600 })
   await restrictToOwner(path)
   return authSecret
@@ -168,7 +169,7 @@ export async function createLogin(
   // 15 bytes are exactly 20 base64url characters.
   const password = randomBytes(15).toString('base64url')
   const auth = { databaseUrl: access.adminUrl, port: access.port, secret: access.secret }
-  const userId = await createUser(auth, { email: i.email, password, name: i.member })
+  const userId = await createUser(auth, { email: i.email, password })
   try {
     await admin.transaction().execute(async (trx) => {
       // Sign-up signs the new user in; nobody holds that session's token.

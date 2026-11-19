@@ -14,7 +14,7 @@ import {
   type TestDb,
   testDb,
 } from '../test-support/db.ts'
-import { type SessionAuth, startAuth } from './session.ts'
+import { type SessionAuth, SIGN_IN_LIMIT, startAuth } from './session.ts'
 import { createToken } from './tokens.ts'
 
 // The port only names the base URL and the trusted origins; inject never listens.
@@ -27,7 +27,13 @@ let app: ReturnType<typeof buildServer>
 
 before(async () => {
   t = await testDb()
-  sessionAuth = await startAuth({ databaseUrl: TEST_DATABASE_URL, port: PORT, secret: TEST_AUTH_SECRET })
+  // Every test here signs in from the same address within seconds; the limiter has a test of its own below.
+  sessionAuth = await startAuth({
+    databaseUrl: TEST_DATABASE_URL,
+    port: PORT,
+    secret: TEST_AUTH_SECRET,
+    signInLimit: { window: 60, max: 1000 },
+  })
   app = buildServer({ db: t.db, logger: false, sessionAuth })
   await app.ready()
 })
@@ -53,20 +59,28 @@ async function setup(projectKey = 'alpha') {
   return { tenant, tenantName, email, password }
 }
 
-// The `name=value` of the session cookie a sign-in sets, ready for a Cookie header.
-async function signIn(email: string, password: string): Promise<string> {
-  const res = await app.inject({
+const postSignIn = (server: typeof app, email: string, password: string, remoteAddress?: string) =>
+  server.inject({
     method: 'POST',
     url: '/api/auth/sign-in/email',
     headers: { origin: ORIGIN },
     payload: { email, password },
+    remoteAddress,
   })
+
+// The whole Set-Cookie line of the session cookie a sign-in sets.
+async function signInCookie(email: string, password: string): Promise<string> {
+  const res = await postSignIn(app, email, password)
   assert.equal(res.statusCode, 200, res.body)
   const cookies = [res.headers['set-cookie'] ?? []].flat()
   const session = cookies.find((c) => c.startsWith('devrounds.session_token='))
   assert.ok(session, `no session cookie in ${cookies.join(' | ')}`)
-  return session.split(';')[0]
+  return session
 }
+
+// The `name=value` of the session cookie, ready for a Cookie header.
+const signIn = async (email: string, password: string): Promise<string> =>
+  (await signInCookie(email, password)).split(';')[0]
 
 const readPlan = (headers: Record<string, string>, key = 'alpha') =>
   app.inject({ method: 'GET', url: `/api/projects/${key}/plan`, headers })
@@ -86,6 +100,42 @@ test('a member logs in with email and password and reads the plan with the cooki
   // Removing the login deletes the user and its sessions with it.
   await removeLogin(t.admin, { tenant: tenantName, member: 'human' })
   assert.equal((await readPlan({ cookie })).json().code, 'DR401')
+})
+
+// Script cannot read the cookie, a cross-site navigation post does not carry it, and plain http on loopback gets it.
+test('the session cookie is HttpOnly, SameSite=Lax, Path=/ and not Secure on loopback', async () => {
+  const { email, password } = await setup()
+  const attributes = (await signInCookie(email, password))
+    .split(';')
+    .slice(1)
+    .map((a) => a.trim().toLowerCase())
+  assert.ok(attributes.includes('httponly'), attributes.join('; '))
+  assert.ok(attributes.includes('samesite=lax'), attributes.join('; '))
+  assert.ok(attributes.includes('path=/'), attributes.join('; '))
+  assert.ok(!attributes.includes('secure'), attributes.join('; '))
+})
+
+test('sign-in answers 429 past the limit for that client address, and other addresses still sign in', async (tc) => {
+  const limited = await startAuth({
+    databaseUrl: TEST_DATABASE_URL,
+    port: PORT,
+    secret: TEST_AUTH_SECRET,
+    silent: true,
+  })
+  const server = buildServer({ db: t.db, logger: false, sessionAuth: limited })
+  tc.after(async () => {
+    await server.close()
+    await limited.close()
+  })
+  const { email, password } = await setup()
+  // Better Auth's memory store is per process; a fresh address keeps this bucket apart from the other tests'.
+  const address = `10.${[1, 2, 3].map(() => Math.floor(Math.random() * 250) + 1).join('.')}`
+  for (let i = 0; i < SIGN_IN_LIMIT.max; i++) {
+    assert.equal((await postSignIn(server, email, 'wrong password!', address)).statusCode, 401)
+  }
+  // Past the limit even the right password is refused.
+  assert.equal((await postSignIn(server, email, password, address)).statusCode, 429)
+  assert.equal((await postSignIn(server, email, password, '192.0.2.10')).statusCode, 200)
 })
 
 // Review Focus 4: a cross-site form carries the browser's cookie, never a Bearer token.
@@ -154,6 +204,7 @@ test("a session of tenant A reading tenant B's project answers DR201", async () 
 
   const res = await readPlan({ cookie }, 'beta')
   assert.equal(res.statusCode, 404)
+  assert.equal(res.json().code, 'DR201')
   assert.deepEqual(res.json().data, { kind: 'project', key: 'beta' })
 })
 
