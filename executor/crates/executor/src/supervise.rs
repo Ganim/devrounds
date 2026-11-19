@@ -42,6 +42,10 @@ pub const KEEP_DAYS: u64 = 14;
 /// A day's log file rolls to the next `.N` past this size. The control plane
 /// caps at 10 MiB; 10 MB here is the same order and reads plainly.
 pub const MAX_LOG_BYTES: u64 = 10_000_000;
+/// `run`'s exit code for a DR4xx (the bin's `exit_code`). The only DR4xx
+/// `run` ends with is DR452: the token is invalid or revoked, which no
+/// restart fixes.
+pub const AUTH_EXIT: u32 = 5;
 /// The argument `supervise` starts `run` with: watch stdin, exit at its end.
 pub const SUPERVISED_ARG: &str = "--supervised";
 
@@ -55,8 +59,9 @@ pub fn next_delay(previous: Option<Duration>, uptime: Duration) -> Duration {
     }
 }
 
-/// Runs `exe run --supervised` for good, restarting it with [`next_delay`].
-/// Returns only when the log directory cannot be created.
+/// Runs `exe run --supervised` for good, restarting it with [`next_delay`],
+/// until it exits with [`AUTH_EXIT`]: then it logs why and parks. Returns
+/// only when the log directory cannot be created.
 pub fn supervise(exe: &Path, logs: &Path) -> io::Result<Infallible> {
     fs::create_dir_all(logs)?;
     let log = Arc::new(DailyLog::new(logs.to_path_buf(), MAX_LOG_BYTES));
@@ -64,11 +69,25 @@ pub fn supervise(exe: &Path, logs: &Path) -> io::Result<Infallible> {
     let mut delay = None;
     loop {
         let started = Instant::now();
-        let reason = match run_once(exe, &log) {
+        let exited = run_once(exe, &log);
+        let uptime = started.elapsed();
+        if matches!(exited, Ok(AUTH_EXIT)) {
+            log.line(&format!(
+                "run exited (code {AUTH_EXIT}) after {} s: the machine token is invalid or revoked (DR452); \
+                 not restarting. Remove the service (`devrounds-executor service uninstall`), pair again, \
+                 then install it again",
+                uptime.as_secs()
+            ));
+            // Parked, not exited: an exit would let the task's 5-minute trigger start a supervisor that fails the
+            // same way.
+            loop {
+                thread::park();
+            }
+        }
+        let reason = match exited {
             Ok(code) => format!("exited (code {code})"),
             Err(error) => format!("failed to start: {error}"),
         };
-        let uptime = started.elapsed();
         log.line(&format!("run {reason} after {} s", uptime.as_secs()));
         let next = next_delay(delay, uptime);
         delay = Some(next);

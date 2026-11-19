@@ -140,6 +140,12 @@ async function main(): Promise<void> {
   await mkdir(bin)
   await copyFile(FIXTURE, fixture)
   const fixtures = () => processesOf(fixture, 'tree-fixture.exe')
+  // Every day log of the supervisor, in one string.
+  const supervisorLog = async (): Promise<string> => {
+    const files = (await readdir(join(home, 'logs'))).filter((f) => /^executor-\d{4}-\d{2}-\d{2}\.log$/.test(f))
+    assert.ok(files.length > 0, 'no executor-YYYY-MM-DD.log')
+    return (await Promise.all(files.map((f) => readFile(join(home, 'logs', f), 'utf8')))).join('')
+  }
   const tracked = new Map<number, string>()
   const admin = createDb(TEST_ADMIN_URL)
   const serveOutput: string[] = []
@@ -313,6 +319,12 @@ async function main(): Promise<void> {
     await until('run to exit after the revoke', 30_000, async () =>
       (await runProcess()) === undefined ? true : undefined,
     )
+    // DR452 is final: the supervisor logs it and stops restarting run, which would only fail the same way.
+    await until('the supervisor to give up on DR452', 15_000, async () =>
+      /supervisor: run exited \(code 5\).*not restarting/.test(await supervisorLog()) ? true : undefined,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 3_000))
+    assert.equal(await runProcess(), undefined, 'run restarted after DR452')
     // As `service uninstall` would: the supervisor goes before the home is paired again.
     await kill(supervisePid)
     const repaired = `${machine}-2`
@@ -349,12 +361,10 @@ async function main(): Promise<void> {
       return undefined
     })
     log('supervise killed: run exited on its own')
-    const logFiles = (await readdir(join(home, 'logs'))).filter((f) => /^executor-\d{4}-\d{2}-\d{2}\.log$/.test(f))
-    assert.ok(logFiles.length > 0, 'no executor-YYYY-MM-DD.log')
-    const supervisorLog = (await Promise.all(logFiles.map((f) => readFile(join(home, 'logs', f), 'utf8')))).join('')
-    assert.match(supervisorLog, /supervisor: run started \(pid \d+\)/)
-    assert.match(supervisorLog, /supervisor: restarting run in 1 s/)
-    log(`${logFiles.join(', ')}: supervisor start, run start and the 1 s restart logged`)
+    const logged = await supervisorLog()
+    assert.match(logged, /supervisor: run started \(pid \d+\)/)
+    assert.match(logged, /supervisor: restarting run in 1 s/)
+    log('supervisor start, run start, the 1 s restart and the DR452 stop logged')
     log('PASS')
   } catch (err) {
     console.error(`[e2e] FAIL: ${(err as Error).stack ?? err}`)
