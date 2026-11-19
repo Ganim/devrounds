@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { type ApiError, type LogPageJson, projectUrl, type RunJson, request, useRemote } from './api.ts'
 import { formatBytes, formatDuration } from './format.ts'
 import { RunState } from './RunsPage.tsx'
@@ -178,6 +178,16 @@ function RunLog({ runId, ended }: { runId: string; ended: boolean }) {
   }, [runId, ask])
 
   const last = lines.at(-1)
+  const lastSeq = useRef<number | null>(null)
+  lastSeq.current = last?.seq ?? null
+  // The run ended after the last fetch: its last lines (often the error) came since, and once it has ended "more"
+  // is no longer offered, so they are fetched once, from the line after the last one shown.
+  const wasEnded = useRef(ended)
+  useEffect(() => {
+    if (ended && !wasEnded.current) setAsk({ cursor: lastSeq.current === null ? null : lastSeq.current + 1 })
+    wasEnded.current = ended
+  }, [ended])
+
   // A running run has no nextCursor once everything stored is shown; its next lines start after the last seq shown.
   const more = next ?? (ended ? null : last ? last.seq + 1 : 0)
   return (
