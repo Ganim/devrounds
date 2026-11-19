@@ -4,9 +4,15 @@ import { type Kysely, sql } from 'kysely'
 import { createDb } from '../db/connection.ts'
 import { migrateToLatest } from '../db/migrate.ts'
 import type { Database, Member } from '../db/schema.ts'
-import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL } from './test-db-urls.ts'
+import {
+  TEST_ADMIN_URL,
+  TEST_APP_PASSWORD,
+  TEST_APP_ROLE,
+  TEST_AUTH_SECRET,
+  TEST_DATABASE_URL,
+} from './test-db-urls.ts'
 
-export { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_DATABASE_URL }
+export { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, TEST_AUTH_SECRET, TEST_DATABASE_URL }
 
 const APP_PASSWORD = TEST_APP_PASSWORD
 
@@ -46,7 +52,11 @@ async function newTenant(admin: Kysely<Database>, name = `tenant-${randomUUID()}
 // Migrates once per process; tests isolate by creating fresh tenants, never by truncating.
 export function testDb(): Promise<TestDb> {
   pending ??= (async () => {
-    await migrateToLatest(TEST_ADMIN_URL, { appRole: TEST_APP_ROLE, appPassword: APP_PASSWORD })
+    await migrateToLatest(TEST_ADMIN_URL, {
+      appRole: TEST_APP_ROLE,
+      appPassword: APP_PASSWORD,
+      authSecret: TEST_AUTH_SECRET,
+    })
     const db = createDb(TEST_DATABASE_URL)
     const admin = createDb(TEST_ADMIN_URL)
     pools.push(db, admin)
@@ -88,7 +98,11 @@ export function isolatedTestDb(name: string): Promise<IsolatedTestDb> {
       }
       const adminUrl = withDatabase(TEST_ADMIN_URL, database)
       const url = withDatabase(TEST_DATABASE_URL, database)
-      await migrateToLatest(adminUrl, { appRole: TEST_APP_ROLE, appPassword: APP_PASSWORD })
+      await migrateToLatest(adminUrl, {
+        appRole: TEST_APP_ROLE,
+        appPassword: APP_PASSWORD,
+        authSecret: TEST_AUTH_SECRET,
+      })
       const db = createDb(url)
       const admin = createDb(adminUrl)
       pools.push(db, admin)

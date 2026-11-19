@@ -22,6 +22,8 @@ export interface MembersTable {
   tenant_id: string
   kind: MemberKind
   name: string
+  // The Better Auth user (schema auth) this human member signs in as; null for agents and members without a login.
+  user_id: string | null
 }
 
 export interface ApiTokensTable {

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseArgs } from 'node:util'
 import { type Kysely, sql } from 'kysely'
+import { createUser } from './auth/session.ts'
 import { issueToken, issueTokenIn, revokeToken } from './auth/tokens.ts'
 import { type Config, configPath, defaultLogsRoot, loadConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
@@ -26,12 +27,16 @@ const IMPORT_MEMBER = 'import'
 const USAGE = `usage: devrounds-admin <command>
 
   init [--force]                     write ~/.devrounds/server.json with a new app password
-  migrate                            migrate the database and set the ${APP_ROLE} password
+  migrate                            migrate the database, set the ${APP_ROLE} password and add authSecret
   bootstrap --tenant <name> --project <key> --name <project name> --human <name>
                                      create a tenant, its members and project; prints a token once
   token create --tenant <name> --member <name> --kind human|agent
                                      prints a new token once (creates the member if missing)
   token revoke <id>                  revoke a token by id
+  login create --tenant <name> --member <name> --email <email>
+                                     give a human member a web login; prints its password once
+  login remove --tenant <name> --member <name>
+                                     delete the member's web login and its sessions
   service install                    run the control plane as the ${TASK_NAME} scheduled task (Windows) and start it
   service uninstall                  stop and remove the ${TASK_NAME} scheduled task`
 
@@ -104,6 +109,102 @@ export async function bootstrap(
   })
 }
 
+// Adds a new authSecret to the config file, keeping its other fields. Never replaces one: a new secret would sign
+// every browser out.
+async function writeAuthSecret(path: string): Promise<string> {
+  const authSecret = randomBytes(32).toString('base64url')
+  let file: object = {}
+  try {
+    file = JSON.parse(await readFile(path, 'utf8'))
+  } catch (err) {
+    // Env vars alone may configure the admin; the secret then starts the file.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  await writeFile(path, `${JSON.stringify({ ...file, authSecret }, null, 2)}\n`, { mode: 0o600 })
+  await restrictToOwner(path)
+  return authSecret
+}
+
+// `devrounds-admin migrate`: ours, then Better Auth's tables (they need the secret, written first when missing).
+export async function migrate(path: string, appRole: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const config = await loadConfig(env, path)
+  const authSecret = config.authSecret ?? (await writeAuthSecret(path))
+  await migrateToLatest(config.adminDatabaseUrl, { appRole, appPassword: config.appPassword, authSecret })
+}
+
+export type LoginAccess = { adminUrl: string; secret: string; port: number }
+
+// Read as the owner with an explicit tenant filter (the owner skips RLS).
+async function memberByName(admin: Kysely<Database>, tenant: string, name: string) {
+  const tenantId = await tenantIdByName(admin, tenant)
+  const member = await admin
+    .selectFrom('members')
+    .select(['id', 'tenant_id', 'kind', 'user_id'])
+    .where('tenant_id', '=', tenantId)
+    .where('name', '=', name)
+    .executeTakeFirst()
+  return member ?? fail('DR201', { kind: 'member', key: name })
+}
+
+// Better Auth's own rows of a user. Raw SQL on purpose: the admin removes a login without loading Better Auth.
+async function deleteUser(db: Kysely<Database>, userId: string): Promise<void> {
+  await sql`delete from auth.session where "userId" = ${userId}`.execute(db)
+  await sql`delete from auth.account where "userId" = ${userId}`.execute(db)
+  await sql`delete from auth."user" where id = ${userId}`.execute(db)
+}
+
+const ALREADY_LINKED = { path: '--member', reason: 'already has a login; remove it first' }
+
+// Gives a human member a web login (email + a generated password) and returns the password, shown once. The user is
+// created through Better Auth, which hashes the password its own way; if linking the member then fails, the user goes.
+export async function createLogin(
+  admin: Kysely<Database>,
+  access: LoginAccess,
+  i: { tenant: string; member: string; email: string },
+): Promise<string> {
+  const member = await memberByName(admin, i.tenant, i.member)
+  if (member.kind !== 'human') fail('DR453', { action: 'log in' })
+  if (member.user_id !== null) fail('DR101', ALREADY_LINKED)
+  // 15 bytes are exactly 20 base64url characters.
+  const password = randomBytes(15).toString('base64url')
+  const auth = { databaseUrl: access.adminUrl, port: access.port, secret: access.secret }
+  const userId = await createUser(auth, { email: i.email, password, name: i.member })
+  try {
+    await admin.transaction().execute(async (trx) => {
+      // Sign-up signs the new user in; nobody holds that session's token.
+      await sql`delete from auth.session where "userId" = ${userId}`.execute(trx)
+      const linked = await trx
+        .updateTable('members')
+        .set({ user_id: userId })
+        .where('tenant_id', '=', member.tenant_id)
+        .where('id', '=', member.id)
+        .where('user_id', 'is', null)
+        .executeTakeFirst()
+      // A concurrent login create won the race.
+      if (linked.numUpdatedRows === 0n) fail('DR101', ALREADY_LINKED)
+    })
+  } catch (err) {
+    await deleteUser(admin, userId)
+    throw err
+  }
+  return password
+}
+
+// Deletes the member's Better Auth user (and with it every session) and unlinks the member, in one transaction.
+export async function removeLogin(admin: Kysely<Database>, i: { tenant: string; member: string }): Promise<void> {
+  const member = await memberByName(admin, i.tenant, i.member)
+  const userId = member.user_id ?? fail('DR201', { kind: 'login', key: i.member })
+  await admin.transaction().execute(async (trx) => {
+    await trx
+      .updateTable('members')
+      .set({ user_id: null })
+      .where('tenant_id', '=', member.tenant_id)
+      .where('id', '=', member.id)
+      .execute()
+    await deleteUser(trx, userId)
+  })
+}
+
 function printToken(issued: { id: string; token: string }): void {
   console.log(`token (shown once): ${issued.token}\nid (for token revoke): ${issued.id}`)
 }
@@ -137,6 +238,7 @@ function parseArgv(argv: string[]) {
         human: { type: 'string' },
         member: { type: 'string' },
         kind: { type: 'string' },
+        email: { type: 'string' },
         help: { type: 'boolean' },
       },
     })
@@ -159,9 +261,25 @@ export async function main(argv: string[]): Promise<number> {
     return 0
   }
   if (command === 'migrate') {
-    const config = await loadConfig()
-    await migrateToLatest(config.adminDatabaseUrl, { appRole: APP_ROLE, appPassword: config.appPassword })
+    await migrate(configPath(), APP_ROLE)
     console.log('database is up to date')
+    return 0
+  }
+  if (command === 'login create') {
+    const config = await loadConfig()
+    const secret = config.authSecret ?? fail('DR502', { reason: 'authSecret is not set; run devrounds-admin migrate' })
+    const access = { adminUrl: config.adminDatabaseUrl, secret, port: config.port }
+    const email = required(values, 'email')
+    const password = await withAdminDb((admin) =>
+      createLogin(admin, access, { tenant: required(values, 'tenant'), member: required(values, 'member'), email }),
+    )
+    console.log(`password for ${email} (shown once): ${password}\nsign in at http://127.0.0.1:${config.port}/`)
+    return 0
+  }
+  if (command === 'login remove') {
+    const member = required(values, 'member')
+    await withAdminDb((admin) => removeLogin(admin, { tenant: required(values, 'tenant'), member }))
+    console.log(`removed the login of ${member}`)
     return 0
   }
   if (command === 'bootstrap') {

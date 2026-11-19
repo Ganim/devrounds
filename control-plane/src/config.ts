@@ -8,6 +8,8 @@ import { fail } from './errors/error.ts'
 // otlpEndpoint turns the OpenTelemetry exporter on (telemetry/otel.ts); without it nothing of OpenTelemetry loads.
 // schedulerPollS is how often the scheduler looks at every tenant without a wake (scheduler/scheduler.ts);
 // offerTimeoutS is how long an executor has to answer an Offer.
+// authSecret signs the session cookies (auth/session.ts); `devrounds-admin migrate` writes it, and without it `serve`
+// runs with session login off.
 export type Config = {
   databaseUrl: string
   adminDatabaseUrl: string
@@ -17,6 +19,7 @@ export type Config = {
   schedulerPollS: number
   offerTimeoutS: number
   otlpEndpoint?: string
+  authSecret?: string
   appPassword?: string
 }
 
@@ -26,6 +29,7 @@ const DEFAULT_SCHEDULER_POLL_S = 15
 const DEFAULT_OFFER_TIMEOUT_S = 120
 // Below this an executor busy with a burst of events could miss offers it was about to take.
 const MIN_OFFER_TIMEOUT_S = 5
+const MIN_AUTH_SECRET_LENGTH = 32
 
 export function defaultLogsRoot(): string {
   return join(homedir(), '.devrounds', 'logs')
@@ -53,7 +57,14 @@ async function readConfigFile(path: string): Promise<Partial<Config>> {
 
 export type ServerConfig = Pick<
   Config,
-  'databaseUrl' | 'port' | 'logsRoot' | 'logRetentionDays' | 'schedulerPollS' | 'offerTimeoutS' | 'otlpEndpoint'
+  | 'databaseUrl'
+  | 'port'
+  | 'logsRoot'
+  | 'logRetentionDays'
+  | 'schedulerPollS'
+  | 'offerTimeoutS'
+  | 'otlpEndpoint'
+  | 'authSecret'
 >
 
 function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConfig {
@@ -78,7 +89,15 @@ function serverFields(env: NodeJS.ProcessEnv, file: Partial<Config>): ServerConf
   if (!Number.isInteger(offerTimeoutS) || offerTimeoutS < MIN_OFFER_TIMEOUT_S) {
     fail('DR502', { reason: `offerTimeoutS must be whole seconds >= ${MIN_OFFER_TIMEOUT_S}` })
   }
-  const fields = { databaseUrl, port, logsRoot, logRetentionDays, schedulerPollS, offerTimeoutS }
+  const fields: ServerConfig = { databaseUrl, port, logsRoot, logRetentionDays, schedulerPollS, offerTimeoutS }
+  const authSecret = env.DEVROUNDS_AUTH_SECRET ?? file.authSecret
+  if (authSecret !== undefined && authSecret !== '') {
+    // Better Auth only warns about a shorter secret; refuse it here instead. migrate writes 43 characters.
+    if (typeof authSecret !== 'string' || authSecret.length < MIN_AUTH_SECRET_LENGTH) {
+      fail('DR502', { reason: `authSecret must be at least ${MIN_AUTH_SECRET_LENGTH} characters` })
+    }
+    fields.authSecret = authSecret
+  }
   const otlpEndpoint = env.DEVROUNDS_OTLP_ENDPOINT ?? file.otlpEndpoint
   if (otlpEndpoint === undefined || otlpEndpoint === '') return fields
   const protocol = typeof otlpEndpoint === 'string' ? URL.parse(otlpEndpoint)?.protocol : undefined

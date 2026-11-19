@@ -9,6 +9,7 @@ import {
   TEST_ADMIN_URL,
   TEST_APP_PASSWORD,
   TEST_APP_ROLE,
+  TEST_AUTH_SECRET,
   TEST_DATABASE_URL,
   testDb,
 } from '../test-support/db.ts'
@@ -230,14 +231,17 @@ test('a link must point to exactly one of task or phase', async () => {
 
 test('migrateToLatest refuses an admin connection that is not a superuser', async () => {
   await testDb()
-  await assert.rejects(migrateToLatest(TEST_DATABASE_URL, { appRole: 'devrounds_test_other' }), {
-    code: 'DR502',
-    message: /must be a superuser/,
-  })
+  await assert.rejects(
+    migrateToLatest(TEST_DATABASE_URL, { appRole: 'devrounds_test_other', authSecret: TEST_AUTH_SECRET }),
+    {
+      code: 'DR502',
+      message: /must be a superuser/,
+    },
+  )
 })
 
 test('migrateToLatest refuses the admin role as the app role', async () => {
-  await assert.rejects(migrateToLatest(TEST_ADMIN_URL, { appRole: 'postgres' }), {
+  await assert.rejects(migrateToLatest(TEST_ADMIN_URL, { appRole: 'postgres', authSecret: TEST_AUTH_SECRET }), {
     code: 'DR502',
     message: /must differ from the admin role/,
   })
@@ -251,6 +255,10 @@ test('migrateToLatest does not rewrite an app role whose attributes and password
     (await sql<{ xmin: string }>`select xmin::text from pg_authid where rolname = ${TEST_APP_ROLE}`.execute(admin))
       .rows[0]?.xmin
   const before = await version()
-  await migrateToLatest(TEST_ADMIN_URL, { appRole: TEST_APP_ROLE, appPassword: TEST_APP_PASSWORD })
+  await migrateToLatest(TEST_ADMIN_URL, {
+    appRole: TEST_APP_ROLE,
+    appPassword: TEST_APP_PASSWORD,
+    authSecret: TEST_AUTH_SECRET,
+  })
   assert.equal(await version(), before)
 })

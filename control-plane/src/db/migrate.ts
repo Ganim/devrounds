@@ -2,6 +2,7 @@ import { createHash, createHmac, pbkdf2 as pbkdf2Callback } from 'node:crypto'
 import { promisify } from 'node:util'
 import { type Kysely, sql } from 'kysely'
 import { type MigrationProvider, Migrator } from 'kysely/migration'
+import { migrateAuth } from '../auth/auth-migrate.ts'
 import { fail } from '../errors/error.ts'
 import { createDb } from './connection.ts'
 import { migrations } from './migrations/index.ts'
@@ -9,7 +10,8 @@ import type { Database } from './schema.ts'
 
 const pbkdf2 = promisify(pbkdf2Callback)
 
-export type MigrateOptions = { appRole: string; appPassword?: string }
+// authSecret is the Better Auth secret (server.json authSecret), written by `devrounds-admin migrate` before it migrates.
+export type MigrateOptions = { appRole: string; appPassword?: string; authSecret: string }
 
 // Why a plain identifier: the role name ends up in DDL, which cannot take bind parameters.
 const PLAIN_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/
@@ -118,6 +120,8 @@ export async function migrateToLatest(adminUrl: string, options: MigrateOptions)
         const migrator = new Migrator({ db: conn, provider, migrationTableSchema: MIGRATION_SCHEMA })
         const { error } = await migrator.migrateToLatest()
         if (error) throw error
+        // After ours: 0016_auth creates the schema its tables go into.
+        await migrateAuth(adminUrl, options.appRole, options.authSecret)
       } finally {
         await sql`select pg_advisory_unlock(${MIGRATION_LOCK})`.execute(conn)
       }

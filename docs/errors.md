@@ -162,6 +162,14 @@ Missing or invalid API token.
 
 Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.
 
+## DR402
+
+A session cookie only reads; {method} {route} needs an API token.
+
+### Fix
+
+Send {method} {route} with `Authorization: Bearer <token>` (a token from `devrounds-admin token create`); a signed-in browser can only read.
+
 ## DR450
 
 Pairing code is invalid, expired or already used.

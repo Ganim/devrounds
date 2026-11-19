@@ -3,9 +3,10 @@ import { fileURLToPath } from 'node:url'
 import fastifyStatic from '@fastify/static'
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox'
 import fastifyWebsocket from '@fastify/websocket'
-import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyServerOptions } from 'fastify'
 import type { Kysely } from 'kysely'
 import pkg from '../../package.json' with { type: 'json' }
+import type { SessionAuth } from '../auth/session.ts'
 import type { TokenOwner } from '../auth/tokens.ts'
 import { defaultLogsRoot } from '../config.ts'
 import { toDevRoundsError } from '../convert-error.ts'
@@ -23,6 +24,10 @@ declare module 'fastify' {
   interface FastifyRequest {
     // Set by the member auth hook on every /api/projects and /api/machines route; null elsewhere.
     owner: TokenOwner | null
+  }
+  interface FastifyInstance {
+    // Read by the member auth hook (members.ts); null when session login is off.
+    sessionAuth: SessionAuth | null
   }
 }
 
@@ -43,6 +48,9 @@ export type ServerOptions = {
   scheduler?: SchedulerPoke
   // The executor session ping interval (executor/gateway.ts PING_MS); tests pass a short one.
   pingMs?: number
+  // Session login (auth/session.ts); `serve` builds it only when authSecret is set. Without it /api/auth/* has no route
+  // and the member routes take API tokens only.
+  sessionAuth?: SessionAuth
 }
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL('../../../web/dist', import.meta.url))
@@ -81,6 +89,7 @@ export function buildServer(opts: ServerOptions) {
   }).withTypeProvider<TypeBoxTypeProvider>()
 
   app.decorateRequest('owner', null)
+  app.decorate('sessionAuth', opts.sessionAuth ?? null)
 
   for (const type of ['text/yaml', 'application/yaml']) {
     app.addContentTypeParser(type, { parseAs: 'string' }, (_req, body, done) => done(null, body))
@@ -99,6 +108,9 @@ export function buildServer(opts: ServerOptions) {
   app.setNotFoundHandler(async (request) => fail('DR202', { route: `${request.method} ${request.url}` }))
 
   app.get('/api/health', async () => ({ ok: true, version: pkg.version }))
+
+  const { sessionAuth } = opts
+  if (sessionAuth) app.register(authRoutes, { sessionAuth })
 
   const sessions = opts.sessions ?? new Sessions()
   const limiter = opts.pairingLimiter ?? new PairingLimiter()
@@ -131,6 +143,21 @@ export function buildServer(opts: ServerOptions) {
   })
 
   return app
+}
+
+// Better Auth reads the request body itself from the raw stream, so this plugin's parser leaves every body unread.
+// Encapsulated: the rest of the API keeps its JSON and YAML parsers.
+async function authRoutes(app: FastifyInstance, { sessionAuth }: { sessionAuth: SessionAuth }): Promise<void> {
+  app.removeAllContentTypeParsers()
+  app.addContentTypeParser('*', (_request, _payload, done) => done(null))
+  app.route({
+    method: ['GET', 'POST'],
+    url: '/api/auth/*',
+    handler: async (request, reply) => {
+      reply.hijack()
+      await sessionAuth.handler(request.raw, reply.raw)
+    },
+  })
 }
 
 export type Server = ReturnType<typeof buildServer>

@@ -2,6 +2,7 @@
 import { sql } from 'kysely'
 import { pruneIdempotencyKeys } from './api/idempotency.ts'
 import { buildServer } from './api/server.ts'
+import { startAuth } from './auth/session.ts'
 import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
@@ -28,6 +29,10 @@ async function serve(): Promise<void> {
   // The app logger exists only once the server is built with the telemetry; until then SDK warnings go to stderr.
   let warn = (message: string) => console.error(message)
   const telemetry = await startTelemetry(config.otlpEndpoint, undefined, (message) => warn(message))
+  // Session login only once `devrounds-admin migrate` has written authSecret; until then the token API alone works.
+  const sessionAuth = config.authSecret
+    ? await startAuth({ databaseUrl: config.databaseUrl, port: config.port, secret: config.authSecret })
+    : undefined
   const sessions = new Sessions()
   // The scheduler is built before the server (the gateway pokes it) and logs through the server's logger once it exists.
   const scheduler = new Scheduler({
@@ -41,7 +46,7 @@ async function serve(): Promise<void> {
       error: (data, message) => app.log.error(data, message),
     },
   })
-  const app = buildServer({ db, logsRoot: config.logsRoot, telemetry, sessions, scheduler })
+  const app = buildServer({ db, logsRoot: config.logsRoot, telemetry, sessions, scheduler, sessionAuth })
   warn = (message) => app.log.warn(message)
   // At start and then hourly; a failed prune is logged and the next one tries again.
   const prune = () =>
@@ -63,6 +68,7 @@ async function serve(): Promise<void> {
     process.off('disconnect', stop)
     if (process.connected) process.disconnect()
     await app.close()
+    await sessionAuth?.close()
     await db.destroy()
     await telemetry?.shutdown()
   }

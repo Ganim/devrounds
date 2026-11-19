@@ -26,6 +26,7 @@ import {
   TEST_ADMIN_URL,
   TEST_APP_PASSWORD,
   TEST_APP_ROLE,
+  TEST_AUTH_SECRET,
   TEST_DATABASE_URL,
 } from '../../control-plane/src/test-support/test-db-urls.ts'
 import { footprint, IDLE_MS } from '../footprint.ts'
@@ -154,7 +155,11 @@ async function main(): Promise<void> {
   let supervise: ReturnType<typeof spawn> | undefined
   try {
     log('migrating the test database and bootstrapping a tenant')
-    await migrateToLatest(TEST_ADMIN_URL, { appRole: TEST_APP_ROLE, appPassword: TEST_APP_PASSWORD })
+    await migrateToLatest(TEST_ADMIN_URL, {
+      appRole: TEST_APP_ROLE,
+      appPassword: TEST_APP_PASSWORD,
+      authSecret: TEST_AUTH_SECRET,
+    })
     const { token } = await bootstrap(admin, TEST_APP_ROLE, {
       tenant: `e2e-${randomUUID()}`,
       project: PROJECT,

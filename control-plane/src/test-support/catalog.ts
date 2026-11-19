@@ -3,6 +3,8 @@ import type { Database } from '../db/schema.ts'
 
 // Catalog guards: each returns the offending names, so a test asserts `deepEqual(rows, [])` and a failure lists them.
 // They take a schema so a test can plant a bad table in a throwaway schema without disturbing parallel test files.
+// Schema `auth` (Better Auth's identity tables, migrations/0016_auth.ts) is never checked: it is the accepted exception
+// to the tenant table rule (AGENTS.md), skipped by its name alone, so a tenant table must never be created there.
 
 // Why: a new table without forced RLS and the tenant policy leaks every tenant through the app role. The policy name
 // alone proves nothing, so the USING and WITH CHECK expressions are compared too.

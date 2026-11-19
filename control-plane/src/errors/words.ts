@@ -124,6 +124,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 401,
     keys: [],
   },
+  DR402: {
+    text: 'A session cookie only reads; {method} {route} needs an API token.',
+    hint: 'Send {method} {route} with `Authorization: Bearer <token>` (a token from `devrounds-admin token create`); a signed-in browser can only read.',
+    httpStatus: 403,
+    keys: ['method', 'route'],
+  },
   DR450: {
     text: 'Pairing code is invalid, expired or already used.',
     hint: 'Ask a human member for a new code (`devrounds machine pair-code --name <machine>`) and pair within 10 minutes.',

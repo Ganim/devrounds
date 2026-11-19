@@ -50,7 +50,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 
 ## Accepted P0 exceptions
 
-- The web view uses a pasted API token instead of session login. Removed in P1 (Better Auth).
+- Better Auth identity tables in schema `auth` (no `tenant_id`, no RLS); tenant data never goes there; the schema is
+  created by `devrounds-admin migrate`, never by `serve`.
 - The local Postgres owner is the `postgres` superuser (migrations, admin, tests). Removed in P6 (cloud, managed owner role).
 - The web view polls every 10 s instead of SSE. Removed in P5.
 - `#[allow(unsafe_code)]` on the FFI modules of `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a

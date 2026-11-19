@@ -9,3 +9,5 @@ export const TEST_DATABASE_URL =
   `postgres://${TEST_APP_ROLE}:${TEST_APP_PASSWORD}@127.0.0.1:15433/devrounds_test`
 export const TEST_ADMIN_URL =
   process.env.DEVROUNDS_TEST_ADMIN_DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:15433/devrounds_test'
+// Signs the session cookies of the tests' Better Auth instances (auth/session.ts); any 32+ character value works.
+export const TEST_AUTH_SECRET = 'devrounds-test-auth-secret-0123456789abcdef'

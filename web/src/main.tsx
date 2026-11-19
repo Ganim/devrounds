@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { clearToken, getProject, getToken, type PlanView, setProject, setToken, useRemote } from './api.ts'
+import { getSession, type PlanView, signOut, useRemote } from './api.ts'
 import { BalancePage } from './BalancePage.tsx'
 import { HistoryPage } from './HistoryPage.tsx'
+import { Login } from './Login.tsx'
 import { PhasePage } from './PhasePage.tsx'
 import { RoadmapPage } from './Roadmap.tsx'
 import './style.css'
@@ -28,43 +29,13 @@ function phaseOf(route: string): string | undefined {
   }
 }
 
-function Login({ onDone }: { onDone: () => void }) {
-  const [token, setValue] = useState('')
-  const [project, setKey] = useState(getProject())
-  return (
-    <form
-      className="login"
-      onSubmit={(e) => {
-        e.preventDefault()
-        setToken(token)
-        setProject(project)
-        onDone()
-      }}
-    >
-      <h1>DevRounds</h1>
-      <label>
-        API token
-        <input type="password" value={token} onChange={(e) => setValue(e.target.value)} />
-      </label>
-      <label>
-        Project key
-        <input value={project} onChange={(e) => setKey(e.target.value)} />
-      </label>
-      <button type="submit" disabled={token.trim() === ''}>
-        Open
-      </button>
-      <p className="muted">The token stays in the localStorage of this browser.</p>
-    </form>
-  )
-}
-
-function App({ onSignOut }: { onSignOut: () => void }) {
+function App({ onSignedOut }: { onSignedOut: () => void }) {
   const route = useHash()
   const plan = useRemote<PlanView>('/plan')
-  // A rejected token goes back to the login form instead of showing a dead page.
+  // An expired or removed session goes back to the sign-in form instead of showing a dead page.
   useEffect(() => {
-    if (plan.error?.code === 'DR401') onSignOut()
-  }, [plan.error, onSignOut])
+    if (plan.error?.code === 'DR401') onSignedOut()
+  }, [plan.error, onSignedOut])
 
   const phaseKey = phaseOf(route)
   const totals = (plan.data?.phases ?? []).reduce(
@@ -91,7 +62,7 @@ function App({ onSignOut }: { onSignOut: () => void }) {
         </nav>
         <span className="totals">
           {plan.data ? `${totals.done}/${totals.total} tasks done in ${plan.data.phases.length} phases ` : ''}
-          <button type="button" className="link" onClick={onSignOut}>
+          <button type="button" className="link" onClick={() => signOut().finally(onSignedOut)}>
             sign out
           </button>
         </span>
@@ -102,16 +73,21 @@ function App({ onSignOut }: { onSignOut: () => void }) {
 }
 
 function Root() {
-  const [signedIn, setSignedIn] = useState(getToken() !== '')
+  // null until get-session answers, so a signed-in browser never flashes the form.
+  const [signedIn, setSignedIn] = useState<boolean | null>(null)
+  useEffect(() => {
+    getSession().then(
+      (session) => setSignedIn(session !== null),
+      () => setSignedIn(false),
+    )
+  }, [])
+  const onSignedOut = useCallback(() => setSignedIn(false), [])
+  if (signedIn === null) return <p className="muted">Loading...</p>
   if (!signedIn) return <Login onDone={() => setSignedIn(true)} />
-  return (
-    <App
-      onSignOut={() => {
-        clearToken()
-        setSignedIn(false)
-      }}
-    />
-  )
+  return <App onSignedOut={onSignedOut} />
 }
+
+// The P0 view kept a pasted API token here; session login replaced it, so no browser keeps one around.
+localStorage.removeItem('devrounds.token')
 
 createRoot(document.getElementById('root') as HTMLElement).render(<Root />)

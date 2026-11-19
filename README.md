@@ -18,7 +18,7 @@ Run the control plane on this machine (Windows):
 ```
 pnpm -F web build                  # web/dist is gitignored; without it the server serves no roadmap view
 devrounds-admin init               # ~/.devrounds/server.json
-devrounds-admin migrate
+devrounds-admin migrate            # also adds authSecret (session cookies) to server.json; run it before serve
 devrounds-admin service install    # scheduled task DevRounds: supervisor + server on 127.0.0.1:4992
 ```
 
@@ -29,9 +29,12 @@ devrounds-admin bootstrap --tenant <name> --project devrounds --name DevRounds -
 devrounds-admin token create --tenant <name> --member <agent> --kind agent                      # prints an agent token once
 devrounds login --url http://127.0.0.1:4992 --token <agent token> --project devrounds
 devrounds plan import roadmap/snapshot.yaml
+devrounds-admin login create --tenant <name> --member <human> --email <email>                  # prints a web password once
 ```
 
-The web view takes the human token. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
+The web view at http://127.0.0.1:4992/ signs in with that email and password (Better Auth, schema `auth`). A session
+cookie only reads: every change goes through the CLI or the API with a token (DR402). `devrounds-admin login remove`
+deletes a login and its sessions. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
 removes the task.
 
 ## Executor

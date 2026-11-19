@@ -4,11 +4,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { bootstrap, initConfig } from './admin.ts'
+import { bootstrap, initConfig, migrate } from './admin.ts'
 import { resolveToken } from './auth/tokens.ts'
 import { defaultLogsRoot, loadConfig, loadServerConfig } from './config.ts'
 import { DevRoundsError } from './errors/error.ts'
-import { TEST_APP_ROLE, testDb } from './test-support/db.ts'
+import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, testDb } from './test-support/db.ts'
 
 test('init writes a loadable config and refuses to overwrite it without force', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-init-'))
@@ -75,4 +75,27 @@ test('bootstrap gives each tenant its own project, even with the same key', asyn
   const second = await resolveToken(db, (await run()).token)
   assert.notEqual(first.tenantId, second.tenantId)
   assert.equal(first.member.kind, 'human')
+})
+
+// The secret signs session cookies: a second migrate must keep it, or every browser would be signed out.
+test('migrate writes authSecret once and keeps it', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'devrounds-migrate-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const path = join(dir, 'server.json')
+  // The test role's own password, so this migrate leaves the role as every other test file expects it.
+  const file = {
+    databaseUrl: 'postgres://app@127.0.0.1/devrounds',
+    adminDatabaseUrl: TEST_ADMIN_URL,
+    appPassword: TEST_APP_PASSWORD,
+  }
+  await writeFile(path, JSON.stringify(file))
+
+  await migrate(path, TEST_APP_ROLE, {})
+  const first = JSON.parse(await readFile(path, 'utf8'))
+  assert.match(first.authSecret, /^[A-Za-z0-9_-]{43}$/)
+  assert.deepEqual(first, { ...file, authSecret: first.authSecret })
+  assert.equal((await loadServerConfig({}, path)).authSecret, first.authSecret)
+
+  await migrate(path, TEST_APP_ROLE, {})
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), first)
 })
