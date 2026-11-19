@@ -172,6 +172,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 500,
     keys: ['firstSeq', 'lastSeq', 'run', 'reason', 'next'],
   },
+  DR504: {
+    text: 'Port {port} on 127.0.0.1 is already in use by {holder}.',
+    hint: 'If {holder} is an older control plane (a supervisor can outlive its scheduled task), stop it; otherwise set another port in ~/.devrounds/server.json or DEVROUNDS_PORT. Then start again.',
+    httpStatus: 500,
+    keys: ['port', 'holder'],
+  },
   DR550: {
     text: 'Executor state at {path} is unusable: {reason}.',
     hint: 'Make {path} usable only by the account running the executor (or move it away to start fresh), then try again.',

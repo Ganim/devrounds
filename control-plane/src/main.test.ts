@@ -92,10 +92,12 @@ test('serve listens, and a second serve on the same port exits instead of hangin
   t.after(() => second.child.kill())
   const exited = once(second.child, 'exit')
   const deadline = Date.now() + START_BUDGET_MS
-  while (!second.stderr().includes('EADDRINUSE') && second.child.exitCode === null && Date.now() < deadline) {
+  while (!second.stderr().includes('DR504') && second.child.exitCode === null && Date.now() < deadline) {
     await sleep(200)
   }
-  assert.match(second.stderr(), /EADDRINUSE/)
+  // Says plainly that the port is taken, and by whom where that is cheap to find (Windows).
+  const holder = process.platform === 'win32' ? `process ${first.child.pid}` : 'another process'
+  assert.match(second.stderr(), new RegExp(`DR504: Port ${port} on 127\\.0\\.0\\.1 is already in use by ${holder}\\.`))
   // Once the failure is reported nothing may keep it alive, or the supervisor never gets to restart it.
   const result = await Promise.race([exited, sleep(10_000, 'still running')])
   assert.notEqual(result, 'still running', `a serve that cannot listen must exit:\n${second.stderr()}`)

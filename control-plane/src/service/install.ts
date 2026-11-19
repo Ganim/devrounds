@@ -36,11 +36,17 @@ function stopRunning(t: ServiceTarget): string[] {
 }
 
 // Separate from the task so uninstall can run it when the task is already gone: the supervisor outlives its task.
+// Their serves die with them (node puts its children in a kill-on-close job, and serve also stops when its IPC
+// channel closes), but install starts the new task right after this: it waits until supervisors and serves are gone
+// (up to 10 s each) so the new serve finds the port free.
 export function stopSupervisorScript(t: ServiceTarget): string {
   return [
-    `Get-CimInstance Win32_Process -Filter "name='node.exe'" |`,
-    `  Where-Object { $_.CommandLine -and $_.CommandLine.Contains(${ps(t.supervisor)}) } |`,
-    '  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+    `$nodes = @(Get-CimInstance Win32_Process -Filter "name='node.exe'")`,
+    `$supervisors = @($nodes | Where-Object { $_.CommandLine -and $_.CommandLine.Contains(${ps(t.supervisor)}) })`,
+    '$ids = @($supervisors | ForEach-Object { $_.ProcessId })',
+    '$serves = @($nodes | Where-Object { $ids -contains $_.ParentProcessId })',
+    '$supervisors | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+    '@($supervisors) + @($serves) | ForEach-Object { Wait-Process -Id $_.ProcessId -Timeout 10 -ErrorAction SilentlyContinue }',
   ].join('\n')
 }
 

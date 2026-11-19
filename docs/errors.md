@@ -226,6 +226,14 @@ Log segment {firstSeq}-{lastSeq} of run {run} cannot be read: {reason}.
 
 Read on past it with `devrounds run logs {run} --cursor {next}`; the lines in that segment are not readable.
 
+## DR504
+
+Port {port} on 127.0.0.1 is already in use by {holder}.
+
+### Fix
+
+If {holder} is an older control plane (a supervisor can outlive its scheduled task), stop it; otherwise set another port in ~/.devrounds/server.json or DEVROUNDS_PORT. Then start again.
+
 ## DR550
 
 Executor state at {path} is unusable: {reason}.

@@ -39,6 +39,12 @@ offers and the reserve), queues, jobs, runs and one run with its log, at `#/mach
 and `#/run/<id>`. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and
 removes the task.
 
+The task runs `supervise.ts` under a hidden `conhost`, and `supervise` restarts `serve` when it exits. `supervise`
+exits when the process that started it is gone, and `serve` stops with it, so stopping the task (`schtasks /End`,
+Stop-ScheduledTask) stops both and the next run starts the code on disk. Started by hand from a shell
+(`node control-plane/src/service/supervise.ts`), `supervise` exits when that shell closes. A `serve` that finds its port
+taken exits with DR504, naming the process that holds the port.
+
 ## Executor
 
 The executor is a Rust workspace under `executor/` (Windows 11, toolchain pinned in `executor/rust-toolchain.toml`;

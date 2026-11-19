@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { sql } from 'kysely'
 import { pruneIdempotencyKeys } from './api/idempotency.ts'
 import { buildServer } from './api/server.ts'
@@ -6,7 +8,7 @@ import { startAuth } from './auth/session.ts'
 import { loadServerConfig } from './config.ts'
 import { toDevRoundsError } from './convert-error.ts'
 import { createDb } from './db/connection.ts'
-import { explain } from './errors/error.ts'
+import { explain, fail } from './errors/error.ts'
 import { Sessions } from './executor/gateway.ts'
 import { pruneLogSegments } from './runs/log-store.ts'
 import { Scheduler } from './scheduler/scheduler.ts'
@@ -83,11 +85,34 @@ async function serve(): Promise<void> {
     // Release the prune timer and the IPC channel, or a serve that cannot listen (port taken) prints the error and
     // then stays up forever, and the supervisor waiting for its exit never restarts it.
     await stop()
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      fail('DR504', { port: config.port, holder: await portHolder(config.port) })
+    }
     throw err
   }
   // LISTEN uses the server's own URL on a dedicated connection, outside the pool.
   await scheduler.start(config.databaseUrl)
   await prune()
+}
+
+// Who listens on `port` on loopback or every address, for DR504. netstat, not Get-NetTCPConnection: no PowerShell
+// start (seconds under antivirus), and the columns are the same in every Windows language, unlike the state word
+// (a listener is the row whose remote address is `0.0.0.0:0`). Elsewhere, or when it cannot tell, the text stays
+// generic.
+async function portHolder(port: number): Promise<string> {
+  const unknown = 'another process'
+  if (process.platform !== 'win32') return unknown
+  try {
+    const { stdout } = await promisify(execFile)('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true })
+    for (const line of stdout.split('\n')) {
+      const [proto, local, remote, , pid] = line.trim().split(/\s+/)
+      if (proto !== 'TCP' || remote !== '0.0.0.0:0' || !pid) continue
+      if (local === `127.0.0.1:${port}` || local === `0.0.0.0:${port}`) return `process ${pid.trim()}`
+    }
+  } catch {
+    // Fall back to the generic text: the port being taken is the news, the pid only helps.
+  }
+  return unknown
 }
 
 const PRUNE_EVERY_MS = 60 * 60 * 1000
