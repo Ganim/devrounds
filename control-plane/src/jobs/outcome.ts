@@ -9,7 +9,8 @@ const MAX_BACKOFF_S = 3600
 /**
  * Queues a new run of job `jobId` with `cause` (retry by default) and the next attempt number, placeable from
  * `notBefore` (now by default), and opens the job again; returns the run id. Used by settleJob, by a person's retryRun
- * and, with cause requeue, by the offer expiry (scheduler/expiry.ts).
+ * and, with cause requeue, by the offer expiry (scheduler/expiry.ts), by a revoke for a run that never started and by
+ * retryRun for the skipped dependents it reopens (runs/record.ts).
  */
 export async function queueRetry(
   trx: Trx,
