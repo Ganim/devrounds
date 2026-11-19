@@ -25,6 +25,9 @@ let t: IsolatedTestDb
 
 before(async () => {
   t = await isolatedTestDb('schedules')
+  // The database outlives runs, and fireDueSchedules counts across tenants: schedules left by an earlier run come due
+  // again (their clock moved only an hour or a day ahead) and would be counted in the fires asserted below.
+  await t.admin.updateTable('schedules').set({ enabled: false }).execute()
 })
 
 const projectKey = 'devrounds'
