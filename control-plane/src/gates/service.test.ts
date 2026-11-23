@@ -350,3 +350,44 @@ test('a gate of another tenant answers DR201 kind gate', async () => {
   await assert.rejects(gateView(otherCtx, projectKey, gate.id), failsWith('DR201', { kind: 'gate', key: gate.id }))
   await assert.rejects(gateView(s.ctx, projectKey, 'not-a-uuid'), failsWith('DR201', { kind: 'gate' }))
 })
+
+test('a change announced while the first read is in flight is not missed', async () => {
+  const s = await setup()
+  const gate = await s.submit(ONE)
+  const runId = runOf(gate, 'only')
+  // Holds the runs table, so the read has the gate (running) and then waits on its checks. The gate ends meanwhile and
+  // its run is announced: the read comes back stale, listing no run yet.
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let locked!: () => void
+  const lockTaken = new Promise<void>((resolve) => {
+    locked = resolve
+  })
+  const holding = s.t.admin.transaction().execute(async (trx) => {
+    await sql`lock table runs in access exclusive mode`.execute(trx)
+    locked()
+    await held
+  })
+  await lockTaken
+  const started = Date.now()
+  const waiting = waitForGate(s.ctx, projectKey, gate.id, 20)
+  for (;;) {
+    const { rows } = await sql<{ n: number }>`select count(*)::int as n from pg_locks where not granted`.execute(
+      s.t.admin,
+    )
+    if (rows[0].n > 0) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  await s.t.admin
+    .updateTable('gates')
+    .set({ state: 'passed', finished_at: sql<Date>`now()` })
+    .where('id', '=', gate.id)
+    .execute()
+  runEvents.emit('changed', runId)
+  release()
+  await holding
+  assert.equal((await waiting).state, 'passed')
+  assert.ok(Date.now() - started < 10_000)
+})

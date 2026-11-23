@@ -1,3 +1,4 @@
+import type { GateView } from '../gates/service.ts'
 import { isBlockerOpen, type TaskState } from '../planning/rules.ts'
 import type { CriterionView, PhaseView, PlanView, TaskView } from '../planning/view.ts'
 
@@ -131,4 +132,39 @@ export function planShow(plan: PlanView, opts: { phase?: string }): { body: stri
   if (openPhaseCriteria.length > 0 && !current.tasks.some((t) => isBlockerOpen(t.state))) return checkNext(current.key)
   const blocked = current.tasks.filter((t) => t.state === 'blocked' || (t.state === 'todo' && !startable(t))).length
   return { body, next: `nothing startable: ${blocked} blocked — devrounds plan show --phase ${shellArg(current.key)}` }
+}
+
+// GET /gates/:id (gates/service.ts GateView) as JSON: its dates arrive as ISO strings.
+export type GateJson = Omit<GateView, 'createdAt' | 'finishedAt'> & { createdAt: string; finishedAt: string | null }
+
+const seconds = (ms: number | null) => (ms === null ? null : `${(ms / 1000).toFixed(1)} s`)
+
+// A check that did not end well: its job failed, was skipped or stopped.
+const isBadCheck = (check: GateJson['checks'][number]) => ['failed', 'skipped', 'stopped'].includes(check.state)
+
+function gateCheckLine(check: GateJson['checks'][number]): string {
+  if (check.cachedFrom !== null) return fmt`${check.ref} cached from ${check.cachedFrom}`
+  if (check.runState === 'finished') return fmt`${check.ref} finished ${seconds(check.durationMs)}`
+  return fmt`${check.ref} ${check.runState}`
+}
+
+/** Failed, skipped and stopped checks first (state, class, duration, summary, log command), then the others. */
+export function gateShow(g: GateJson): { failures: string[]; body: string[]; next: string } {
+  const bad = g.checks.filter(isBadCheck)
+  const failures = bad.flatMap((c) => [
+    fmt`${c.ref} ${c.runState} ${c.failureClass} ${seconds(c.durationMs)} ${c.failureSummary}`,
+    `  log: devrounds run logs ${shellArg(c.runId)}`,
+  ])
+  const wall = seconds(g.wallMs)
+  const body = [
+    fmt`gate ${g.id} ${g.state} · ${g.key}${wall === null ? '' : ` · ${wall}`}`,
+    ...g.checks.filter((c) => !bad.includes(c)).map(gateCheckLine),
+  ]
+  const next =
+    bad.length > 0
+      ? `devrounds run logs ${shellArg(bad[0].runId)}`
+      : g.state === 'running'
+        ? `devrounds gate show ${shellArg(g.id)} --wait`
+        : 'devrounds plan show'
+  return { failures, body, next }
 }

@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
+import { parseGateFile } from '../gates/file.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { parseBatchFile } from '../jobs/batch-file.ts'
 import { restrictToOwner } from '../owner-only.ts'
@@ -12,7 +13,17 @@ import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
 import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
-import { type AgentOutput, BODY_BUDGET, fitBody, fmt, planShow, renderAgent, shellArg } from './output.ts'
+import {
+  type AgentOutput,
+  BODY_BUDGET,
+  fitBody,
+  fmt,
+  type GateJson,
+  gateShow,
+  planShow,
+  renderAgent,
+  shellArg,
+} from './output.ts'
 
 // `devrounds`: the agent CLI. It talks only to the control plane's HTTP API (imports here are types and pure
 // modules, never the DB layer), and prints every result in agent output mode (see output.ts).
@@ -319,6 +330,25 @@ type LogPageJson = { lines: { seq: number; text: string }[]; nextCursor: number 
 const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
 const RUN_WAIT_S = 25
+
+// A gate ends when its last check does; `gate run` waits for a busy worktree at most this long unless told otherwise.
+const GATE_LOCK_WAIT_S = 900
+const GATE_WAIT_S = RUN_WAIT_S
+
+async function waitGate(api: Api, first: GateJson, wait: boolean): Promise<GateJson> {
+  let gate = first
+  while (wait && gate.state === 'running') {
+    gate = await api.get<GateJson>(path('gates', gate.id), { wait: String(GATE_WAIT_S) })
+  }
+  return gate
+}
+
+// --json prints the gate view as the server answered it, and nothing else.
+function gateResult(inv: Invocation, gate: GateJson): Result {
+  return inv.values.json === true
+    ? { failures: [], body: [], next: '', raw: `${JSON.stringify(gate)}\n` }
+    : gateShow(gate)
+}
 
 // GET /runs (api/view-routes.ts), dates as ISO strings. The first ask takes the route's largest page.
 type RunListJson = {
@@ -1140,6 +1170,75 @@ export const COMMANDS: Spec[] = [
         ],
         next,
       }
+    },
+  },
+  {
+    path: ['gate', 'run'],
+    usage:
+      'gate run <file.yaml> --cwd <path> [--machine <name>] [--head-sha <sha>] [--dirty] [--wait] ' +
+      '[--wait-lock <s>|--no-wait-lock] [--json]   run the repo checks of the file on one worktree; one gate runs per ' +
+      `worktree, so a busy one is waited for up to ${GATE_LOCK_WAIT_S} s (--wait-lock) or refused with DR308 ` +
+      '(--no-wait-lock); --wait returns once the gate ended; --json prints the gate view',
+    args: 1,
+    options: {
+      cwd: str,
+      machine: str,
+      'head-sha': str,
+      dirty: { type: 'boolean' },
+      wait: { type: 'boolean' },
+      'wait-lock': str,
+      'no-wait-lock': { type: 'boolean' },
+      json: { type: 'boolean' },
+    },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const file = arg(inv, 0, '<file.yaml>')
+      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const waitLock = integer(inv, 'wait-lock', 0)
+      if (inv.values['no-wait-lock'] === true && waitLock !== undefined) {
+        fail('DR101', { path: '--no-wait-lock', reason: 'cannot be combined with --wait-lock' })
+      }
+      const lockS = inv.values['no-wait-lock'] === true ? 0 : (waitLock ?? GATE_LOCK_WAIT_S)
+      const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
+        fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
+      )
+      // Parsed here so a problem points at its line in the file; the server checks the file again.
+      const body = {
+        file: parseGateFile(yaml),
+        cwd,
+        machine: text(inv, 'machine'),
+        headSha: text(inv, 'head-sha'),
+        dirty: inv.values.dirty === true ? true : undefined,
+      }
+      // The server never holds a submit for the lock: it names the holder (DR308), this waits on the holder and
+      // submits again with a new Idempotency-Key (each send makes one), until the deadline.
+      const deadline = Date.now() + lockS * 1000
+      let gate: GateJson | undefined
+      while (gate === undefined) {
+        try {
+          gate = await api.send<GateJson>('POST', '/gates', body)
+        } catch (err) {
+          const left = deadline - Date.now()
+          if (!(err instanceof ApiError) || err.code !== 'DR308' || left <= 0) throw err
+          const holder = err.data.gate
+          if (typeof holder !== 'string') throw err
+          await api.get(path('gates', holder), { wait: String(Math.min(GATE_WAIT_S, Math.ceil(left / 1000))) })
+        }
+      }
+      return gateResult(inv, await waitGate(api, gate, inv.values.wait === true))
+    },
+  },
+  {
+    path: ['gate', 'show'],
+    usage: 'gate show <id> [--wait] [--json]   failed, skipped and stopped checks first; --wait returns once it ended',
+    args: 1,
+    options: { wait: { type: 'boolean' }, json: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const id = arg(inv, 0, '<id>')
+      const wait = inv.values.wait === true
+      const gate = await api.get<GateJson>(path('gates', id), wait ? { wait: String(GATE_WAIT_S) } : {})
+      return gateResult(inv, await waitGate(api, gate, wait))
     },
   },
 ]

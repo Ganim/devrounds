@@ -46,6 +46,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
   skips its dependents), recurring ones with `devrounds schedule set <key> --job-type <jt> --cwd <path> --every <s>`
   (or `--daily HH:MM`), and shape queues with `devrounds queue set <key>`. Automatic retries come from the job type's
   `retry` (`max_attempts`, `backoff_s`, `on`). Read trends with `devrounds indicators`.
+- Run a repo gate (its checks for one worktree, from a YAML file) with `devrounds gate run <file> --cwd <path> --wait`;
+  failures come first, each with its `devrounds run logs` command. Read one later with `devrounds gate show <id>`.
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.

@@ -145,11 +145,14 @@ export async function waitForGate(
   const deadline = Date.now() + waitS * 1000
   let wake: (() => void) | undefined
   let dirty = false
+  // While a read is in flight `runs` is the previous read's (empty for the first), so an event it does not list may
+  // still belong to this gate: any event then counts, and the loop reads again.
+  let reading = false
   // The checks' runs of the last read. A policy retry or a skip is announced together with the run that ended, which is
   // in it, so the next read picks the new run up. A person's retry announces nothing; the wait then ends at waitS.
   let runs = new Set<string>()
   const listener = (changed: string) => {
-    if (!runs.has(changed)) return
+    if (!reading && !runs.has(changed)) return
     dirty = true
     wake?.()
   }
@@ -160,7 +163,13 @@ export async function waitForGate(
   try {
     for (;;) {
       dirty = false
-      const view = await gateView(ctx, projectKey, id)
+      reading = true
+      let view: GateView
+      try {
+        view = await gateView(ctx, projectKey, id)
+      } finally {
+        reading = false
+      }
       runs = new Set(view.checks.map((check) => check.runId))
       const left = deadline - Date.now()
       if (view.state !== 'running' || left <= 0 || signal?.aborted) return view

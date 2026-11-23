@@ -206,6 +206,38 @@ DR308 naming the running one. The gate ends when no check is left open, in the s
 failed or was skipped, else `cancelled` if one was stopped, else `passed`; a gate whose every check is a cache hit
 passes at submit. A policy retry keeps it running; a person's retry after it ended leaves it as it is.
 
+### Gates
+
+```
+devrounds gate run <file.yaml> --cwd <path> [--machine <name>] [--head-sha <sha>] [--dirty] [--wait] [--wait-lock <s>|--no-wait-lock] [--json]
+devrounds gate show <id> [--wait] [--json]
+```
+
+The gate file is a batch file without `cwd`, `machine` and `queue` on the checks:
+
+```yaml
+key: pre-pr # names the gate
+queue: gates # optional, default gates
+checks:
+  - ref: prepare
+    job_type: install
+    cache_key: tree-1 # optional, see the result cache above
+  - ref: test
+    job_type: test
+    depends_on: [prepare]
+```
+
+`gate run` parses the file locally (a problem is DR101 with its line) and submits it. The worktree lock is one running
+gate per project, machine and cwd. When it is held, `gate run` waits on the holder with `GET /gates/<holder>?wait=25`
+and submits again with a new Idempotency-Key, for `--wait-lock <s>` seconds (default 900), then exits 1 with DR308.
+`--no-wait-lock` (or `--wait-lock 0`) exits 1 with DR308 and the holder's id at once. `--wait` then polls the gate
+until it ended. The checks hit the result cache by their `cache_key`, so a gate whose every check is a hit passes at
+submit.
+
+The output lists failed, skipped and stopped checks first (`<ref> <runState> <class> <duration> <summary>`, then
+`log: devrounds run logs <runId>`), then the gate line and the other checks; the last line is the next command.
+`--json` prints the gate view as the control plane answers it (`GET /gates/<id>`), and nothing else.
+
 A schedule queues a job of a job type on a clock:
 
 ```

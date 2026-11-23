@@ -531,3 +531,201 @@ test('idempotency keys older than 24 h are pruned', async () => {
     ['fresh'],
   )
 })
+
+// A gate as `GET /gates/:id` answers it (gates/service.ts GateView, dates as ISO strings).
+const gateJson = (over: Record<string, unknown> = {}) => ({
+  id: 'gate-1',
+  key: 'pre-pr',
+  state: 'running',
+  machine: 'build-01',
+  cwd: 'C:\\src\\app',
+  headSha: null,
+  dirty: null,
+  batch: 'batch-1',
+  createdAt: '2026-11-23T10:00:00.000Z',
+  finishedAt: null,
+  wallMs: null,
+  checks: [] as Record<string, unknown>[],
+  ...over,
+})
+
+const check = (ref: string, over: Record<string, unknown> = {}) => ({
+  ref,
+  jobType: 'check',
+  state: 'open',
+  runId: `run-${ref}`,
+  runState: 'queued',
+  attempt: 1,
+  cachedFrom: null,
+  failureClass: null,
+  failureSummary: null,
+  durationMs: null,
+  ...over,
+})
+
+const GATE_FILE = 'key: pre-pr\nchecks:\n  - ref: lint\n    job_type: lint\n'
+
+const refusal = (res: ServerResponse) =>
+  res
+    .writeHead(409, { 'content-type': 'application/json' })
+    .end(JSON.stringify({ code: 'DR308', text: 'held', hint: 'wait', data: { gate: 'holder-1' } }))
+
+test('gate run --wait-lock waits for the holder to end and then submits', async (t) => {
+  const dir = await scratch('gate-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const file = join(dir, 'gate.yaml')
+  await writeFile(file, GATE_FILE)
+  const posts: { key: string | string[] | undefined; body: unknown }[] = []
+  const gets: string[] = []
+  const fake = await fakeServer((req, res) => {
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', () => {
+        posts.push({ key: req.headers['idempotency-key'], body: JSON.parse(Buffer.concat(chunks).toString()) })
+        if (posts.length === 1) refusal(res)
+        else json(res, gateJson({ checks: [check('lint')] }))
+      })
+      return
+    }
+    gets.push(req.url ?? '')
+    json(res, gateJson({ id: 'holder-1', state: 'passed' }))
+  })
+  t.after(fake.close)
+
+  const res = await runCli(
+    ['gate', 'run', file, '--cwd', 'C:\\src\\app', '--machine', 'build-01', '--head-sha', 'abc1234', '--dirty'],
+    { env: fake.env, configPath: NO_CONFIG },
+  )
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.equal(posts.length, 2)
+  assert.notEqual(posts[0].key, posts[1].key)
+  assert.deepEqual(posts[1].body, {
+    file: { key: 'pre-pr', checks: [{ ref: 'lint', job_type: 'lint' }] },
+    cwd: 'C:\\src\\app',
+    machine: 'build-01',
+    headSha: 'abc1234',
+    dirty: true,
+  })
+  assert.deepEqual(gets, ['/api/projects/alpha/gates/holder-1?wait=25'])
+  assert.match(res.stdout, /^gate gate-1 running · pre-pr/)
+  assert.ok(res.stdout.endsWith('next: devrounds gate show gate-1 --wait\n'), res.stdout)
+})
+
+test('gate run --no-wait-lock exits 1 with DR308 and the holder id at once', async (t) => {
+  const dir = await scratch('gate-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const file = join(dir, 'gate.yaml')
+  await writeFile(file, GATE_FILE)
+  let requests = 0
+  const fake = await fakeServer((_req, res) => {
+    requests++
+    refusal(res)
+  })
+  t.after(fake.close)
+
+  const res = await runCli(['gate', 'run', file, '--cwd', 'C:\\src\\app', '--no-wait-lock'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 1)
+  assert.match(res.stderr, /^DR308 /)
+  assert.equal(requests, 1)
+})
+
+test('gate run past --wait-lock exits 1 with DR308', async (t) => {
+  const dir = await scratch('gate-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const file = join(dir, 'gate.yaml')
+  await writeFile(file, GATE_FILE)
+  const waits: string[] = []
+  const fake = await fakeServer((req, res) => {
+    if (req.method === 'POST') return refusal(res)
+    waits.push(new URL(req.url ?? '', 'http://x').searchParams.get('wait') ?? '')
+    // The holder keeps running: the real route answers once the wait is up.
+    setTimeout(() => json(res, gateJson({ id: 'holder-1' })), 300)
+  })
+  t.after(fake.close)
+
+  const started = Date.now()
+  const res = await runCli(['gate', 'run', file, '--cwd', 'C:\\src\\app', '--wait-lock', '1'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 1)
+  assert.match(res.stderr, /^DR308 /)
+  assert.ok(Date.now() - started < 5000)
+  // A wait never asks for more than the time left.
+  assert.ok(waits.length >= 1 && waits.every((w) => Number(w) <= 1), waits.join())
+})
+
+test('gate show lists failed checks first with class, duration, summary and the run logs command', async (t) => {
+  const fake = await fakeServer((_req, res) =>
+    json(
+      res,
+      gateJson({
+        state: 'failed',
+        finishedAt: '2026-11-23T10:01:00.000Z',
+        wallMs: 60_000,
+        checks: [
+          check('build', { state: 'finished', runState: 'finished', durationMs: 12_300 }),
+          check('test', {
+            state: 'failed',
+            runState: 'failed',
+            failureClass: 'check_red',
+            failureSummary: '3 tests failed',
+            durationMs: 45_600,
+          }),
+          check('e2e', { state: 'skipped', runState: 'skipped' }),
+          check('docs'),
+        ],
+      }),
+    ),
+  )
+  t.after(fake.close)
+
+  const res = await runCli(['gate', 'show', 'gate-1'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.deepEqual(res.stdout.trimEnd().split('\n'), [
+    'test failed check_red 45.6 s 3 tests failed',
+    '  log: devrounds run logs run-test',
+    'e2e skipped - - -',
+    '  log: devrounds run logs run-e2e',
+    'gate gate-1 failed · pre-pr · 60.0 s',
+    'build finished 12.3 s',
+    'docs queued',
+    'next: devrounds run logs run-test',
+  ])
+})
+
+test('a cached check prints cached from its source run', async (t) => {
+  const fake = await fakeServer((_req, res) =>
+    json(
+      res,
+      gateJson({
+        state: 'passed',
+        wallMs: 1000,
+        finishedAt: '2026-11-23T10:00:01.000Z',
+        checks: [check('lint', { state: 'finished', runState: 'finished', cachedFrom: 'run-old' })],
+      }),
+    ),
+  )
+  t.after(fake.close)
+
+  const res = await runCli(['gate', 'show', 'gate-1'], { env: fake.env, configPath: NO_CONFIG })
+  assert.deepEqual(res.stdout.trimEnd().split('\n'), [
+    'gate gate-1 passed · pre-pr · 1.0 s',
+    'lint cached from run-old',
+    'next: devrounds plan show',
+  ])
+})
+
+test('gate show --json prints the gate view only', async (t) => {
+  const view = gateJson({ checks: [check('lint')] })
+  const fake = await fakeServer((_req, res) => json(res, view))
+  t.after(fake.close)
+
+  const res = await runCli(['gate', 'show', 'gate-1', '--json'], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0)
+  assert.equal(res.stdout, `${JSON.stringify(view)}\n`)
+})
