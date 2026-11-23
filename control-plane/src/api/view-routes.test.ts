@@ -92,6 +92,7 @@ test('run list pages newest first with an exact cursor continuation', async () =
   const first = body.runs[0]
   assert.deepEqual(Object.keys(first).sort(), [
     'attempt',
+    'cachedFrom',
     'cause',
     'failureClass',
     'finishedAt',
@@ -116,6 +117,7 @@ test('run list pages newest first with an exact cursor continuation', async () =
       queuedAt: undefined,
       finishedAt: null,
       failureClass: null,
+      cachedFrom: null,
       totalMs: null,
     },
   )

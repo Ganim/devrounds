@@ -16,6 +16,7 @@ import { revokeMachine } from '../machines/service.ts'
 import type { Ctx } from '../planning/resolve.ts'
 import { createProject } from '../planning/service.ts'
 import { putQueue } from '../queues/service.ts'
+import { claimRun } from '../scheduler/claim.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import type { BatchInput } from './batch-file.ts'
@@ -38,6 +39,26 @@ async function setup() {
   const { code } = await createPairingCode(ctx, 'build-01')
   await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
   return { t, tenant, ctx }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Ends run `runId` `ageMs` ago, as the executor's last event would; `cachedFrom` makes it a cache hit itself.
+async function end(
+  t: Awaited<ReturnType<typeof testDb>>,
+  runId: string,
+  o: { state?: 'finished' | 'failed'; ageMs?: number; cachedFrom?: string } = {},
+) {
+  await t.admin
+    .updateTable('runs')
+    .set({
+      state: o.state ?? 'finished',
+      failure_class: o.state === 'failed' ? 'check_red' : null,
+      finished_at: new Date(Date.now() - (o.ageMs ?? 0)),
+      cached_from_run_id: o.cachedFrom ?? null,
+    })
+    .where('id', '=', runId)
+    .execute()
 }
 
 const DIAMOND: BatchInput = {
@@ -347,4 +368,95 @@ test('queue set, batch submit and batch show through the CLI and the API', async
     await app.close()
     await rm(scratch, { recursive: true, force: true })
   }
+})
+
+test('a job whose cache_key matches a finished run of its job type ends finished at submit, cached from that run', async () => {
+  const { t, ctx } = await setup()
+  const source = await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:work', cacheKey: 'tree-1' })
+  assert.equal(source.cachedFrom, null)
+  await end(t, source.id)
+
+  const hit = await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:work', cacheKey: 'tree-1' })
+  assert.deepEqual([hit.state, hit.cachedFrom], ['finished', source.id])
+  assert.ok(hit.timeline.finishedAt)
+  // Nothing ran: no machine, no offer, no start, no exit.
+  assert.deepEqual(
+    [hit.machine, hit.timeline.offeredAt, hit.timeline.startedAt, hit.outcome.exitCode],
+    [null, null, null, null],
+  )
+  const job = await t.admin
+    .selectFrom('runs')
+    .innerJoin('jobs', 'jobs.id', 'runs.job_id')
+    .select(['jobs.state', 'jobs.cache_key'])
+    .where('runs.id', '=', hit.id)
+    .executeTakeFirstOrThrow()
+  assert.deepEqual(job, { state: 'finished', cache_key: 'tree-1' })
+
+  const batch = await submitBatch(ctx, projectKey, {
+    jobs: [
+      { ref: 'a', job_type: 'check', cwd: 'C:work', cache_key: 'tree-1' },
+      { ref: 'b', job_type: 'check', cwd: 'C:work', cache_key: 'tree-2' },
+    ],
+  })
+  assert.deepEqual(
+    batch.jobs.map((j) => [j.ref, j.state, j.cachedFrom]),
+    [
+      ['a', 'finished', source.id],
+      ['b', 'open', null],
+    ],
+  )
+})
+
+test('its dependents are claimable at once', async () => {
+  const { t, tenant, ctx } = await setup()
+  const source = await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:work', cacheKey: 'tree-1' })
+  await end(t, source.id)
+  const batch = await submitBatch(ctx, projectKey, {
+    jobs: [
+      { ref: 'a', job_type: 'check', cwd: 'C:work', cache_key: 'tree-1' },
+      { ref: 'b', job_type: 'lint', cwd: 'C:work', depends_on: ['a'] },
+    ],
+  })
+  const machine = await t.admin
+    .selectFrom('machines')
+    .select('id')
+    .where('tenant_id', '=', tenant.tenantId)
+    .executeTakeFirstOrThrow()
+  const claimed = await withTenant(t.db, tenant.tenantId, (trx) =>
+    claimRun(trx, machine.id, { freeBytes: 64n << 30n, reserveBytes: 0n, offerTimeoutS: 120 }),
+  )
+  assert.equal(claimed?.runId, batch.jobs.find((j) => j.ref === 'b')?.runId)
+})
+
+test('a failed source, a cached source, a source older than 7 days, another job type and another project are no hit', async () => {
+  const { t, ctx } = await setup()
+  const start = (cacheKey: string, jobTypeKey = 'check', key = projectKey) =>
+    enqueueRun(ctx, { projectKey: key, jobTypeKey, cwd: 'C:work', cacheKey })
+
+  await end(t, (await start('failed')).id, { state: 'failed' })
+  // The cache hit is the only run of its key in the window; the run it came from is past it.
+  const past = await start('cached')
+  await end(t, past.id, { ageMs: 8 * DAY_MS })
+  await end(t, (await start('cached')).id, { cachedFrom: past.id })
+  await end(t, (await start('old')).id, { ageMs: 7 * DAY_MS + 60_000 })
+  await end(t, (await start('other-type', 'lint')).id)
+  await createProject(ctx, { key: 'other', name: 'Other' })
+  await putJobType(ctx, 'other', { key: 'check', command: { program: 'pnpm', args: ['check'] } })
+  await end(t, (await start('other-project', 'check', 'other')).id)
+
+  for (const key of ['failed', 'cached', 'old', 'other-type', 'other-project']) {
+    const view = await start(key)
+    assert.deepEqual([key, view.state, view.cachedFrom], [key, 'queued', null])
+  }
+})
+
+test('the newest of two sources is chosen', async () => {
+  const { t, ctx } = await setup()
+  const start = () => enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:work', cacheKey: 'tree-1' })
+  const first = await start()
+  const second = await start()
+  // The run queued first finished last: finished_at decides, not queued_at.
+  await end(t, first.id, { ageMs: 60_000 })
+  await end(t, second.id, { ageMs: DAY_MS })
+  assert.equal((await start()).cachedFrom, first.id)
 })

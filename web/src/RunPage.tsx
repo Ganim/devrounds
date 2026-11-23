@@ -17,8 +17,18 @@ export function RunPage({ runId }: { runId: string }) {
         <>
           <div className="card">
             <h2 style={{ marginTop: 0 }}>
-              <RunState state={r.state} failureClass={r.outcome.failureClass} /> <span className="mono">{r.id}</span>
+              <RunState state={r.state} failureClass={r.outcome.failureClass} cached={r.cachedFrom !== null} />{' '}
+              <span className="mono">{r.id}</span>
             </h2>
+            {r.cachedFrom ? (
+              <div className="muted">
+                cached from{' '}
+                <a href={`#/run/${r.cachedFrom}`} className="mono">
+                  {r.cachedFrom}
+                </a>
+                : nothing ran
+              </div>
+            ) : null}
             <div>
               {r.jobType} · queue {r.queue} · on {r.machine ?? 'no machine yet'} · attempt {r.attempt} ({r.cause})
               {r.task ? ` · task ${r.task}` : ''}

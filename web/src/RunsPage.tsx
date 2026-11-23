@@ -4,11 +4,21 @@ import { Loading, when } from './ui.tsx'
 
 const STATES = ['queued', 'offered', 'admitted', 'running', 'finished', 'failed', 'stopped', 'orphaned', 'skipped']
 
-export function RunState({ state, failureClass }: { state: string; failureClass?: string | null }) {
+// `cached`: a cache hit, which ran nothing (its run points to the run it reuses).
+export function RunState({
+  state,
+  failureClass,
+  cached,
+}: {
+  state: string
+  failureClass?: string | null
+  cached?: boolean
+}) {
   return (
     <>
       <span className={`pill ${state}`}>{state}</span>
       {failureClass ? <span className="muted"> {failureClass}</span> : null}
+      {cached ? <span className="muted"> cached</span> : null}
     </>
   )
 }
@@ -88,7 +98,7 @@ export function RunsPage({ filters }: { filters: URLSearchParams }) {
                   </a>
                 </td>
                 <td>
-                  <RunState state={r.state} failureClass={r.failureClass} />
+                  <RunState state={r.state} failureClass={r.failureClass} cached={r.cachedFrom !== null} />
                 </td>
                 <td>{r.jobType}</td>
                 <td>{r.queue}</td>

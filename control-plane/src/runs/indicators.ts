@@ -5,7 +5,8 @@ import { listMachines } from '../machines/service.ts'
 import { findProject, run, type TenantCtx } from '../planning/resolve.ts'
 import { listQueues } from '../queues/service.ts'
 
-// One row per local period (of finished_at, in the tenant time zone) and job type, over the runs that ended in it.
+// One row per local period (of finished_at, in the tenant time zone) and job type, over the runs that ended in it,
+// cache hits aside.
 export type IndicatorRow = {
   period: string // local YYYY-MM-DD of the day, or of the Monday for weeks
   jobType: string
@@ -88,6 +89,8 @@ export function runIndicators(
         from runs r join job_types jt on jt.id = r.job_type_id
         where r.project_id = ${project.id}
           and r.finished_at is not null
+          -- A cache hit ran nothing (jobs/cache.ts): counting it would inflate runs and pull run times toward zero.
+          and r.cached_from_run_id is null
           and ${local(sql.ref('r.finished_at'))}
             between ${local(sql`${opts.from}::timestamptz`)} and ${local(sql`${opts.to}::timestamptz`)}
       ),

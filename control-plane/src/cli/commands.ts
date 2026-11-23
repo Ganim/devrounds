@@ -363,6 +363,8 @@ function runShow(r: RunJson): Result {
   const res = r.resources
   const body = [
     fmt`run ${r.id} ${r.state}${failed ? '' : exit} · ${r.jobType} on ${r.machine} · attempt ${r.attempt}${r.task ? ` · task ${r.task}` : ''}`,
+    // A cache hit ran nothing: its outcome, log and resources are the source run's.
+    ...(r.cachedFrom ? [fmt`cached from ${r.cachedFrom}`] : []),
     fmt`timeline: queued ${t.queuedAt} · offered ${t.offeredAt} · admitted ${t.admittedAt} · started ${t.startedAt} · finished ${t.finishedAt}`,
     fmt`durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
     fmt`resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds} s · swept ${res.swept} · visible windows ${res.visibleWindows}`,
@@ -383,9 +385,11 @@ function runShow(r: RunJson): Result {
   const id = shellArg(r.id)
   const next = failed
     ? `devrounds run logs ${id}`
-    : TERMINAL_RUN.includes(r.state)
-      ? 'devrounds plan show'
-      : `devrounds run show ${id} --wait`
+    : r.cachedFrom
+      ? `devrounds run show ${shellArg(r.cachedFrom)}`
+      : TERMINAL_RUN.includes(r.state)
+        ? 'devrounds plan show'
+        : `devrounds run show ${id} --wait`
   return { failures, body, next }
 }
 
@@ -1153,7 +1157,7 @@ type QueueJson = {
 }
 type BatchJson = {
   id: string
-  jobs: { ref: string; jobId: string; runId: string; jobType: string; state: string }[]
+  jobs: { ref: string; jobId: string; runId: string; jobType: string; state: string; cachedFrom: string | null }[]
 }
 
 const queueLine = (q: QueueJson) =>
@@ -1186,7 +1190,8 @@ const scheduleLine = (s: ScheduleJson) => {
   ).trimEnd()
 }
 
-const batchJobLine = (j: BatchJson['jobs'][number]) => fmt`${j.ref}  ${j.state} · ${j.jobType} · run ${j.runId}`
+const batchJobLine = (j: BatchJson['jobs'][number]) =>
+  fmt`${j.ref}  ${j.state}${j.cachedFrom ? ' (cached)' : ''} · ${j.jobType} · run ${j.runId}`
 
 type PairingCode = { code: string; expiresAt: string; machineName: string }
 type MachineView = { name: string; os: string; executorVersion: string; lastSeenAt: string | null; connected: boolean }

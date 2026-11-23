@@ -50,6 +50,8 @@ async function setup() {
     cause?: 'first' | 'retry' | 'requeue'
     peak?: number
     cpu?: number
+    // The run it is a cache hit of.
+    cachedFrom?: string
   }
   // Attempts are unique per job; the queued run holds attempt 1.
   let attempt = 1
@@ -62,7 +64,7 @@ async function setup() {
     const offered = admitted - 1000
     const notBefore = offered - (e.waitS ?? 1) * 1000
     const queued = notBefore - (e.backoffS ?? 0) * 1000
-    await t.admin
+    const row = await t.admin
       .insertInto('runs')
       .values({
         tenant_id: tenant.tenantId,
@@ -81,8 +83,11 @@ async function setup() {
         finished_at: new Date(finished),
         peak_private_bytes: e.peak ?? null,
         cpu_seconds: e.cpu ?? null,
+        cached_from_run_id: e.cachedFrom ?? null,
       })
-      .execute()
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    return row.id
   }
   return { t, tenant, ctx, ended }
 }
@@ -327,4 +332,17 @@ test("a retry run's queue wait and its queue's oldest wait exclude its backoff",
     .where('id', '=', runOf('check'))
     .execute()
   assert.equal((await runView(ctx, runOf('check'))).durations.queueWaitMs, 2000)
+})
+
+test('cached runs are not counted in runs, run time or failure classes', async () => {
+  const { ctx, ended } = await setup()
+  const source = await ended({ finishedAt: '2026-11-10T15:00:00Z', runS: 4 })
+  await ended({ finishedAt: '2026-11-10T15:01:00Z', state: 'failed', failureClass: 'check_red', runS: 2 })
+  for (let i = 0; i < 3; i++) await ended({ finishedAt: '2026-11-10T15:02:00Z', runS: 100, cachedFrom: source })
+
+  const [row] = await runIndicators(ctx, projectKey, DAY_10)
+  assert.deepEqual(
+    [row.runs, row.finished, row.failed, row.runTimeP50Ms, row.failureClasses],
+    [2, 1, 1, 3000, { check_red: 1 }],
+  )
 })

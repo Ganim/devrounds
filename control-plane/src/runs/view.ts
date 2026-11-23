@@ -16,6 +16,8 @@ export type RunView = {
   // The run is not placed before this time (a retry's backoff).
   notBefore: Date
   task: string | null
+  // The run this one is a cache hit of (jobs/cache.ts): it ended at insert and nothing ran.
+  cachedFrom: string | null
   timeline: {
     queuedAt: Date
     offeredAt: Date | null
@@ -62,6 +64,7 @@ export type RunSummary = {
   queuedAt: Date
   finishedAt: Date | null
   failureClass: FailureClass | null
+  cachedFrom: string | null
   // queued → finished; null while the run has not ended.
   totalMs: number | null
 }
@@ -126,6 +129,7 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
     cause: row.cause,
     notBefore: row.not_before,
     task: row.task_key,
+    cachedFrom: row.cached_from_run_id,
     timeline: {
       queuedAt: row.queued_at,
       offeredAt: row.offered_at,
