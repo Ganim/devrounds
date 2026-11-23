@@ -129,11 +129,16 @@ export function resolver(trx: Trx, projectId: string) {
   }
 }
 
+type FirstRun = Awaited<ReturnType<typeof firstRunOf>>
+
 // The job and first-run columns of a job: a cache hit ends both at insert (finished, nothing else stamped: no
 // machine, no offer, no start), so claim_run never sees its run and its dependents may be claimed at once.
-async function firstRunOf(trx: Trx, projectId: string, values: JobValues) {
+// `eligible` false (a job behind a job that runs) makes it a plain queued job.
+async function firstRunOf(trx: Trx, projectId: string, values: JobValues, eligible = true) {
   const hit =
-    values.cache_key === null ? null : await findCachedRun(trx, projectId, values.job_type_id, values.cache_key)
+    !eligible || values.cache_key === null
+      ? null
+      : await findCachedRun(trx, projectId, values.job_type_id, values.cache_key)
   if (hit === null) return { hit, job: {}, run: {} }
   return {
     hit,
@@ -194,7 +199,7 @@ export async function insertBatch(
     input.jobs.map((job) => ({ ref: job.ref, dependsOn: job.depends_on ?? [] })),
   )
   const resolve = resolver(trx, projectId)
-  const rows: { values: JobValues; first: Awaited<ReturnType<typeof firstRunOf>> }[] = []
+  const valuesOf = new Map<string, JobValues>()
   for (const [index, job] of input.jobs.entries()) {
     const cwd = job.cwd ?? defaults.cwd ?? fail('DR101', { path: `/jobs/${index}/cwd`, reason: 'is required' })
     const values = await resolve(
@@ -211,26 +216,44 @@ export async function insertBatch(
       `/jobs/${index}`,
     )
     if (job.machine === undefined && defaults.machineId !== undefined) values.machine_id = defaults.machineId
-    rows.push({ values, first: await firstRunOf(trx, projectId, values) })
+    valuesOf.set(job.ref, values)
   }
+  // A job is a hit only when every job it depends on is a hit of this submit too: claim_run gates on direct
+  // dependencies and the skip walk (jobs/outcome.ts endJob) passes only through open jobs, so a finished job behind
+  // one that runs would let its dependents run before it, and keep running them when it fails. Depth first over the
+  // checked (acyclic) graph, so each dependency is decided before its dependents.
+  const dependsOn = new Map(input.jobs.map((job) => [job.ref, job.depends_on ?? []]))
+  const firstOf = new Map<string, FirstRun>()
+  const decide = async (ref: string): Promise<FirstRun> => {
+    const known = firstOf.get(ref)
+    if (known) return known
+    let eligible = true
+    for (const dep of dependsOn.get(ref) ?? []) {
+      if ((await decide(dep)).hit === null) eligible = false
+    }
+    const first = await firstRunOf(trx, projectId, valuesOf.get(ref) as JobValues, eligible)
+    firstOf.set(ref, first)
+    return first
+  }
+  for (const job of input.jobs) await decide(job.ref)
+  const decided = (ref: string) => firstOf.get(ref) as FirstRun
+
   const base = { tenant_id: ctx.tenantId, project_id: projectId }
   const jobs = await trx
     .insertInto('jobs')
     .values(
-      rows.map(({ values, first }, i) => ({
+      input.jobs.map((job) => ({
         ...base,
         created_by: ctx.actor.id,
-        ...values,
-        ...first.job,
+        ...(valuesOf.get(job.ref) as JobValues),
+        ...decided(job.ref).job,
         batch_id: batchId,
-        ref: input.jobs[i].ref,
+        ref: job.ref,
       })),
     )
     .returning(['id', 'ref', 'job_type_id'])
     .execute()
   const idOf = new Map(jobs.map((job) => [job.ref as string, job.id]))
-  // By ref: RETURNING promises no order.
-  const firstOf = new Map(input.jobs.map((job, i) => [job.ref, rows[i].first]))
   await trx
     .insertInto('runs')
     .values(
@@ -238,7 +261,8 @@ export async function insertBatch(
         ...base,
         job_id: job.id,
         job_type_id: job.job_type_id,
-        ...firstOf.get(job.ref as string)?.run,
+        // By ref: RETURNING promises no order.
+        ...decided(job.ref as string).run,
       })),
     )
     .execute()
@@ -251,7 +275,7 @@ export async function insertBatch(
     })),
   )
   if (edges.length > 0) await trx.insertInto('job_dependencies').values(edges).execute()
-  if (rows.some(({ first }) => first.hit === null)) await notifyScheduler(trx, ctx.tenantId)
+  if (input.jobs.some((job) => decided(job.ref).hit === null)) await notifyScheduler(trx, ctx.tenantId)
 }
 
 /** Queues every job of `input` (insertBatch) in a new batch, in one transaction: any error leaves nothing behind. */

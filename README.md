@@ -183,7 +183,8 @@ A batch job can carry a `cache_key` (1 to 200 characters) that names its inputs,
 computes it; DevRounds never reads the repo. When a run of the same project, job type and `cache_key` finished within
 the last 7 days, the new job ends `finished` at submit and its run points to that run (`cached from <id>` in
 `devrounds run show`, `(cached)` in `devrounds batch show`); nothing runs, and the jobs that depend on it can start at
-once. The newest such run is the source. A failed run, a run that was itself a cache hit, an older one, or one of
+once. The newest such run is the source. A job behind a job that runs is never a hit: a job with `depends_on` is a
+hit only when every job it depends on is a hit of the same submit, so the rules above for dependencies still hold. A failed run, a run that was itself a cache hit, an older one, or one of
 another job type or project never answers, so the job runs. Cache hits are not counted in `devrounds indicators`.
 
 A job type can state a starting need with `need_mb` (MiB, 1 to 1048576, like the 512 MiB default). It is the memory the

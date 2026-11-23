@@ -21,6 +21,7 @@ import { withTenant } from '../tenancy/scope.ts'
 import { TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
 import type { BatchInput } from './batch-file.ts'
 import { batchView, enqueueRun, submitBatch } from './enqueue.ts'
+import { settleJob } from './outcome.ts'
 
 const projectKey = 'devrounds'
 
@@ -459,4 +460,88 @@ test('the newest of two sources is chosen', async () => {
   await end(t, first.id, { ageMs: 60_000 })
   await end(t, second.id, { ageMs: DAY_MS })
   assert.equal((await start()).cachedFrom, first.id)
+})
+
+// A source run of `cacheKey` for job type `check`, finished now.
+async function source(t: Awaited<ReturnType<typeof testDb>>, ctx: Ctx, cacheKey: string) {
+  const view = await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:work', cacheKey })
+  await end(t, view.id)
+  return view.id
+}
+
+// Offers the next claimable run of the tenant on build-01 (with room for anything), or null.
+async function claimNext(t: Awaited<ReturnType<typeof testDb>>, tenantId: string) {
+  const machine = await t.admin
+    .selectFrom('machines')
+    .select('id')
+    .where('tenant_id', '=', tenantId)
+    .executeTakeFirstOrThrow()
+  const claimed = await withTenant(t.db, tenantId, (trx) =>
+    claimRun(trx, machine.id, { freeBytes: 64n << 30n, reserveBytes: 0n, offerTimeoutS: 120 }),
+  )
+  return claimed?.runId ?? null
+}
+
+test('a job behind a job that runs is no hit: it waits, and a red dependency skips it and its dependents', async () => {
+  const { t, tenant, ctx } = await setup()
+  await source(t, ctx, 'tree-c')
+  // Every earlier run is ended, so only this batch can be claimed.
+  const batch = await submitBatch(ctx, projectKey, {
+    jobs: [
+      { ref: 'a', job_type: 'lint', cwd: 'C:work' },
+      { ref: 'c', job_type: 'check', cwd: 'C:work', cache_key: 'tree-c', depends_on: ['a'] },
+      { ref: 'd', job_type: 'lint', cwd: 'C:work', depends_on: ['c'] },
+    ],
+  })
+  const runOf = (ref: string) => batch.jobs.find((j) => j.ref === ref)?.runId as string
+  assert.deepEqual(
+    batch.jobs.map((j) => [j.ref, j.state, j.cachedFrom]),
+    [
+      ['a', 'open', null],
+      ['c', 'open', null],
+      ['d', 'open', null],
+    ],
+  )
+  assert.equal(await claimNext(t, tenant.tenantId), runOf('a'))
+  assert.equal(await claimNext(t, tenant.tenantId), null, 'c and d wait for a')
+
+  await withTenant(t.db, tenant.tenantId, async (trx) => {
+    await trx
+      .updateTable('runs')
+      .set({ state: 'failed', failure_class: 'check_red', finished_at: new Date() })
+      .where('id', '=', runOf('a'))
+      .execute()
+    await settleJob(trx, tenant.tenantId, runOf('a'))
+  })
+  const after = await batchView(ctx, projectKey, batch.id)
+  assert.deepEqual(
+    after.jobs.map((j) => [j.ref, j.state]),
+    [
+      ['a', 'failed'],
+      ['c', 'skipped'],
+      ['d', 'skipped'],
+    ],
+  )
+})
+
+test('a chain of hits ends at submit and the job after it is claimable at once', async () => {
+  const { t, tenant, ctx } = await setup()
+  const sourceA = await source(t, ctx, 'tree-a')
+  const sourceC = await source(t, ctx, 'tree-c')
+  const batch = await submitBatch(ctx, projectKey, {
+    jobs: [
+      { ref: 'a', job_type: 'check', cwd: 'C:work', cache_key: 'tree-a' },
+      { ref: 'c', job_type: 'check', cwd: 'C:work', cache_key: 'tree-c', depends_on: ['a'] },
+      { ref: 'd', job_type: 'lint', cwd: 'C:work', depends_on: ['c'] },
+    ],
+  })
+  assert.deepEqual(
+    batch.jobs.map((j) => [j.ref, j.state, j.cachedFrom]),
+    [
+      ['a', 'finished', sourceA],
+      ['c', 'finished', sourceC],
+      ['d', 'open', null],
+    ],
+  )
+  assert.equal(await claimNext(t, tenant.tenantId), batch.jobs.find((j) => j.ref === 'd')?.runId)
 })
