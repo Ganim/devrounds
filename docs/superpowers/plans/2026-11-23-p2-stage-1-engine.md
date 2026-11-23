@@ -592,22 +592,22 @@ Apply before Task 1. Today P2-T03, T07, T08, T09, T10, T11, T15 are `blocked_by:
 types) is stage 2, so none of the stage-1 tasks could start (DR302). Edits: `devrounds dep rm <task> --blocked-by
 P2-T01` for T03, T07, T10, T11; T08, T09, T15 keep it (stage 2). P2-T01 gains `blocked_by: [P2-T20, P2-T18]`.
 
-| Plan task | Key | Action |
-|-|-|-|
-| — | P2-T02 depends_on DAG | Close by evidence: P1 Task 1 (batches, `depends_on`) and P1 Task 4 (skip-on-red) commits, `note:` P1-T43/P1-T45 done |
-| 1 | P2-T17 (new) Projects per tenant and `--project` | Add; criterion: project add creates a second project; `--project` reaches it with one login |
-| 2 | P2-T18 (new) Job args and env values | Add; criteria: args appended only with args_from_job; env only for job_env names, reaching the child; executor without job-env gets no offer |
-| 3 | P2-T19 (new) need_mb and per-machine queue cap | Add; criterion: need_mb holds until 3 samples; machine_concurrency caps a queue per machine. Engine part of T08 and T09 criterion 2 (their proofs stay stage 2) |
-| 4 | P2-T07 Gate result cache | Close; criterion added: a cache_key hit within 7 days ends the check cached from the source run, excluded from indicators |
-| 5 | P2-T03 Per-worktree lock | Close; criteria added: one running gate per normalized worktree, concurrent submits give one gate and DR308; the gate ends with its batch |
-| 6 | P2-T20 (new) gate run and gate show | Add, blocked_by P2-T03; criterion: `gate run --wait` waits for the lock or refuses with `--no-wait-lock`, and prints failures first |
-| 7 | P2-T10 Indicators | Close; criterion added: pass rate per gate key, red per check job type, cache hit share, wall p50/p90 |
-| 8 | P2-T11 DevRounds's own gates | Close; criterion added: the devrounds gate (test, typecheck, lint, test:executor, lint:executor) passes on DevRounds through DevRounds |
-| 9 | P2-T12 Plan links and unphased | Close (existing criterion) |
-| 10 | P2-T21 (new) Finding tasks by source key | Add; criterion: one open task per source key; a closed finding opens a new one |
-| 11 | P2-T13 Daily report | Close (existing criterion), blocked_by P2-T21 |
-| 12 | P2-T14 devlanes sync | Close (existing criterion), blocked_by P2-T21 |
-| 13 | P2-T22 (new) Gate end to end | Add, blocked_by P2-T20, P2-T07; criterion: `pnpm e2e` passes lock contention, a cache hit and job env |
-| 14 | P2-T23 (new) Stage 1 review | Add, blocked_by every stage-1 key; criterion: no open Critical or Important finding |
+| Plan task | Key                                              | Action                                                                                                                                                          |
+| --------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| —         | P2-T02 depends_on DAG                            | Close by evidence: P1 Task 1 (batches, `depends_on`) and P1 Task 4 (skip-on-red) commits, `note:` P1-T43/P1-T45 done                                            |
+| 1         | P2-T17 (new) Projects per tenant and `--project` | Add; criterion: project add creates a second project; `--project` reaches it with one login                                                                     |
+| 2         | P2-T18 (new) Job args and env values             | Add; criteria: args appended only with args_from_job; env only for job_env names, reaching the child; executor without job-env gets no offer                    |
+| 3         | P2-T19 (new) need_mb and per-machine queue cap   | Add; criterion: need_mb holds until 3 samples; machine_concurrency caps a queue per machine. Engine part of T08 and T09 criterion 2 (their proofs stay stage 2) |
+| 4         | P2-T07 Gate result cache                         | Close; criterion added: a cache_key hit within 7 days ends the check cached from the source run, excluded from indicators                                       |
+| 5         | P2-T03 Per-worktree lock                         | Close; criteria added: one running gate per normalized worktree, concurrent submits give one gate and DR308; the gate ends with its batch                       |
+| 6         | P2-T20 (new) gate run and gate show              | Add, blocked_by P2-T03; criterion: `gate run --wait` waits for the lock or refuses with `--no-wait-lock`, and prints failures first                             |
+| 7         | P2-T10 Indicators                                | Close; criterion added: pass rate per gate key, red per check job type, cache hit share, wall p50/p90                                                           |
+| 8         | P2-T11 DevRounds's own gates                     | Close; criterion added: the devrounds gate (test, typecheck, lint, test:executor, lint:executor) passes on DevRounds through DevRounds                          |
+| 9         | P2-T12 Plan links and unphased                   | Close (existing criterion)                                                                                                                                      |
+| 10        | P2-T21 (new) Finding tasks by source key         | Add; criterion: one open task per source key; a closed finding opens a new one                                                                                  |
+| 11        | P2-T13 Daily report                              | Close (existing criterion), blocked_by P2-T21                                                                                                                   |
+| 12        | P2-T14 devlanes sync                             | Close (existing criterion), blocked_by P2-T21                                                                                                                   |
+| 13        | P2-T22 (new) Gate end to end                     | Add, blocked_by P2-T20, P2-T07; criterion: `pnpm e2e` passes lock contention, a cache hit and job env                                                           |
+| 14        | P2-T23 (new) Stage 1 review                      | Add, blocked_by every stage-1 key; criterion: no open Critical or Important finding                                                                             |
 
 Stage 2 keeps P2-T01, T04, T05, T06, T08 (proof), T09 (proof), T15, T16.
