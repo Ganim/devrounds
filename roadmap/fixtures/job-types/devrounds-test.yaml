@@ -1,0 +1,23 @@
+# DevRounds's own test suite. The test database URLs come from the machine env (they carry a password, so never a job value); unset, the tests use their defaults.
+key: devrounds-test
+command:
+  program: pnpm
+  args: [test]
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    DEVROUNDS_TEST_DATABASE_URL,
+    DEVROUNDS_TEST_ADMIN_DATABASE_URL,
+  ]
+timeout_s: 900
+classify:
+  - class: check_red
+    exit_codes: [1]

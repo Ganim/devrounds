@@ -1,0 +1,10 @@
+# DevRounds's own lint (biome).
+key: devrounds-lint
+command:
+  program: pnpm
+  args: [lint]
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP]
+timeout_s: 900
+classify:
+  - class: check_red
+    exit_codes: [1]

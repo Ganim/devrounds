@@ -1,0 +1,10 @@
+# DevRounds's executor tests (cargo, from executor/ via the package script).
+key: devrounds-test-executor
+command:
+  program: pnpm
+  args: [test:executor]
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP, CARGO_HOME, RUSTUP_HOME]
+timeout_s: 1800
+classify:
+  - class: check_red
+    exit_codes: [1]

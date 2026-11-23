@@ -1,0 +1,15 @@
+# DevRounds's own checks: devrounds gate run roadmap/fixtures/gates/devrounds.yaml --cwd <repo> --wait
+key: devrounds
+checks:
+  - ref: typecheck
+    job_type: devrounds-typecheck
+  - ref: lint
+    job_type: devrounds-lint
+  - ref: test
+    job_type: devrounds-test
+  - ref: test-executor
+    job_type: devrounds-test-executor
+  # Same cargo target directory as test-executor, so it runs after it.
+  - ref: lint-executor
+    job_type: devrounds-lint-executor
+    depends_on: [test-executor]

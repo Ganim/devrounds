@@ -238,6 +238,14 @@ The output lists failed, skipped and stopped checks first (`<ref> <runState> <cl
 `log: devrounds run logs <runId>`), then the gate line and the other checks; the last line is the next command.
 `--json` prints the gate view as the control plane answers it (`GET /gates/<id>`), and nothing else.
 
+DevRounds's own checks are `roadmap/fixtures/gates/devrounds.yaml`, with job types `devrounds-*` in `roadmap/fixtures/job-types` (`jobtype set` each one first):
+
+```
+devrounds gate run roadmap/fixtures/gates/devrounds.yaml --cwd <repo> --wait
+```
+
+`devrounds-test` reads `DEVROUNDS_TEST_DATABASE_URL` and `DEVROUNDS_TEST_ADMIN_DATABASE_URL` from the machine env allowlist, so a private test database is set on the executor machine, never as a job value.
+
 A schedule queues a job of a job type on a clock:
 
 ```

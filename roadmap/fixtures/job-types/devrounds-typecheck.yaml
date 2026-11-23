@@ -1,0 +1,10 @@
+# DevRounds's own type check (control-plane and web).
+key: devrounds-typecheck
+command:
+  program: pnpm
+  args: [typecheck]
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP]
+timeout_s: 900
+classify:
+  - class: check_red
+    exit_codes: [1]

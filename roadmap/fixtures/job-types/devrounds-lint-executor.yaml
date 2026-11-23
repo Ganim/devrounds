@@ -1,0 +1,10 @@
+# DevRounds's executor fmt and clippy (cargo).
+key: devrounds-lint-executor
+command:
+  program: pnpm
+  args: [lint:executor]
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP, CARGO_HOME, RUSTUP_HOME]
+timeout_s: 1800
+classify:
+  - class: check_red
+    exit_codes: [1]

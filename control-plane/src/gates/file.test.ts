@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readdir, readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { DevRoundsError } from '../errors/error.ts'
 import { normalizeCwd, parseGateFile } from './file.ts'
@@ -24,4 +25,16 @@ test('a gate file with an unknown field answers DR101 at its path', () => {
     key: 'pre-pr',
     checks: [{ ref: 'lint', job_type: 'lint' }],
   })
+})
+
+test('every gate fixture parses and names job types that exist in roadmap/fixtures/job-types', async () => {
+  const root = new URL('../../../roadmap/fixtures/', import.meta.url)
+  const jobTypes = new Set((await readdir(new URL('job-types/', root))).map((name) => name.replace(/\.yaml$/, '')))
+  const gates = await readdir(new URL('gates/', root))
+  assert.ok(gates.length > 0)
+  for (const name of gates) {
+    const gate = parseGateFile(await readFile(new URL(`gates/${name}`, root), 'utf8'))
+    for (const check of gate.checks)
+      assert.ok(jobTypes.has(check.job_type), `${name}: ${check.ref} -> ${check.job_type}`)
+  }
 })
