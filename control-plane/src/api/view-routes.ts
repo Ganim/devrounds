@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox'
 import { type Kysely, sql } from 'kysely'
 import type { Database, JobState, RunState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
+import { gateIndicators } from '../gates/indicators.ts'
 import type { JobSummary } from '../jobs/enqueue.ts'
 import { findProject, run, type TenantCtx } from '../planning/resolve.ts'
 import { indicatorsNow, runIndicators } from '../runs/indicators.ts'
@@ -247,6 +248,25 @@ export const viewRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = a
     },
     (request) =>
       runIndicators(memberCtx(db, request), request.params.key, periodWindow('indicators window', request.query)),
+  )
+
+  app.get(
+    '/indicators/gates',
+    {
+      schema: {
+        params: Type.Object({ key: Key }),
+        querystring: Type.Object(
+          {
+            period: Type.Unsafe<'day' | 'week'>({ type: 'string', enum: ['day', 'week'], default: 'day' }),
+            from: Type.Optional(Type.String()),
+            to: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    (request) =>
+      gateIndicators(memberCtx(db, request), request.params.key, periodWindow('gate indicators', request.query)),
   )
 
   app.get('/indicators/now', { schema: { params: Type.Object({ key: Key }) } }, (request) =>

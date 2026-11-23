@@ -250,4 +250,5 @@ whose last job is still open lets that fire pass, and one missed while the contr
 is back. `schedule set` replaces the whole definition; saving the same timing again keeps the clock.
 
 `devrounds run list` and `devrounds indicators` (runs, queue wait, run time and failure classes per day or week) read
-what happened; the web view shows the same at `#/queues`, `#/jobs` and `#/runs`.
+what happened; `devrounds indicators --gates` reads gates instead (pass rate, cache hit share and wall time p50/p90
+per gate key, red checks per job type, by the day the gate ended); the web view shows the same at `#/queues`, `#/jobs` and `#/runs`.

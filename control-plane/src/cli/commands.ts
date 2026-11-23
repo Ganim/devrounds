@@ -6,6 +6,7 @@ import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseGateFile } from '../gates/file.ts'
+import type { CheckIndicatorRow, GateIndicatorRow } from '../gates/indicators.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
 import { parseBatchFile } from '../jobs/batch-file.ts'
 import { restrictToOwner } from '../owner-only.ts'
@@ -787,14 +788,41 @@ export const COMMANDS: Spec[] = [
   {
     path: ['indicators'],
     usage:
-      'indicators [--period day|week] [--from <date>] [--to <date>] [--cursor <n>]   runs per local period and job ' +
-      'type, in the tenant time zone; the failure classes of each row with failures first',
+      'indicators [--gates] [--period day|week] [--from <date>] [--to <date>] [--cursor <n>]   runs per local ' +
+      'period and job type, in the tenant time zone; the failure classes of each row with failures first; --gates: ' +
+      'pass rate, cache share and wall time per gate, red checks per job type',
     args: 0,
     pages: true,
-    options: { period: str, from: str, to: str },
+    options: { gates: { type: 'boolean' }, period: str, from: str, to: str },
     run: async (inv, connect) => {
       const api = await connect()
       const query = { period: text(inv, 'period'), from: text(inv, 'from'), to: text(inv, 'to') }
+      if (inv.values.gates === true) {
+        const { gates, checks } = await api.get<{ gates: GateIndicatorRow[]; checks: CheckIndicatorRow[] }>(
+          '/indicators/gates',
+          query,
+        )
+        const pct = (value: number | null) => (value === null ? '-' : `${Math.round(value * 100)} %`)
+        const red = checks.filter((c) => c.red > 0)
+        return {
+          failures: red.map((c) => fmt`${c.period} ${c.jobType} red ${c.red} of ${c.checks} checks`),
+          body: [
+            ...gates.map(
+              (g) =>
+                fmt`${g.period} ${g.gate}  gates ${g.gates} · passed ${g.passed} · failed ${g.failed} · ` +
+                fmt`cancelled ${g.cancelled} · pass rate ${pct(g.passRate)} · cache hits ${pct(g.cacheHitShare)} · ` +
+                `wall p50 ${ms(g.wallP50Ms)} p90 ${ms(g.wallP90Ms)}`,
+            ),
+            ...checks.map(
+              (c) =>
+                fmt`${c.period} ${c.jobType}  checks ${c.checks} · red ${c.red} · failed ${c.failed} · ` +
+                fmt`cached ${c.cached}`,
+            ),
+            ...(gates.length === 0 ? ['no gate ended in this window'] : []),
+          ],
+          next: red.length > 0 ? 'devrounds run list --state failed' : 'devrounds indicators',
+        }
+      }
       const rows = await api.get<IndicatorRow[]>('/indicators', query)
       const failing = rows.filter((r) => Object.keys(r.failureClasses).length > 0)
       const failures = failing.map(
