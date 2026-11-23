@@ -203,11 +203,39 @@ test('POST /runs queues the run and the scheduler sends one Offer with memory_ne
       cwd: 'C:\\work',
       env_allow: ['PATH'],
       timeout_s: 600,
+      env_set: {},
     },
     memory_need: 536870912,
     trace_parent: traceParentOf(view.id),
   })
   // The next frame is the Ack of this event, so no second Offer came before it.
+  await exec.event({ kind: 'Admitted', run: view.id })
+  exec.close()
+})
+
+test("the Offer appends the job's args to the job type's and merges env_set with the job value winning case-insensitively", async () => {
+  const { ctx, machine } = await setup()
+  await putJobType(ctx, projectKey, {
+    key: 'shard',
+    command: { program: 'node', args: ['--test'] },
+    args_from_job: true,
+    job_env: ['DB_NAME'],
+    env_set: { db_name: 'devrounds_test', LOG_LEVEL: 'warn' },
+  })
+  const exec = await executor(machine.token)
+  const view = await enqueueRun(ctx, {
+    projectKey,
+    jobTypeKey: 'shard',
+    machineName: 'build-01',
+    cwd: 'C:\\work',
+    args: ['--shard', '2'],
+    env: { DB_NAME: 'devrounds_test_2' },
+  })
+  const offer = await exec.next()
+  assert.equal(offer.run, view.id)
+  const job = offer.job as { args: string[]; env_set: Record<string, string> }
+  assert.deepEqual(job.args, ['--test', '--shard', '2'])
+  assert.deepEqual(job.env_set, { LOG_LEVEL: 'warn', DB_NAME: 'devrounds_test_2' })
   await exec.event({ kind: 'Admitted', run: view.id })
   exec.close()
 })

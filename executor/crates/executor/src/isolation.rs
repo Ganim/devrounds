@@ -31,7 +31,7 @@ impl std::error::Error for PrepareError {}
 pub trait Isolation {
     /// Builds the launch spec of run `run`, writing output into `run_dir`.
     /// `machine_env` is the executor's own environment; only the names in the
-    /// job's allowlist are copied from it.
+    /// job's allowlist are copied from it, then the job's `env_set` values.
     fn prepare(
         &self,
         run: &str,
@@ -76,7 +76,13 @@ impl Isolation for NoneIsolation {
             })
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        env.insert(RUN_ID_VAR.to_owned(), run.to_owned());
+        // A value the job sets wins over the machine's, under the job's
+        // spelling: Windows would see `Path` and `PATH` as one variable.
+        for (name, value) in &job.env_set {
+            set_ignoring_case(&mut env, name, value);
+        }
+        // Last, so no `env_set` entry in any spelling can replace it.
+        set_ignoring_case(&mut env, RUN_ID_VAR, run);
 
         Ok(LaunchSpec {
             program: job.program.clone(),
@@ -89,4 +95,10 @@ impl Isolation for NoneIsolation {
             },
         })
     }
+}
+
+/// Inserts `name`, first removing every key equal to it ignoring ASCII case.
+fn set_ignoring_case(env: &mut BTreeMap<String, String>, name: &str, value: &str) {
+    env.retain(|key, _| !key.eq_ignore_ascii_case(name));
+    env.insert(name.to_owned(), value.to_owned());
 }

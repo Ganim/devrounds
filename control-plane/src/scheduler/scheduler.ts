@@ -147,11 +147,18 @@ export class Scheduler {
   }
 
   // Machines of the tenant with a recent report, most room first: free minus reserve minus the needs already offered.
+  // An executor without job-env would drop the Offer's env_set and run the job without its values, so it gets none.
   async #placeable(tenantId: string): Promise<Placeable[]> {
     const now = this.#now()
     const live = this.#o.sessions
       .list()
-      .filter((s) => s.tenantId === tenantId && s.report !== undefined && now - s.report.at <= REPORT_FRESH_MS)
+      .filter(
+        (s) =>
+          s.tenantId === tenantId &&
+          s.features.includes('job-env') &&
+          s.report !== undefined &&
+          now - s.report.at <= REPORT_FRESH_MS,
+      )
     if (live.length === 0) return []
     const inFlight = await withTenant(this.#o.db, tenantId, (trx) =>
       trx

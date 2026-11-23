@@ -462,7 +462,15 @@ test('after HelloAck, the Offer of every run of this machine still offered is se
   assert.deepEqual(await again.next(), {
     type: 'Offer',
     run: offered,
-    job: { job_type: 'check', program: 'pnpm', args: ['check'], cwd: 'C:\\w', env_allow: ['PATH'], timeout_s: 600 },
+    job: {
+      job_type: 'check',
+      program: 'pnpm',
+      args: ['check'],
+      cwd: 'C:\\w',
+      env_allow: ['PATH'],
+      timeout_s: 600,
+      env_set: {},
+    },
     memory_need: 536870912,
     // The same traceparent as the first Offer, rebuilt from runs.trace_id and trace_span_id.
     trace_parent: traceParentOf(offered),
@@ -551,7 +559,15 @@ test('HelloAck lists withdrawn runs of the last 7 days only to an executor with 
   assert.deepEqual(await session.next(), {
     type: 'Offer',
     run: offered,
-    job: { job_type: 'check', program: 'pnpm', args: ['check'], cwd: 'C:\\w', env_allow: ['PATH'], timeout_s: 600 },
+    job: {
+      job_type: 'check',
+      program: 'pnpm',
+      args: ['check'],
+      cwd: 'C:\\w',
+      env_allow: ['PATH'],
+      timeout_s: 600,
+      env_set: {},
+    },
     memory_need: 536870912,
     trace_parent: traceParentOf(offered),
   })

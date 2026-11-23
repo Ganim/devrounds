@@ -126,6 +126,7 @@ fn offer(run: &str, program: String, args: &[&str], cwd: &Path, timeout_s: u32) 
             cwd: cwd.display().to_string(),
             env_allow: ENV_ALLOW.map(str::to_owned).into(),
             timeout_s,
+            env_set: Default::default(),
         },
         memory_need: DEFAULT_MEMORY_NEED,
         trace_parent: None,

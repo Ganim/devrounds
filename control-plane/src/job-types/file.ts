@@ -8,6 +8,19 @@ import { type Issue, parseYamlFile } from '../yaml-file.ts'
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const OneOf = <T extends string[]>(...words: [...T]) => Type.Union(words.map((word) => Type.Literal(word)))
 
+// Limits shared by a job's args and env (jobs/batch-file.ts, POST /runs).
+export const EnvName = Type.String({ pattern: '^[A-Za-z_][A-Za-z0-9_]{0,199}$' })
+export const EnvValues = Type.Record(EnvName, Type.String({ maxLength: 4096 }), {
+  maxProperties: 50,
+  additionalProperties: false,
+})
+export const JobArgs = Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 200 })
+// The executor sets it to the run's id (executor/crates/executor/src/isolation.rs); nothing else may.
+const RUN_ID_VAR = 'DEVROUNDS_RUN_ID'
+
+// Windows compares variable names ignoring case, so every check on names does too (names are ASCII by EnvName).
+export const sameEnvName = (a: string, b: string) => a.toUpperCase() === b.toUpperCase()
+
 const Rule = Type.Object(
   {
     class: OneOf(...RULE_CLASSES),
@@ -27,6 +40,12 @@ export const JobTypeFileSchema = Type.Object(
     ),
     // Names of the machine's environment variables the run may see; values never leave the machine.
     env: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    // A job may append arguments to command.args (its `args`).
+    args_from_job: Type.Optional(Type.Boolean()),
+    // Names a job may give values (its `env`), and values every run gets. Both are stored and sent to the machine, so
+    // they carry names and flags, never secrets; a secret stays in the machine's environment behind `env`.
+    job_env: Type.Optional(Type.Array(EnvName, { maxItems: 50 })),
+    env_set: Type.Optional(EnvValues),
     timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 2147483647 })),
     orphan_policy: Type.Optional(OneOf('kill', 'let_finish')),
     classify: Type.Optional(Type.Array(Rule)),
@@ -55,10 +74,13 @@ export type JobTypeDef = {
   orphan_policy: 'kill' | 'let_finish'
   classify: Static<typeof Rule>[]
   retry: { max_attempts: number; backoff_s: number; on: FailureClass[] }
+  args_from_job: boolean
+  job_env: string[]
+  env_set: Record<string, string>
 }
 
 // Schema first, then what a schema cannot say: a rule needs a condition (or it would swallow every failure), a
-// pattern must compile, and cancelled (a person stopped the run) is never retried.
+// pattern must compile, cancelled (a person stopped the run) is never retried, and the run id is the executor's.
 export function findJobTypeIssue(value: unknown): Issue | null {
   const first = Value.Errors(JobTypeFileSchema, value).First()
   if (first) return { path: first.path || '/', reason: first.message }
@@ -74,7 +96,13 @@ export function findJobTypeIssue(value: unknown): Issue | null {
       }
     }
   }
-  const on = (value as JobTypeFile).retry?.on ?? []
+  const file = value as JobTypeFile
+  const isRunId = (name: string) => sameEnvName(name, RUN_ID_VAR)
+  const named = Object.keys(file.env_set ?? {}).find(isRunId)
+  if (named !== undefined) return { path: `/env_set/${named}`, reason: 'set by the executor' }
+  const listed = (file.job_env ?? []).findIndex(isRunId)
+  if (listed !== -1) return { path: `/job_env/${listed}`, reason: 'set by the executor' }
+  const on = file.retry?.on ?? []
   const cancelled = on.indexOf('cancelled')
   if (cancelled !== -1) return { path: `/retry/on/${cancelled}`, reason: 'cancelled is never retried' }
   return null
@@ -93,6 +121,9 @@ export function withDefaults(file: JobTypeFile): JobTypeDef {
       backoff_s: file.retry?.backoff_s ?? 30,
       on: file.retry?.on ?? ['infra'],
     },
+    args_from_job: file.args_from_job ?? false,
+    job_env: file.job_env ?? [],
+    env_set: file.env_set ?? {},
   }
 }
 

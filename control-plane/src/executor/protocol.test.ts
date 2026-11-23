@@ -53,6 +53,13 @@ test('every fixture validates against the TypeBox schema', async () => {
   }
 })
 
+test('the Offer fixture carries env_set, and an Offer without it does not validate', async () => {
+  const offer = (await fixtures()).get('Offer') as { job: Record<string, unknown> }
+  assert.deepEqual(offer.job.env_set, { DB_NAME: 'devrounds_test_1' })
+  const { env_set: _, ...older } = offer.job
+  assert.equal(Value.Check(CONTROL_PLANE_MESSAGES.Offer, { ...offer, job: older }), false)
+})
+
 test('a known type with a bad field answers DR150 at its path', async () => {
   const all = await fixtures()
   const report = { ...(all.get('MachineReport') as object), running: 1.5 }

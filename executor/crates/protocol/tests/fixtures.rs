@@ -80,6 +80,34 @@ fn hello_ack_without_withdrawn_reads_as_empty() {
 }
 
 #[test]
+/// The Offer fixture carries `env_set`; a control plane that predates
+/// feature `job-env` sends none, which reads as no values.
+fn offer_env_set_reads_from_the_fixture_and_defaults_to_empty() {
+    let text = fixtures()
+        .into_iter()
+        .find(|(name, _)| name == "Offer")
+        .map(|(_, text)| text)
+        .expect("Offer fixture");
+    match decode_server(&text) {
+        Ok(ServerMessage::Offer(offer)) => {
+            assert_eq!(offer.job.env_set["DB_NAME"], "devrounds_test_1");
+        }
+        other => panic!("expected an Offer, got {other:?}"),
+    }
+    let mut value: Value = serde_json::from_str(&text).expect("fixture is JSON");
+    value["job"]
+        .as_object_mut()
+        .expect("job")
+        .remove("env_set")
+        .expect("env_set");
+    let older = value.to_string();
+    match decode_server(&older) {
+        Ok(ServerMessage::Offer(offer)) => assert!(offer.job.env_set.is_empty(), "{older}"),
+        other => panic!("expected an Offer, got {other:?}"),
+    }
+}
+
+#[test]
 /// Fixture names cover every message type and event kind, and nothing else.
 fn every_message_type_has_a_fixture() {
     let expected: BTreeSet<String> = CLIENT_TYPES

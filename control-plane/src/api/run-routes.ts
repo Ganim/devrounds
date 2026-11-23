@@ -4,7 +4,7 @@ import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
-import { parseJobTypeFile } from '../job-types/file.ts'
+import { EnvValues, JobArgs, parseJobTypeFile } from '../job-types/file.ts'
 import { getJobType, putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
 import { type PreparedStop, prepareStop, runEvents, waitForRun } from '../runs/dispatch.ts'
@@ -58,13 +58,15 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
             machine: Type.Optional(Key),
             queue: Type.Optional(Key),
             task: Type.Optional(Key),
+            args: Type.Optional(JobArgs),
+            env: Type.Optional(EnvValues),
           },
           { additionalProperties: false },
         ),
       },
     },
     (request, reply) => {
-      const { jobType, cwd, machine, queue, task } = request.body
+      const { jobType, cwd, machine, queue, task, args, env } = request.body
       // The Offer comes from the scheduler, woken at the commit, so a replayed key offers nothing again.
       return mutateIdempotent(db, request, reply, (ctx) =>
         enqueueRun(ctx, {
@@ -74,6 +76,8 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
           machineName: machine,
           queueKey: queue,
           taskKey: task,
+          args,
+          env,
         }),
       )
     },

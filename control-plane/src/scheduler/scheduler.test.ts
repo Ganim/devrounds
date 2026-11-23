@@ -103,11 +103,12 @@ async function setup(names = ['build-01']) {
 type Message = { type: string; run?: string; memory_need?: number; [field: string]: unknown }
 
 // The executor's side of a session, past HelloAck, with a MachineReport of `available` of 32 GiB free unless
-// `available` is null (no report).
+// `available` is null (no report), speaking `features`.
 async function executor(
   cp: { host: string; sessions: Sessions },
   machine: { token: string; machineId: string },
   available: number | null = 16 * GIB,
+  features: readonly string[] = FEATURES,
 ) {
   // Node's WebSocket (undici) takes `{ headers }`; the DOM lib's type only knows protocols.
   const ws = new WebSocket(`ws://${cp.host}/api/executor/connect`, {
@@ -137,7 +138,7 @@ async function executor(
     }
     return inbox.shift() as Message
   }
-  ws.send(JSON.stringify({ type: 'Hello', protocol: 1, version: '0.1.0', features: [...FEATURES], boot_id: 'boot-1' }))
+  ws.send(JSON.stringify({ type: 'Hello', protocol: 1, version: '0.1.0', features: [...features], boot_id: 'boot-1' }))
   const ack = await next()
   assert.equal(ack.type, 'HelloAck')
   let seq = Number(ack.last_seq)
@@ -243,6 +244,20 @@ test('a machine without a report in the last 30 s gets no offer', async () => {
   await silent.event({ kind: 'Probe' })
   assert.deepEqual(offersOf(silent.seen, run), [])
   silent.close()
+})
+
+test('a session without job-env gets no offer', async () => {
+  // Such an executor would drop env_set and run the job without the values it was given.
+  const cp = await controlPlane()
+  const { ctx, machines, enqueue } = await setup()
+  const older = FEATURES.filter((feature) => feature !== 'job-env')
+  const exec = await executor(cp, machines[0], 16 * GIB, older)
+  const run = await enqueue()
+  await cp.scheduler.tick()
+  await exec.event({ kind: 'Probe' })
+  assert.deepEqual(offersOf(exec.seen, run), [])
+  assert.equal((await runView(ctx, run)).state, 'queued')
+  exec.close()
 })
 
 test('placement prefers the machine with more free memory', async () => {

@@ -272,7 +272,7 @@ test('stop of an unaccepted offer on a live session ends it at once, and the exp
   const socket = { send: (text: string) => sent.push(text), close: () => {} } as unknown as Parameters<
     Sessions['open']
   >[1]['socket']
-  sessions.open(s.machine.machineId, { tenantId: s.tenant.tenantId, socket })
+  sessions.open(s.machine.machineId, { tenantId: s.tenant.tenantId, socket, features: [...FEATURES] })
   const run = await s.enqueue()
   assert.equal(await s.claim(1), run)
 

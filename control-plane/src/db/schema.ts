@@ -1,11 +1,14 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
-// 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts and 0014_schedules.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
+// 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts and 0018_job_env.ts (0002, 0003
+// and 0007 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
 type Json = ColumnType<unknown, string, string>
+// A jsonb column with a default.
+type OptionalJson = ColumnType<unknown, string | undefined, string>
 
 export type MemberKind = 'human' | 'agent'
 export type PhaseState = 'open' | 'delivered'
@@ -194,6 +197,10 @@ export interface JobTypesTable {
   max_attempts: Generated<number>
   retry_backoff_s: Generated<number>
   retry_on: ColumnType<FailureClass[], FailureClass[] | undefined, FailureClass[]>
+  args_from_job: Generated<boolean>
+  job_env: ColumnType<string[], string[] | undefined, string[]>
+  // Record<string, string>, set on every run of the job type.
+  env_set: OptionalJson
   updated_at: Timestamp
 }
 
@@ -212,6 +219,9 @@ export interface JobsTable {
   state: Generated<JobState>
   created_by: string
   created_at: Timestamp
+  // string[] appended to the job type's args, and Record<string, string> over its env_set (0018).
+  args: OptionalJson
+  env: OptionalJson
   // The schedule whose fire made the job.
   schedule_id: string | null
 }

@@ -45,6 +45,9 @@ test('a job type file round-trips through the project', async () => {
     orphan_policy: 'kill',
     classify: [],
     retry: { max_attempts: 1, backoff_s: 30, on: ['infra'] },
+    args_from_job: false,
+    job_env: [],
+    env_set: {},
   })
   await assert.rejects(
     putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),
@@ -84,4 +87,33 @@ test('retry.on cannot name cancelled (DR101 at /retry/on/0)', () => {
     () => parseJobTypeFile(text),
     (err: unknown) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === '/retry/on/0',
   )
+})
+
+test('env_set and job_env round-trip through putJobType and getJobType', async () => {
+  const { db, newTenant } = await testDb()
+  const tenant = await newTenant()
+  const ctx: Ctx = { db, tenantId: tenant.tenantId, actor: { id: tenant.human.id, kind: 'human' } }
+  await createProject(ctx, { key: 'devrounds', name: 'DevRounds' })
+  const def = parseJobTypeFile(
+    'key: test\ncommand: { program: node }\nargs_from_job: true\njob_env: [DB_NAME]\nenv_set: { LOG_LEVEL: warn }\n',
+  )
+  assert.deepEqual([def.args_from_job, def.job_env, def.env_set], [true, ['DB_NAME'], { LOG_LEVEL: 'warn' }])
+  await putJobType(ctx, 'devrounds', def)
+  assert.deepEqual(await getJobType(ctx, 'devrounds', 'test'), def)
+})
+
+test('DEVROUNDS_RUN_ID in env_set answers DR101 at /env_set/DEVROUNDS_RUN_ID', () => {
+  for (const [body, path] of [
+    ['env_set: { DEVROUNDS_RUN_ID: x }', '/env_set/DEVROUNDS_RUN_ID'],
+    ['job_env: [DB_NAME, devrounds_run_id]', '/job_env/1'],
+  ]) {
+    assert.throws(
+      () => parseJobTypeFile(`key: check\ncommand: { program: pnpm }\n${body}\n`),
+      (err: unknown) =>
+        err instanceof DevRoundsError &&
+        err.code === 'DR101' &&
+        err.data.path === path &&
+        String(err.data.reason).startsWith('set by the executor'),
+    )
+  }
 })

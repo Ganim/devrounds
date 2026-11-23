@@ -855,16 +855,35 @@ export const COMMANDS: Spec[] = [
   {
     path: ['run', 'start'],
     usage:
-      'run start <jobType> --cwd <path> [--machine <name>] [--queue <key>] [--task <key>]   ' +
-      'queue a run; the scheduler offers it to a machine with room, --machine pins it',
+      'run start <jobType> --cwd <path> [--machine <name>] [--queue <key>] [--task <key>] [--arg <a>]... ' +
+      '[--env NAME=value]...   queue a run; the scheduler offers it to a machine with room, --machine pins it; ' +
+      '--arg and --env need a job type that allows them (args_from_job, job_env)',
     args: 1,
-    options: { machine: str, cwd: str, queue: str, task: str },
+    options: { machine: str, cwd: str, queue: str, task: str, arg: many, env: many },
     run: async (inv, connect) => {
       const api = await connect()
       const jobType = arg(inv, 0, '<jobType>')
       const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
       const machine = text(inv, 'machine')
-      const body = { jobType, cwd, machine, queue: text(inv, 'queue'), task: text(inv, 'task') }
+      const pairs = list(inv, 'env')
+      const env =
+        pairs &&
+        Object.fromEntries(
+          pairs.map((pair) => {
+            const at = pair.indexOf('=')
+            if (at === -1) fail('DR101', { path: '--env', reason: `${pair} is not NAME=value` })
+            return [pair.slice(0, at), pair.slice(at + 1)]
+          }),
+        )
+      const body = {
+        jobType,
+        cwd,
+        machine,
+        queue: text(inv, 'queue'),
+        task: text(inv, 'task'),
+        args: list(inv, 'arg'),
+        env,
+      }
       const r = await api.send<RunJson>('POST', '/runs', body)
       // The run is placed later, so the machine printed is the pin, if any.
       const on = machine === undefined ? '' : fmt` on ${machine}`

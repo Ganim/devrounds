@@ -134,6 +134,60 @@ test('a job type not listed by the queue answers DR153', async () => {
   assert.equal(view.queue, 'fast')
 })
 
+const DR101At = (path: string, reason: string) => (err: unknown) =>
+  err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === path && err.data.reason === reason
+
+test('job args on a job type without args_from_job answer DR101 at /jobs/0/args', async () => {
+  const { ctx } = await setup()
+  await assert.rejects(
+    submitBatch(ctx, projectKey, { jobs: [{ ref: 'a', job_type: 'check', cwd: 'C:\\work', args: ['--x'] }] }),
+    DR101At('/jobs/0/args', 'job type check does not take job args (args_from_job)'),
+  )
+})
+
+test('an env name outside job_env answers DR101 at /jobs/1/env/OTHER and inserts nothing', async () => {
+  const { t, tenant, ctx } = await setup()
+  await putJobType(ctx, projectKey, { key: 'test', command: { program: 'node' }, job_env: ['DB_NAME'] })
+  const batch: BatchInput = {
+    jobs: [
+      { ref: 'a', job_type: 'test', cwd: 'C:\\work', env: { DB_NAME: 'one' } },
+      { ref: 'b', job_type: 'test', cwd: 'C:\\work', env: { DB_NAME: 'two', OTHER: 'x' } },
+    ],
+  }
+  await assert.rejects(
+    submitBatch(ctx, projectKey, batch),
+    DR101At('/jobs/1/env/OTHER', 'job type test does not let a job set OTHER (job_env)'),
+  )
+  for (const table of ['job_batches', 'jobs', 'runs'] as const) {
+    const rows = await t.admin.selectFrom(table).select('tenant_id').where('tenant_id', '=', tenant.tenantId).execute()
+    assert.equal(rows.length, 0, table)
+  }
+})
+
+test('db_name is accepted when job_env lists DB_NAME', async () => {
+  const { t, ctx } = await setup()
+  await putJobType(ctx, projectKey, {
+    key: 'test',
+    command: { program: 'node' },
+    args_from_job: true,
+    job_env: ['DB_NAME'],
+  })
+  const view = await enqueueRun(ctx, {
+    projectKey,
+    jobTypeKey: 'test',
+    cwd: 'C:\\work',
+    args: ['--shard', '1'],
+    env: { db_name: 'devrounds_test_1' },
+  })
+  const job = await t.admin
+    .selectFrom('runs')
+    .innerJoin('jobs', 'jobs.id', 'runs.job_id')
+    .select(['jobs.args', 'jobs.env'])
+    .where('runs.id', '=', view.id)
+    .executeTakeFirstOrThrow()
+  assert.deepEqual(job, { args: ['--shard', '1'], env: { db_name: 'devrounds_test_1' } })
+})
+
 test('an unknown queue answers DR201 kind queue', async () => {
   const { ctx } = await setup()
   await assert.rejects(
@@ -267,6 +321,13 @@ test('queue set, batch submit and batch show through the CLI and the API', async
     assert.match(list.stdout, /^fast {2}priority -1 · .* · depth 1 · in flight 0 · /m)
     assert.match(list.stdout, /^default {2}priority 0 · .* · depth 1 · in flight 0 · /m)
     assert.match(list.stdout, /^next: devrounds batch submit <file\.yaml>$/m)
+
+    const noValue = await cli('run', 'start', 'check', '--cwd', 'C:/w', '--env', 'DB_NAME')
+    assert.equal(noValue.exitCode, 2, noValue.stdout)
+    assert.match(noValue.stderr + noValue.stdout, /DR101.*--env/)
+    const notAllowed = await cli('run', 'start', 'check', '--cwd', 'C:/w', '--arg=--shard', '--env', 'DB_NAME=x')
+    assert.equal(notAllowed.exitCode, 2, notAllowed.stdout)
+    assert.match(notAllowed.stderr + notAllowed.stdout, /DR101.*\/args/)
 
     const bad = await cli('batch', 'submit', file.replace('batch.yaml', 'missing.yaml'))
     assert.equal(bad.exitCode, 2, bad.stderr)

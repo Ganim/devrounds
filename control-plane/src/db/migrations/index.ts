@@ -16,6 +16,7 @@ import { schedules } from './0014_schedules.ts'
 import { idempotencySweep } from './0015_idempotency_sweep.ts'
 import { auth } from './0016_auth.ts'
 import { runsPlacedHaveMachine } from './0017_runs_placed_have_machine.ts'
+import { jobEnv } from './0018_job_env.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -40,5 +41,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0015_idempotency_sweep': idempotencySweep(options),
     '0016_auth': auth(options),
     '0017_runs_placed_have_machine': runsPlacedHaveMachine,
+    '0018_job_env': jobEnv,
   }
 }

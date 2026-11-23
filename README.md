@@ -157,6 +157,26 @@ devrounds batch submit <file.yaml>   # each job with its run
 devrounds batch show <id>            # failed and skipped jobs first
 ```
 
+A job can also carry `args` (appended to the job type's `command.args`, at most 200 of up to 4096 characters) and
+`env` (values by variable name, at most 50, names `[A-Za-z_][A-Za-z0-9_]*` up to 200 characters, values up to 4096),
+in a batch file or with `devrounds run start ... [--arg <a>]... [--env NAME=value]...` (`--arg=--flag` for a value
+that starts with a dash). The job type decides what a job may give: `args_from_job: true` takes job args, and
+`job_env: [NAME, ...]` lists the names a job may set (anything else answers DR101 at the job's `args` or
+`env/<NAME>`). `env_set: { NAME: value }` gives every run of the job type a value; a job's value for the same name
+wins. Names compare ignoring case, as Windows does, and `DEVROUNDS_RUN_ID` is the executor's alone. These values are
+stored on the job and the job type and sent to the machine, so they are names and flags (a database name, a shard
+number), never secrets: a secret stays in the machine's environment and reaches the run through the job type's `env`
+allowlist. The scheduler offers runs only to executors that speak the `job-env` protocol feature, since an older one
+would drop these values; update the executor along with the control plane.
+
+```yaml
+key: test-shard
+command: { program: node, args: [--test] }
+args_from_job: true
+job_env: [DB_NAME]
+env_set: { LOG_LEVEL: warn }
+```
+
 A job is offered only once every job it depends on finished. When one fails or is stopped, every open job waiting on
 it, directly or through others, becomes `skipped` and is never offered. A job type's `retry` decides when a failed run
 is tried again: `on` lists the failure classes (default `[infra]`), `max_attempts` counts the attempts (default 1, no

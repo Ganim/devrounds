@@ -1,10 +1,11 @@
 import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
+import { EnvValues, JobArgs } from '../job-types/file.ts'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 
 // A batch file, e.g. `devrounds batch submit batch.yaml`, and the JSON body of `POST /batches`. A job runs once every
 // job it depends_on (by ref, inside the batch) finished. Without `machine` any machine may run it; without `queue` it
-// goes to the project's `default` queue.
+// goes to the project's `default` queue. `args` and `env` need a job type that allows them (args_from_job, job_env).
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 
 export const BatchJob = Type.Object(
@@ -16,6 +17,8 @@ export const BatchJob = Type.Object(
     queue: Type.Optional(Key),
     task: Type.Optional(Key),
     depends_on: Type.Optional(Type.Array(Key, { maxItems: 200 })),
+    args: Type.Optional(JobArgs),
+    env: Type.Optional(EnvValues),
   },
   { additionalProperties: false },
 )

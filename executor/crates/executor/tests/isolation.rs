@@ -1,5 +1,5 @@
-//! `none` isolation hands the child only the allowlisted variables. Runs
-//! `tree-fixture --print-env` in a job of its own.
+//! `none` isolation hands the child only the allowlisted variables and the
+//! job's `env_set`. Runs `tree-fixture --print-env` in a job of its own.
 #![cfg(windows)]
 
 use std::{
@@ -43,6 +43,7 @@ fn job(cwd: &str, env_allow: &[&str]) -> JobSpec {
         cwd: cwd.into(),
         env_allow: env_allow.iter().map(|name| (*name).to_owned()).collect(),
         timeout_s: 60,
+        env_set: BTreeMap::new(),
     }
 }
 
@@ -112,4 +113,83 @@ fn relative_cwd_is_an_environment_failure() {
         .err()
         .expect("fails");
     assert!(environment_summary(error).contains("some/where"));
+}
+
+fn with_env_set(mut job: JobSpec, env_set: &[(&str, &str)]) -> JobSpec {
+    job.env_set = env_set
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
+    job
+}
+
+#[tokio::test]
+async fn env_set_reaches_the_child_without_an_allowlist_entry() {
+    devrounds_test_fixtures::tree_fixture_path();
+    devrounds_runner_windows::prepare_executor_process().expect("prepare");
+    tokio::time::timeout(LIMIT, async {
+        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+        let job = with_env_set(
+            job(&dir.path().to_string_lossy(), &[]),
+            &[("DB_NAME", "devrounds_test_1")],
+        );
+        let spec = NoneIsolation
+            .prepare("run-1", &job, dir.path(), &BTreeMap::new())
+            .expect("prepare");
+        let stdout = spec.output.stdout.clone();
+        let unit = WindowsRunner::default()
+            .spawn_unit(spec)
+            .await
+            .expect("spawn");
+        let _cleanup = Cleanup(Arc::clone(&unit), dir.path().to_path_buf());
+        unit.wait_report().await.expect("report");
+
+        let printed = std::fs::read_to_string(stdout).expect("stdout");
+        assert!(printed.contains("DB_NAME=devrounds_test_1"), "{printed}");
+    })
+    .await
+    .expect("bounded");
+}
+
+#[test]
+fn env_set_replaces_a_machine_variable_spelled_in_another_case() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let machine_env = BTreeMap::from([("Log_Level".to_owned(), "debug".to_owned())]);
+    let job = with_env_set(
+        job(&dir.path().to_string_lossy(), &["LOG_LEVEL"]),
+        &[("LOG_LEVEL", "warn")],
+    );
+    let spec = NoneIsolation
+        .prepare("run-1", &job, dir.path(), &machine_env)
+        .expect("prepare");
+    let matching: Vec<(&String, &String)> = spec
+        .env
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("LOG_LEVEL"))
+        .collect();
+    assert_eq!(matching, [(&"LOG_LEVEL".to_owned(), &"warn".to_owned())]);
+}
+
+#[test]
+fn env_set_cannot_replace_run_id() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let job = with_env_set(
+        job(&dir.path().to_string_lossy(), &[]),
+        &[
+            ("DEVROUNDS_RUN_ID", "forged"),
+            ("devrounds_run_id", "forged"),
+        ],
+    );
+    let spec = NoneIsolation
+        .prepare("run-1", &job, dir.path(), &BTreeMap::new())
+        .expect("prepare");
+    let matching: Vec<(&String, &String)> = spec
+        .env
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("DEVROUNDS_RUN_ID"))
+        .collect();
+    assert_eq!(
+        matching,
+        [(&"DEVROUNDS_RUN_ID".to_owned(), &"run-1".to_owned())]
+    );
 }

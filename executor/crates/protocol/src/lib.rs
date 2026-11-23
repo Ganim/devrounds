@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 pub const PROTOCOL: u32 = 1;
 
 /// Optional capabilities this build speaks; a session uses the intersection.
-pub const FEATURES: [&str; 7] = [
+pub const FEATURES: [&str; 8] = [
     "seq",
     "steps",
     "log-segments",
@@ -22,6 +22,7 @@ pub const FEATURES: [&str; 7] = [
     "trace-context",
     "acked-through",
     "withdraw",
+    "job-env",
 ];
 
 /// The features both sides speak, in the order of `ours`.

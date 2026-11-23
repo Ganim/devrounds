@@ -204,6 +204,7 @@ fn job(variable: &str) -> JobSpec {
         cwd: r"C:\work".to_owned(),
         env_allow: vec![variable.to_owned()],
         timeout_s: 600,
+        env_set: Default::default(),
     }
 }
 

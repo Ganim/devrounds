@@ -3,6 +3,7 @@ import { sql } from 'kysely'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
+import { sameEnvName } from '../job-types/file.ts'
 import { settledRuns, settleJob } from '../jobs/outcome.ts'
 import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { parseTraceParent, type Telemetry } from '../telemetry/otel.ts'
@@ -31,16 +32,30 @@ function offerRows(trx: Trx) {
       'runs.trace_id',
       'runs.trace_span_id',
       'jobs.cwd',
+      'jobs.args as job_args',
+      'jobs.env as job_env',
       'job_types.id as job_type_id',
       'job_types.key',
       'job_types.program',
       'job_types.args',
       'job_types.env_allow',
       'job_types.timeout_s',
+      'job_types.env_set',
     ])
 }
 
 type OfferRow = Awaited<ReturnType<ReturnType<typeof offerRows>['executeTakeFirstOrThrow']>>
+
+// The job type's values, then the job's over them. A job name replaces a job type name spelled in another case, as
+// Windows would see them as one variable and the executor keeps only one (isolation.rs).
+function envSet(jobType: Record<string, string>, job: Record<string, string>): Record<string, string> {
+  const merged = { ...jobType }
+  for (const [name, value] of Object.entries(job)) {
+    for (const key of Object.keys(merged)) if (sameEnvName(key, name)) delete merged[key]
+    merged[name] = value
+  }
+  return merged
+}
 
 function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null): Offer {
   return {
@@ -49,10 +64,11 @@ function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null):
     job: {
       job_type: row.key,
       program: row.program,
-      args: row.args as string[],
+      args: [...(row.args as string[]), ...(row.job_args as string[])],
       cwd: row.cwd,
       env_allow: row.env_allow,
       timeout_s: row.timeout_s,
+      env_set: envSet(row.env_set as Record<string, string>, row.job_env as Record<string, string>),
     },
     // A need is a byte count well under 2^53, so the wire carries it as a JSON number.
     memory_need: Number(memoryNeed),

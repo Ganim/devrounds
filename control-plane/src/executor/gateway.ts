@@ -47,7 +47,8 @@ const MAX_REASON_BYTES = 123
 // The machine's latest MachineReport in this session, stamped with this process's clock: the scheduler places only
 // on a machine whose report is recent (scheduler/scheduler.ts).
 export type MachineMemory = { at: number; availableMemory: bigint; totalMemory: bigint }
-type Session = { tenantId: string; socket: WebSocket; report?: MachineMemory }
+// `features`: negotiated at Hello; the scheduler offers only to a session that speaks job-env.
+type Session = { tenantId: string; socket: WebSocket; features: string[]; report?: MachineMemory }
 
 /** What the gateway wakes when a machine of the tenant may take work. */
 export type SchedulerPoke = { poke(tenantId: string): void }
@@ -73,8 +74,13 @@ export class Sessions {
     return this.#live.get(machineId)
   }
 
-  list(): { machineId: string; tenantId: string; report?: MachineMemory }[] {
-    return [...this.#live].map(([machineId, { tenantId, report }]) => ({ machineId, tenantId, report }))
+  list(): { machineId: string; tenantId: string; features: string[]; report?: MachineMemory }[] {
+    return [...this.#live].map(([machineId, { tenantId, features, report }]) => ({
+      machineId,
+      tenantId,
+      features,
+      report,
+    }))
   }
 
   /** False when the machine has no live session. */
@@ -268,7 +274,7 @@ function serveSession(
       }
       const features = checkHello(message)
       clearTimeout(hello)
-      session = { tenantId: machine.tenantId, socket }
+      session = { tenantId: machine.tenantId, socket, features }
       sessions.open(machine.machineId, session)
       // Revoked between the token lookup and now: the update finds no live row.
       const seen = await recordHello(ctx, machine.machineId, message.version, message.acked_through)

@@ -15,6 +15,7 @@ export const FEATURES = [
   'trace-context',
   'acked-through',
   'withdraw',
+  'job-env',
 ] as const
 
 const U32 = Type.Integer({ minimum: 0, maximum: 4294967295 })
@@ -34,6 +35,8 @@ const JobSpec = Type.Object({
   cwd: Type.String(),
   env_allow: Type.Array(Type.String()),
   timeout_s: U32,
+  // Feature job-env: values the run gets (job type env_set, then the job's env); never secrets.
+  env_set: Type.Record(Type.String(), Type.String()),
 })
 
 export const RUN_EVENTS = {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { FailureClass, JobState, RunState } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
+import { sameEnvName } from '../job-types/file.ts'
 import { findJobType } from '../job-types/service.ts'
 import { type Ctx, findProject, findTask, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { DEFAULT_QUEUE, ensureQueue, type QueueRow } from '../queues/service.ts'
@@ -17,6 +18,10 @@ export type EnqueueInput = {
   machineName?: string
   queueKey?: string
   taskKey?: string
+  // Appended to the job type's command args (needs args_from_job).
+  args?: string[]
+  // Values of names the job type lists in job_env, over its env_set.
+  env?: Record<string, string>
 }
 
 export type BatchView = {
@@ -46,6 +51,9 @@ type JobValues = {
   machine_id: string | null
   task_id: string | null
   cwd: string
+  // JSON, for the jsonb columns.
+  args: string
+  env: string
 }
 
 function cached<T>(load: (key: string) => Promise<T>): (key: string) => Promise<T> {
@@ -59,8 +67,8 @@ function cached<T>(load: (key: string) => Promise<T>): (key: string) => Promise<
   }
 }
 
-// Resolves the keys of one job inside the project. Lookups repeat across the jobs of a batch, so they are cached
-// per call.
+// Resolves the keys of one job inside the project and checks its args and env against the job type; `path` prefixes
+// the DR101 path (`/jobs/<i>` in a batch). Lookups repeat across the jobs of a batch, so they are cached per call.
 export function resolver(trx: Trx, projectId: string) {
   const jobType = cached((key) => findJobType(trx, projectId, key))
   const queue = cached(async (key): Promise<QueueRow & { allowed: Set<string> }> => {
@@ -85,8 +93,20 @@ export function resolver(trx: Trx, projectId: string) {
     return row?.id ?? fail('DR201', { kind: 'machine', key: name })
   })
 
-  return async (i: Omit<EnqueueInput, 'projectKey'>): Promise<JobValues> => {
+  return async (i: Omit<EnqueueInput, 'projectKey'>, path = ''): Promise<JobValues> => {
     const type = await jobType(i.jobTypeKey)
+    const args = i.args ?? []
+    if (args.length > 0 && !type.args_from_job) {
+      fail('DR101', { path: `${path}/args`, reason: `job type ${type.key} does not take job args (args_from_job)` })
+    }
+    for (const name of Object.keys(i.env ?? {})) {
+      if (!type.job_env.some((allowed) => sameEnvName(allowed, name))) {
+        fail('DR101', {
+          path: `${path}/env/${name}`,
+          reason: `job type ${type.key} does not let a job set ${name} (job_env)`,
+        })
+      }
+    }
     const q = await queue(i.queueKey ?? DEFAULT_QUEUE)
     // A queue that lists no job types takes every one.
     if (q.allowed.size > 0 && !q.allowed.has(type.id)) fail('DR153', { jobType: type.key, queue: q.key })
@@ -96,6 +116,8 @@ export function resolver(trx: Trx, projectId: string) {
       machine_id: i.machineName === undefined ? null : await machine(i.machineName),
       task_id: i.taskKey === undefined ? null : (await findTask(trx, projectId, i.taskKey)).id,
       cwd: i.cwd,
+      args: JSON.stringify(args),
+      env: JSON.stringify(i.env ?? {}),
     }
   }
 }
@@ -139,14 +161,19 @@ export async function submitBatch(ctx: Ctx, projectKey: string, input: BatchInpu
     const project = await findProject(trx, projectKey)
     const resolve = resolver(trx, project.id)
     const rows = []
-    for (const job of input.jobs) {
-      const values = await resolve({
-        jobTypeKey: job.job_type,
-        cwd: job.cwd,
-        machineName: job.machine,
-        queueKey: job.queue,
-        taskKey: job.task,
-      })
+    for (const [index, job] of input.jobs.entries()) {
+      const values = await resolve(
+        {
+          jobTypeKey: job.job_type,
+          cwd: job.cwd,
+          machineName: job.machine,
+          queueKey: job.queue,
+          taskKey: job.task,
+          args: job.args,
+          env: job.env,
+        },
+        `/jobs/${index}`,
+      )
       rows.push({ tenant_id: ctx.tenantId, project_id: project.id, created_by: ctx.actor.id, ...values })
     }
     await trx

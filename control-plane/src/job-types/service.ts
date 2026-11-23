@@ -17,6 +17,9 @@ const COLUMNS = [
   'max_attempts',
   'retry_backoff_s',
   'retry_on',
+  'args_from_job',
+  'job_env',
+  'env_set',
 ] as const
 
 type JobTypeRow = {
@@ -31,6 +34,9 @@ type JobTypeRow = {
   max_attempts: number
   retry_backoff_s: number
   retry_on: FailureClass[]
+  args_from_job: boolean
+  job_env: string[]
+  env_set: unknown
 }
 
 export function toDef(row: JobTypeRow): JobTypeDef {
@@ -42,6 +48,9 @@ export function toDef(row: JobTypeRow): JobTypeDef {
     orphan_policy: row.orphan_policy,
     classify: row.classify as ClassifyRule[],
     retry: { max_attempts: row.max_attempts, backoff_s: row.retry_backoff_s, on: row.retry_on },
+    args_from_job: row.args_from_job,
+    job_env: row.job_env,
+    env_set: row.env_set as Record<string, string>,
   }
 }
 
@@ -75,6 +84,9 @@ export async function putJobType(ctx: Ctx, projectKey: string, input: JobTypeFil
       max_attempts: def.retry.max_attempts,
       retry_backoff_s: def.retry.backoff_s,
       retry_on: def.retry.on,
+      args_from_job: def.args_from_job,
+      job_env: def.job_env,
+      env_set: JSON.stringify(def.env_set),
     }
     await trx
       .insertInto('job_types')
