@@ -1,10 +1,26 @@
 # DevRounds's executor fmt and clippy (cargo).
+# ProgramData: cargo finds the MSVC linker through Visual Studio's setup configuration under C:ProgramData; without it the link fails.
+# Exit 101 is cargo's own failure exit.
 key: devrounds-lint-executor
 command:
   program: pnpm
   args: [lint:executor]
-env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP, CARGO_HOME, RUSTUP_HOME]
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    CARGO_HOME,
+    RUSTUP_HOME,
+    ProgramData,
+  ]
 timeout_s: 1800
 classify:
   - class: check_red
-    exit_codes: [1]
+    exit_codes: [1, 101]
