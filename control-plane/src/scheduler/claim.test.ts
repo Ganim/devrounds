@@ -52,7 +52,7 @@ async function setup() {
       claimRun(trx, machineId(machine), { freeBytes, reserveBytes, offerTimeoutS: 120 }),
     )
   // Sets the learned need of `check` on `machine`, as updateLearnedNeed would after runs reported their peaks.
-  const learn = (needBytes: bigint, machine = 'build-01') =>
+  const learn = (needBytes: bigint, machine = 'build-01', samples = 1) =>
     withTenant(t.db, tenant.tenantId, (trx) =>
       trx
         .insertInto('learned_needs')
@@ -62,10 +62,10 @@ async function setup() {
           job_type_id: ids.jobTypeId,
           machine_id: machineId(machine),
           need_bytes: needBytes,
-          samples: 1,
+          samples,
         })
         .onConflict((oc) =>
-          oc.columns(['project_id', 'job_type_id', 'machine_id']).doUpdateSet({ need_bytes: needBytes }),
+          oc.columns(['project_id', 'job_type_id', 'machine_id']).doUpdateSet({ need_bytes: needBytes, samples }),
         )
         .execute(),
     )
@@ -206,6 +206,71 @@ test('learned need defaults to 536870912 and follows learned_needs', async () =>
   const big = await s.enqueue()
   assert.equal(await s.claim('build-02', 2n * GIB), null)
   assert.equal((await s.claim('build-01', 2n * GIB))?.runId, big)
+})
+
+test('need_mb is the claimed need while the key has two samples', async () => {
+  const s = await setup()
+  await putJobType(s.ctx, projectKey, { key: 'check', command: { program: 'pnpm' }, need_mb: 2048 })
+  const need = () =>
+    withTenant(s.t.db, s.tenant.tenantId, (trx) =>
+      storedNeed(trx, s.ids.projectId, s.ids.jobTypeId, s.machineId('build-01')),
+    )
+  // No samples: need_mb replaces the 512 MiB default.
+  assert.equal(await need(), 2n * GIB)
+  await s.enqueue()
+  assert.equal((await s.claim())?.memoryNeed, 2n * GIB)
+
+  await s.learn(300n * MIB, 'build-01', 2)
+  assert.equal(await need(), 2n * GIB)
+  await s.enqueue()
+  assert.equal((await s.claim())?.memoryNeed, 2n * GIB)
+})
+
+test('with three samples the learned need wins over need_mb', async () => {
+  const s = await setup()
+  await putJobType(s.ctx, projectKey, { key: 'check', command: { program: 'pnpm' }, need_mb: 2048 })
+  await s.learn(300n * MIB, 'build-01', 3)
+  const need = await withTenant(s.t.db, s.tenant.tenantId, (trx) =>
+    storedNeed(trx, s.ids.projectId, s.ids.jobTypeId, s.machineId('build-01')),
+  )
+  assert.equal(need, 300n * MIB)
+  await s.enqueue()
+  assert.equal((await s.claim())?.memoryNeed, 300n * MIB)
+})
+
+test('without need_mb a key with one sample keeps its learned need', async () => {
+  const s = await setup()
+  await s.learn(300n * MIB, 'build-01', 1)
+  await s.enqueue()
+  assert.equal((await s.claim())?.memoryNeed, 300n * MIB)
+})
+
+test('machine_concurrency 1 offers one run of the queue per machine and still one on a second machine', async () => {
+  const s = await setup()
+  await putQueue(s.ctx, projectKey, { key: 'per-machine', machineConcurrency: 1 })
+  const runs = [
+    await s.enqueue({ queueKey: 'per-machine' }),
+    await s.enqueue({ queueKey: 'per-machine' }),
+    await s.enqueue({ queueKey: 'per-machine' }),
+  ]
+  assert.equal((await s.claim('build-01'))?.runId, runs[0])
+  assert.equal(await s.claim('build-01'), null)
+  assert.equal((await s.claim('build-02'))?.runId, runs[1])
+  assert.equal(await s.claim('build-02'), null)
+
+  // A run of the queue that ended frees its machine.
+  await s.setRun(runs[0], { state: 'finished' })
+  assert.equal((await s.claim('build-01'))?.runId, runs[2])
+})
+
+test('concurrency 1 and machine_concurrency 2 hold one run in flight overall', async () => {
+  const s = await setup()
+  await putQueue(s.ctx, projectKey, { key: 'both', concurrency: 1, machineConcurrency: 2 })
+  const first = await s.enqueue({ queueKey: 'both' })
+  await s.enqueue({ queueKey: 'both' })
+  assert.equal((await s.claim('build-01'))?.runId, first)
+  assert.equal(await s.claim('build-01'), null)
+  assert.equal(await s.claim('build-02'), null)
 })
 
 test('a run pinned to another machine is not claimed', async () => {

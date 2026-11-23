@@ -15,6 +15,7 @@ export function QueuesPage() {
             <th>Queue</th>
             <th className="num">Priority</th>
             <th className="num">Concurrency</th>
+            <th className="num">Per machine</th>
             <th>Job types</th>
             <th className="num">Queued</th>
             <th className="num">In flight</th>
@@ -31,6 +32,7 @@ export function QueuesPage() {
               </td>
               <td className="num">{q.priority}</td>
               <td className="num">{q.concurrency ?? 'no cap'}</td>
+              <td className="num">{q.machineConcurrency ?? 'no cap'}</td>
               <td>{q.jobTypes.length > 0 ? q.jobTypes.join(', ') : <span className="muted">any</span>}</td>
               <td className="num">{q.depth}</td>
               <td className="num">{q.inFlight}</td>

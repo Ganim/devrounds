@@ -131,12 +131,14 @@ Every run waits in a queue of its project. `default` is created the first time a
 created first:
 
 ```
-devrounds queue set <key> [--priority <n>] [--concurrency <n>|none] [--job-types <a,b>|none]
+devrounds queue set <key> [--priority <n>] [--concurrency <n>|none] [--machine-concurrency <n>|none]
+                    [--job-types <a,b>|none]
 devrounds queue list     # depth = runs queued, in flight = offered, admitted or running
 ```
 
 The scheduler takes the queue with the highest priority first and the oldest run in it first. `--concurrency` caps
-the runs in flight in the queue; `--job-types` lists the job types allowed in it (any other answers DR153).
+the runs in flight in the queue and `--machine-concurrency` the ones on a single machine (both count offered, admitted
+and running runs); `--job-types` lists the job types allowed in it (any other answers DR153).
 
 A batch queues several jobs at once, all or nothing, with dependencies by `ref` inside the file (a cycle answers DR152).
 Each job also takes `machine`, `queue` and `task`:
@@ -176,6 +178,10 @@ args_from_job: true
 job_env: [DB_NAME]
 env_set: { LOG_LEVEL: warn }
 ```
+
+A job type can state a starting need with `need_mb` (MiB, 1 to 1048576, like the 512 MiB default). It is the memory the
+scheduler reserves for a run while the key (job type on a machine) has fewer than 3 samples; from the third on, the
+median peak of its last 10 runs wins.
 
 A job is offered only once every job it depends on finished. When one fails or is stopped, every open job waiting on
 it, directly or through others, becomes `skipped` and is never offered. A job type's `retry` decides when a failed run

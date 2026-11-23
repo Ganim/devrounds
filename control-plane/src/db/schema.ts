@@ -201,6 +201,8 @@ export interface JobTypesTable {
   job_env: ColumnType<string[], string[] | undefined, string[]>
   // Record<string, string>, set on every run of the job type.
   env_set: OptionalJson
+  // Starting need in bytes while the key has fewer than 3 samples (migration 0019); null: the 512 MiB default.
+  need_bytes: NullableInt8
   updated_at: Timestamp
 }
 
@@ -252,6 +254,8 @@ export interface QueuesTable {
   key: string
   priority: Generated<number>
   concurrency: number | null
+  // Cap of runs of the queue in flight on one machine; null: none.
+  machine_concurrency: number | null
   created_at: Timestamp
 }
 

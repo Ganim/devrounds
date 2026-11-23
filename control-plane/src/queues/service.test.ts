@@ -51,9 +51,38 @@ test('queue list reports depth, in flight and the oldest queued time', async () 
   await t.admin.updateTable('runs').set({ queued_at: older, not_before: older }).where('id', '=', second.id).execute()
 
   assert.deepEqual(await listQueues(ctx, projectKey), [
-    { key: 'fast', priority: 5, concurrency: null, jobTypes: ['check'], depth: 0, inFlight: 0, oldestQueuedAt: null },
-    { key: 'default', priority: 0, concurrency: null, jobTypes: [], depth: 2, inFlight: 1, oldestQueuedAt: older },
+    {
+      key: 'fast',
+      priority: 5,
+      concurrency: null,
+      machineConcurrency: null,
+      jobTypes: ['check'],
+      depth: 0,
+      inFlight: 0,
+      oldestQueuedAt: null,
+    },
+    {
+      key: 'default',
+      priority: 0,
+      concurrency: null,
+      machineConcurrency: null,
+      jobTypes: [],
+      depth: 2,
+      inFlight: 1,
+      oldestQueuedAt: older,
+    },
   ])
+})
+
+test('machine concurrency none clears the cap', async () => {
+  const { ctx } = await setup()
+  const capped = await putQueue(ctx, projectKey, { key: 'default', machineConcurrency: 1, concurrency: 3 })
+  assert.deepEqual([capped.machineConcurrency, capped.concurrency], [1, 3])
+  // An omitted field keeps its value.
+  const kept = await putQueue(ctx, projectKey, { key: 'default', priority: 2 })
+  assert.equal(kept.machineConcurrency, 1)
+  const cleared = await putQueue(ctx, projectKey, { key: 'default', machineConcurrency: null })
+  assert.deepEqual([cleared.machineConcurrency, cleared.concurrency], [null, 3])
 })
 
 test('concurrency none clears the cap', async () => {

@@ -20,6 +20,7 @@ const COLUMNS = [
   'args_from_job',
   'job_env',
   'env_set',
+  'need_bytes',
 ] as const
 
 type JobTypeRow = {
@@ -37,7 +38,10 @@ type JobTypeRow = {
   args_from_job: boolean
   job_env: string[]
   env_set: unknown
+  need_bytes: string | null
 }
+
+const MIB = 1048576n
 
 export function toDef(row: JobTypeRow): JobTypeDef {
   return {
@@ -51,6 +55,7 @@ export function toDef(row: JobTypeRow): JobTypeDef {
     args_from_job: row.args_from_job,
     job_env: row.job_env,
     env_set: row.env_set as Record<string, string>,
+    need_mb: row.need_bytes === null ? null : Number(BigInt(row.need_bytes) / MIB),
   }
 }
 
@@ -87,6 +92,7 @@ export async function putJobType(ctx: Ctx, projectKey: string, input: JobTypeFil
       args_from_job: def.args_from_job,
       job_env: def.job_env,
       env_set: JSON.stringify(def.env_set),
+      need_bytes: def.need_mb === null ? null : (BigInt(def.need_mb) * MIB).toString(),
     }
     await trx
       .insertInto('job_types')

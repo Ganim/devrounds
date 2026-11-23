@@ -1000,10 +1000,10 @@ export const COMMANDS: Spec[] = [
   {
     path: ['queue', 'set'],
     usage:
-      'queue set <key> [--priority <n>] [--concurrency <n>|none] [--job-types <a,b>|none]   ' +
-      'create or change a queue; none removes the cap or lets every job type in',
+      'queue set <key> [--priority <n>] [--concurrency <n>|none] [--machine-concurrency <n>|none] ' +
+      '[--job-types <a,b>|none]   create or change a queue; none removes a cap or lets every job type in',
     args: 1,
-    options: { priority: str, concurrency: str, 'job-types': str },
+    options: { priority: str, concurrency: str, 'machine-concurrency': str, 'job-types': str },
     run: async (inv, connect) => {
       const api = await connect()
       const key = arg(inv, 0, '<key>')
@@ -1012,6 +1012,7 @@ export const COMMANDS: Spec[] = [
         fail('DR101', { path: '--priority', reason: 'must be an integer' })
       }
       const concurrency = orNull(text(inv, 'concurrency'))
+      const machineConcurrency = orNull(text(inv, 'machine-concurrency'))
       const jobTypes = orNull(text(inv, 'job-types'))
       const listed = jobTypes
         ?.split(',')
@@ -1024,6 +1025,8 @@ export const COMMANDS: Spec[] = [
       const body = {
         priority: priority === undefined ? undefined : Number(priority),
         concurrency: concurrency == null ? concurrency : (integer(inv, 'concurrency', 1) as number),
+        machineConcurrency:
+          machineConcurrency == null ? machineConcurrency : (integer(inv, 'machine-concurrency', 1) as number),
         jobTypes: jobTypes === null ? [] : listed,
       }
       const q = await api.send<QueueJson>('PUT', path('queues', key), body)
@@ -1142,6 +1145,7 @@ type QueueJson = {
   key: string
   priority: number
   concurrency: number | null
+  machineConcurrency: number | null
   jobTypes: string[]
   depth: number
   inFlight: number
@@ -1154,6 +1158,7 @@ type BatchJson = {
 
 const queueLine = (q: QueueJson) =>
   fmt`${q.key}  priority ${q.priority} · concurrency ${q.concurrency ?? 'none'} · ` +
+  fmt`per machine ${q.machineConcurrency ?? 'none'} · ` +
   fmt`job types ${q.jobTypes?.length ? q.jobTypes.join(', ') : 'any'} · depth ${q.depth} · in flight ${q.inFlight} · ` +
   fmt`oldest queued ${q.oldestQueuedAt}`
 

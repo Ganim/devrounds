@@ -276,13 +276,25 @@ test('queue set, batch submit and batch show through the CLI and the API', async
       '-1',
       '--concurrency',
       '2',
+      '--machine-concurrency',
+      '1',
       '--job-types',
       'check, lint',
     )
     assert.equal(set.exitCode, 0, set.stderr)
-    assert.match(set.stdout, /^fast {2}priority -1 · concurrency 2 · job types check, lint · depth 0 /)
-    const cleared = await cli('queue', 'set', 'fast', '--concurrency', 'none', '--job-types', 'none')
-    assert.match(cleared.stdout, /^fast {2}priority -1 · concurrency none · job types any · /)
+    assert.match(set.stdout, /^fast {2}priority -1 · concurrency 2 · per machine 1 · job types check, lint · depth 0 /)
+    const cleared = await cli(
+      'queue',
+      'set',
+      'fast',
+      '--concurrency',
+      'none',
+      '--machine-concurrency',
+      'none',
+      '--job-types',
+      'none',
+    )
+    assert.match(cleared.stdout, /^fast {2}priority -1 · concurrency none · per machine none · job types any · /)
     // Only `none` empties the list; a stray separator is a typo, not "every job type".
     for (const empty of [',', ' ']) {
       const typo = await cli('queue', 'set', 'fast', '--job-types', empty)

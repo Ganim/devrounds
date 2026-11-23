@@ -5,6 +5,8 @@ import type { Trx } from '../planning/resolve.ts'
 // claim_run (migrations/0011_claim_run.ts) repeats it in SQL.
 export const DEFAULT_MEMORY_NEED = 536870912n
 const WINDOW = 10
+// Samples from which the learned need replaces the job type's need_mb (claim_run, migrations/0019_placement.ts).
+export const MIN_LEARNED_SAMPLES = 3
 
 // The peaks of the last WINDOW runs of the key that reported one, ascending.
 async function recentPeaks(trx: Trx, projectId: string, jobTypeId: string, machineId: string): Promise<bigint[]> {
@@ -83,14 +85,20 @@ export async function updateLearnedNeed(
     .execute()
 }
 
-/** The learned need of the key as claim_run sees it: its learned_needs row, else DEFAULT_MEMORY_NEED. */
+/**
+ * The need of the key as claim_run sees it (same rule as migrations/0019_placement.ts): the learned_needs row from
+ * MIN_LEARNED_SAMPLES samples on, else the job type's need_mb, else the row, else DEFAULT_MEMORY_NEED.
+ */
 export async function storedNeed(trx: Trx, projectId: string, jobTypeId: string, machineId: string): Promise<bigint> {
+  const type = await trx.selectFrom('job_types').select('need_bytes').where('id', '=', jobTypeId).executeTakeFirst()
   const row = await trx
     .selectFrom('learned_needs')
-    .select('need_bytes')
+    .select(['need_bytes', 'samples'])
     .where('project_id', '=', projectId)
     .where('job_type_id', '=', jobTypeId)
     .where('machine_id', '=', machineId)
     .executeTakeFirst()
+  if (row && row.samples >= MIN_LEARNED_SAMPLES) return BigInt(row.need_bytes)
+  if (type?.need_bytes != null) return BigInt(type.need_bytes)
   return row ? BigInt(row.need_bytes) : DEFAULT_MEMORY_NEED
 }

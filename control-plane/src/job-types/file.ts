@@ -46,6 +46,9 @@ export const JobTypeFileSchema = Type.Object(
     // they carry names and flags, never secrets; a secret stays in the machine's environment behind `env`.
     job_env: Type.Optional(Type.Array(EnvName, { maxItems: 50 })),
     env_set: Type.Optional(EnvValues),
+    // MiB the job type is assumed to need until its key has 3 samples; the learned need takes over after that.
+    // null is a def without one (a JobTypeDef is accepted back as a file).
+    need_mb: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 1048576 }), Type.Null()])),
     timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 2147483647 })),
     orphan_policy: Type.Optional(OneOf('kill', 'let_finish')),
     classify: Type.Optional(Type.Array(Rule)),
@@ -77,6 +80,7 @@ export type JobTypeDef = {
   args_from_job: boolean
   job_env: string[]
   env_set: Record<string, string>
+  need_mb: number | null
 }
 
 // Schema first, then what a schema cannot say: a rule needs a condition (or it would swallow every failure), a
@@ -124,6 +128,7 @@ export function withDefaults(file: JobTypeFile): JobTypeDef {
     args_from_job: file.args_from_job ?? false,
     job_env: file.job_env ?? [],
     env_set: file.env_set ?? {},
+    need_mb: file.need_mb ?? null,
   }
 }
 

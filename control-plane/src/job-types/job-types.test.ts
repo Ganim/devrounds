@@ -12,6 +12,7 @@ command:
   program: pnpm
   args: [check]
 env: [PATH]
+need_mb: 1024
 timeout_s: 600
 orphan_policy: let_finish
 classify:
@@ -48,6 +49,7 @@ test('a job type file round-trips through the project', async () => {
     args_from_job: false,
     job_env: [],
     env_set: {},
+    need_mb: null,
   })
   await assert.rejects(
     putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),

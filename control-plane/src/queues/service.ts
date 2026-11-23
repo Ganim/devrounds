@@ -15,6 +15,8 @@ export const QueueSettings = Type.Object(
   {
     priority: Type.Optional(Type.Integer({ minimum: -INT_MAX - 1, maximum: INT_MAX })),
     concurrency: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: INT_MAX }), Type.Null()])),
+    // Cap of runs of the queue in flight on one machine; null removes it.
+    machineConcurrency: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: INT_MAX }), Type.Null()])),
     jobTypes: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 200 })),
   },
   { additionalProperties: false },
@@ -22,12 +24,19 @@ export const QueueSettings = Type.Object(
 
 export type QueueSettings = Static<typeof QueueSettings>
 
-export type QueueRow = { id: string; key: string; priority: number; concurrency: number | null }
+export type QueueRow = {
+  id: string
+  key: string
+  priority: number
+  concurrency: number | null
+  machine_concurrency: number | null
+}
 
 export type QueueView = {
   key: string
   priority: number
   concurrency: number | null
+  machineConcurrency: number | null
   // Empty: every job type of the project.
   jobTypes: string[]
   // Runs queued in it.
@@ -42,7 +51,7 @@ export type QueueView = {
 function findQueue(trx: Trx, projectId: string, key: string): Promise<QueueRow | undefined> {
   return trx
     .selectFrom('queues')
-    .select(['id', 'key', 'priority', 'concurrency'])
+    .select(['id', 'key', 'priority', 'concurrency', 'machine_concurrency'])
     .where('project_id', '=', projectId)
     .where('key', '=', key)
     .executeTakeFirst()
@@ -92,9 +101,10 @@ export async function putQueue(ctx: Ctx, projectKey: string, i: { key: string } 
       .where('key', '=', key)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow()
-    const set: { priority?: number; concurrency?: number | null } = {}
+    const set: { priority?: number; concurrency?: number | null; machine_concurrency?: number | null } = {}
     if (settings.priority !== undefined) set.priority = settings.priority
     if (settings.concurrency !== undefined) set.concurrency = settings.concurrency
+    if (settings.machineConcurrency !== undefined) set.machine_concurrency = settings.machineConcurrency
     if (Object.keys(set).length > 0) await trx.updateTable('queues').set(set).where('id', '=', queue.id).execute()
     if (settings.jobTypes !== undefined) {
       const ids = new Set<string>()
@@ -124,11 +134,12 @@ async function queueViews(trx: Trx, projectId: string, onlyKey?: string): Promis
     key: string
     priority: number
     concurrency: number | null
+    machine_concurrency: number | null
     depth: string
     in_flight: string
     oldest_queued_at: Date | null
   }>`
-    select q.id, q.key, q.priority, q.concurrency,
+    select q.id, q.key, q.priority, q.concurrency, q.machine_concurrency,
       count(*) filter (where a.state = 'queued') as depth,
       count(*) filter (where a.state in ('offered', 'admitted', 'running')) as in_flight,
       min(greatest(a.queued_at, a.not_before)) filter (where a.state = 'queued' and a.not_before <= now())
@@ -158,6 +169,7 @@ async function queueViews(trx: Trx, projectId: string, onlyKey?: string): Promis
     key: row.key,
     priority: row.priority,
     concurrency: row.concurrency,
+    machineConcurrency: row.machine_concurrency,
     jobTypes: jobTypes.filter((jt) => jt.queue_id === row.id).map((jt) => jt.key),
     depth: Number(row.depth),
     inFlight: Number(row.in_flight),
