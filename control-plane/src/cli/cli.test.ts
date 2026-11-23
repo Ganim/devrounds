@@ -62,6 +62,38 @@ test('exit code 3 for a project of another tenant', async () => {
   assert.ok(!res.out.includes(token))
 })
 
+test("--project beta reads beta's plan with a config for alpha", async () => {
+  const t = await testDb()
+  const mine = await t.newTenant()
+  await createProject({ db: t.db, tenantId: mine.tenantId, actor: mine.human }, { key: 'alpha', name: 'Alpha' })
+  await createProject({ db: t.db, tenantId: mine.tenantId, actor: mine.human }, { key: 'beta', name: 'Beta' })
+  const token = await createToken(t.admin, mine.tenantId, 'human', 'human')
+
+  const env = { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: 'alpha' }
+  const res = await cli(['plan', 'show', '--project', 'beta'], env)
+  assert.equal(res.code, 0, res.out)
+  assert.match(res.out, /beta/)
+  assert.doesNotMatch(res.out, /alpha/)
+})
+
+test("--project of another tenant's key exits 3 with the login next step", async () => {
+  const t = await testDb()
+  const mine = await t.newTenant()
+  await createProject({ db: t.db, tenantId: mine.tenantId, actor: mine.human }, { key: 'alpha', name: 'Alpha' })
+  const other = await t.newTenant()
+  await createProject({ db: t.db, tenantId: other.tenantId, actor: other.human }, { key: 'gamma', name: 'Gamma' })
+  const token = await createToken(t.admin, mine.tenantId, 'human', 'human')
+
+  const res = await cli(['plan', 'show', '--project', 'gamma'], {
+    DEVROUNDS_URL: url,
+    DEVROUNDS_TOKEN: token,
+    DEVROUNDS_PROJECT: 'alpha',
+  })
+  assert.equal(res.code, 3, res.out)
+  assert.match(res.out, /^DR201 No project gamma found\./)
+  assert.ok(res.out.endsWith('\nnext: devrounds login --url <url> --token <token> --project <key>\n'), res.out)
+})
+
 test('exit code 4 when the control plane is unreachable', async () => {
   // A port that was just free: nothing listens there any more.
   const probe = buildServer({ db: (await testDb()).db, logger: false })

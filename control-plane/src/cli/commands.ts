@@ -33,8 +33,9 @@ const ENV = { url: 'DEVROUNDS_URL', token: 'DEVROUNDS_TOKEN', project: 'DEVROUND
 
 // Env vars override the file field by field; the file is read only when the env leaves a field unset, so agents
 // running with all three variables never depend on it.
-async function loadCliConfig(env: NodeJS.ProcessEnv, path: string): Promise<CliConfig> {
-  const fromEnv = { url: env[ENV.url], token: env[ENV.token], project: env[ENV.project] }
+async function loadCliConfig(env: NodeJS.ProcessEnv, path: string, project?: string): Promise<CliConfig> {
+  // --project wins over the env and the file for this invocation only.
+  const fromEnv = { url: env[ENV.url], token: env[ENV.token], project: project ?? env[ENV.project] }
   let file: Partial<CliConfig> = {}
   if (!fromEnv.url || !fromEnv.token || !fromEnv.project) {
     const text = await readFile(path, 'utf8').catch((err: NodeJS.ErrnoException) => {
@@ -1175,6 +1176,7 @@ export function usage(): string {
     '',
     ...lines,
     '',
+    'Every command except login takes --project <key> to use that project instead of the configured one.',
     'Reads (plan show, events, balance, machine list) take --cursor <n> to continue an output cut at 16384 bytes.',
     'Config: ~/.devrounds/config.json from `devrounds login`, or DEVROUNDS_URL, DEVROUNDS_TOKEN, DEVROUNDS_PROJECT.',
     'Exit codes: 0 ok, 1 state conflict, 2 input/usage, 3 not found, 4 control plane unreachable, 5 auth, 6 internal.',
@@ -1189,8 +1191,10 @@ function findSpec(argv: string[]): Spec | undefined {
 }
 
 // --cursor on every read command, so `more:` is always the same command with --cursor N. Mutations reject it.
+// --project on every command that connects (login has its own, required one).
 function optionsOf(spec: Spec): ParseArgsOptionsConfig {
-  return spec.pages ? { ...spec.options, cursor: str } : spec.options
+  const base = spec.path[0] === 'login' ? spec.options : { ...spec.options, project: str }
+  return spec.pages ? { ...base, cursor: str } : base
 }
 
 // parseArgs rejects `--title -h` as ambiguous (it wants `--title=-h`). A value that starts with one dash (-h, -5) is
@@ -1307,7 +1311,9 @@ export async function runCli(
     const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS
     let connected: Promise<Api> | undefined
     const connect = () => {
-      connected ??= loadCliConfig(deps.env, deps.configPath).then((config) => apiFor(config, timeoutMs))
+      connected ??= loadCliConfig(deps.env, deps.configPath, text(inv, 'project')).then((config) =>
+        apiFor(config, timeoutMs),
+      )
       return connected
     }
     const result = await spec.run(inv, connect, deps)

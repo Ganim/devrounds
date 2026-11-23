@@ -30,6 +30,8 @@ const USAGE = `usage: devrounds-admin <command>
   migrate                            migrate the database, set the ${APP_ROLE} password and add authSecret
   bootstrap --tenant <name> --project <key> --name <project name> --human <name>
                                      create a tenant, its members and project; prints a token once
+  project add --tenant <name> --key <key> --name <project name>
+                                     add a project to an existing tenant
   token create --tenant <name> --member <name> --kind human|agent
                                      prints a new token once (creates the member if missing)
   token revoke <id>                  revoke a token by id
@@ -106,6 +108,25 @@ export async function bootstrap(
       .execute()
     await createProject({ db: admin, tenantId, actor: human, trx }, { key: i.project, name: i.name })
     return issueTokenIn(trx, tenantId, i.human, 'human')
+  })
+}
+
+// A second project in an existing tenant. Same shape as bootstrap: the app role is on for the transaction so the
+// planning service sees only this tenant's keys, and the event is recorded by the `import` member.
+export async function projectAdd(
+  admin: Kysely<Database>,
+  appRole: string,
+  i: { tenant: string; key: string; name: string },
+): Promise<{ projectId: string; eventId: string }> {
+  const tenantId = await tenantIdByName(admin, i.tenant)
+  return withTenant(admin, tenantId, async (trx) => {
+    await sql`set local role ${sql.id(appRole)}`.execute(trx)
+    const actor = await trx
+      .selectFrom('members')
+      .select(['id', 'kind'])
+      .where('name', '=', IMPORT_MEMBER)
+      .executeTakeFirstOrThrow()
+    return createProject({ db: admin, tenantId, actor, trx }, { key: i.key, name: i.name })
   })
 }
 
@@ -235,6 +256,7 @@ function parseArgv(argv: string[]) {
         force: { type: 'boolean' },
         tenant: { type: 'string' },
         project: { type: 'string' },
+        key: { type: 'string' },
         name: { type: 'string' },
         human: { type: 'string' },
         member: { type: 'string' },
@@ -293,6 +315,17 @@ export async function main(argv: string[]): Promise<number> {
       }),
     )
     printToken(issued)
+    return 0
+  }
+  if (command === 'project add') {
+    const added = await withAdminDb((admin) =>
+      projectAdd(admin, APP_ROLE, {
+        tenant: required(values, 'tenant'),
+        key: required(values, 'key'),
+        name: required(values, 'name'),
+      }),
+    )
+    console.log(`project ${required(values, 'key')} created (${added.projectId})`)
     return 0
   }
   if (command === 'token create') {

@@ -32,6 +32,10 @@ devrounds plan import roadmap/snapshot.yaml
 devrounds-admin login create --tenant <name> --member <human> --email <email>                  # prints a web password once
 ```
 
+A tenant can hold several projects: `devrounds-admin project add --tenant <name> --key <key> --name <project name>`.
+Every `devrounds` command except `login` takes `--project <key>` to use that project for one invocation instead of
+the configured one; a key outside the token's tenant answers DR201.
+
 The web view at http://127.0.0.1:4992/ signs in with that email and password (Better Auth, schema `auth`). A session
 cookie only reads: every change goes through the CLI or the API with a token (DR402). `devrounds-admin login remove`
 deletes a login and its sessions. Besides the roadmap, the view shows machines (free memory, the needs reserved by

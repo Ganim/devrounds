@@ -4,10 +4,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { bootstrap, initConfig, migrate } from './admin.ts'
+import { bootstrap, initConfig, migrate, projectAdd } from './admin.ts'
 import { resolveToken } from './auth/tokens.ts'
 import { defaultLogsRoot, loadConfig, loadServerConfig } from './config.ts'
 import { DevRoundsError } from './errors/error.ts'
+import { withTenant } from './tenancy/scope.ts'
 import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, testDb } from './test-support/db.ts'
 
 test('init writes a loadable config and refuses to overwrite it without force', async (t) => {
@@ -75,6 +76,44 @@ test('bootstrap gives each tenant its own project, even with the same key', asyn
   const second = await resolveToken(db, (await run()).token)
   assert.notEqual(first.tenantId, second.tenantId)
   assert.equal(first.member.kind, 'human')
+})
+
+test('project add creates a second project in the tenant with a create_project event by import', async () => {
+  const { admin, db } = await testDb()
+  const tenant = `t-${randomUUID()}`
+  await bootstrap(admin, TEST_APP_ROLE, { tenant, project: 'alpha', name: 'Alpha', human: 'gui' })
+  const added = await projectAdd(admin, TEST_APP_ROLE, { tenant, key: 'beta', name: 'Beta' })
+
+  const found = await admin.selectFrom('tenants').select('id').where('name', '=', tenant).executeTakeFirstOrThrow()
+  const rows = await withTenant(db, found.id, async (trx) => ({
+    projects: await trx.selectFrom('projects').select('key').orderBy('key').execute(),
+    event: await trx
+      .selectFrom('plan_events')
+      .innerJoin('members', 'members.id', 'plan_events.actor_id')
+      .select(['plan_events.kind', 'plan_events.project_id', 'members.name as actor'])
+      .where('plan_events.id', '=', added.eventId)
+      .executeTakeFirstOrThrow(),
+  }))
+  assert.deepEqual(rows.projects, [{ key: 'alpha' }, { key: 'beta' }])
+  assert.deepEqual(rows.event, { kind: 'create_project', project_id: added.projectId, actor: 'import' })
+})
+
+test('project add with a taken key answers DR101 at /key', async () => {
+  const { admin } = await testDb()
+  const tenant = `t-${randomUUID()}`
+  await bootstrap(admin, TEST_APP_ROLE, { tenant, project: 'alpha', name: 'Alpha', human: 'gui' })
+  await assert.rejects(
+    projectAdd(admin, TEST_APP_ROLE, { tenant, key: 'alpha', name: 'Again' }),
+    (err) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === '/key',
+  )
+})
+
+test('project add for an unknown tenant answers DR201 kind tenant', async () => {
+  const { admin } = await testDb()
+  await assert.rejects(
+    projectAdd(admin, TEST_APP_ROLE, { tenant: `t-${randomUUID()}`, key: 'beta', name: 'Beta' }),
+    (err) => err instanceof DevRoundsError && err.code === 'DR201' && err.data.kind === 'tenant',
+  )
 })
 
 // The secret signs session cookies: a second migrate must keep it, or every browser would be signed out.
