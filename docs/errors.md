@@ -130,6 +130,14 @@ Task {task} is {state}, which does not allow this change.
 
 A done or cancelled task accepts no new open criteria: reopen {task} first with `devrounds task reopen {task} --reason <text>`.
 
+## DR308
+
+Worktree {cwd} on machine {machine} is held by gate {gate}.
+
+### Fix
+
+One gate runs per worktree: wait for it with `devrounds gate show {gate} --wait`, or let `devrounds gate run --wait-lock <s>` wait for it and submit again.
+
 ## DR350
 
 Machine {machine} is not connected.

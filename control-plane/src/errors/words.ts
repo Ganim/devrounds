@@ -100,6 +100,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['task', 'state'],
   },
+  DR308: {
+    text: 'Worktree {cwd} on machine {machine} is held by gate {gate}.',
+    hint: 'One gate runs per worktree: wait for it with `devrounds gate show {gate} --wait`, or let `devrounds gate run --wait-lock <s>` wait for it and submit again.',
+    httpStatus: 409,
+    keys: ['cwd', 'machine', 'gate'],
+  },
   DR350: {
     text: 'Machine {machine} is not connected.',
     hint: 'Start the executor on {machine} with `devrounds-executor run`, then check `devrounds machine list` shows it connected.',

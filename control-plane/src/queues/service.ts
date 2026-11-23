@@ -6,6 +6,8 @@ import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../plannin
 import { validate } from '../validate.ts'
 
 export const DEFAULT_QUEUE = 'default'
+// Where a gate's checks go unless its file names a queue (gates/service.ts).
+export const GATES_QUEUE = 'gates'
 
 const INT_MAX = 2147483647
 
@@ -58,13 +60,14 @@ function findQueue(trx: Trx, projectId: string, key: string): Promise<QueueRow |
 }
 
 /**
- * The queue `key` of the project. Only `default` is created on first use, so a job never needs a queue set up first;
- * any other key must have been created with putQueue (DR201 otherwise), so a typo does not open a new queue.
+ * The queue `key` of the project. Only `default` and `gates` are created on first use, so a job or a gate never needs
+ * a queue set up first; any other key must have been created with putQueue (DR201 otherwise), so a typo does not open
+ * a new queue.
  */
 export async function ensureQueue(trx: Trx, projectId: string, key = DEFAULT_QUEUE): Promise<QueueRow> {
   const found = await findQueue(trx, projectId, key)
   if (found) return found
-  if (key !== DEFAULT_QUEUE) fail('DR201', { kind: 'queue', key })
+  if (key !== DEFAULT_QUEUE && key !== GATES_QUEUE) fail('DR201', { kind: 'queue', key })
   // The tenant comes from the project row (RLS already limits it to the current tenant). A concurrent first use
   // waits on the unique key and then inserts nothing; the read below sees its row.
   await trx

@@ -1,5 +1,6 @@
 import { type RawBuilder, sql } from 'kysely'
 import type { JobState } from '../db/schema.ts'
+import { settleGate } from '../gates/settle.ts'
 import type { Trx } from '../planning/resolve.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
 
@@ -130,9 +131,21 @@ export function skippedSummary(dependency: string, state: JobState): string {
   return `skipped: dependency ${dependency} ${state}`
 }
 
-// Sets the job's outcome; a red one (failed, stopped) skips its open dependents and returns their skipped runs.
+// Sets the job's outcome; a red one (failed, stopped) skips its open dependents and returns their skipped runs. The
+// job's gate, if its batch has one, ends here once nothing of the batch is open (settleGate).
 async function endJob(trx: Trx, jobId: string, ref: string | null, state: JobState): Promise<string[]> {
-  await trx.updateTable('jobs').set({ state }).where('id', '=', jobId).execute()
+  const { batch_id } = await trx
+    .updateTable('jobs')
+    .set({ state })
+    .where('id', '=', jobId)
+    .returning('batch_id')
+    .executeTakeFirstOrThrow()
+  const skipped = await skipDependents(trx, jobId, ref, state)
+  if (batch_id !== null) await settleGate(trx, batch_id)
+  return skipped
+}
+
+async function skipDependents(trx: Trx, jobId: string, ref: string | null, state: JobState): Promise<string[]> {
   if (state === 'finished') return []
   // Only open jobs carry the walk on: a dependent that already finished (its dependency was retried by hand after
   // it ran) does not hold back the jobs after it.

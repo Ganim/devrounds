@@ -127,8 +127,8 @@ older than 7 days: run `pnpm devlanes-sync --fetch` first (CI must do the same).
 
 ## Queues, batches and schedules
 
-Every run waits in a queue of its project. `default` is created the first time a run uses it; any other queue is
-created first:
+Every run waits in a queue of its project. `default` is created the first time a run uses it, and `gates` (where a
+gate's checks go) the first time a gate uses it; any other queue is created first:
 
 ```
 devrounds queue set <key> [--priority <n>] [--concurrency <n>|none] [--machine-concurrency <n>|none]
@@ -197,6 +197,14 @@ is tried again: `on` lists the failure classes (default `[infra]`), `max_attempt
 retry) and the next attempt is queued `backoff_s × 2^(attempt − 1)` seconds after the run ended (default 30, at most
 1 h). A requeue after an expired offer is not an attempt. `roadmap/fixtures/job-types/flaky.yaml` and
 `roadmap/fixtures/batches/dag.yaml` are the examples `pnpm e2e` runs.
+
+A gate (`POST /api/projects/<key>/gates`) is a repo's checks for one worktree, submitted as one batch: every check is
+pinned to the gate's machine (the one named, else the tenant's only live machine; with several, DR101 at `/machine`)
+with the gate's cwd, in the `gates` queue unless the gate file names another. One gate runs per worktree (project,
+machine and cwd with the drive letter lowercased, `/` as `\` and no trailing separator): another submit for it answers
+DR308 naming the running one. The gate ends when no check is left open, in the same transaction: `failed` if a check
+failed or was skipped, else `cancelled` if one was stopped, else `passed`; a gate whose every check is a cache hit
+passes at submit. A policy retry keeps it running; a person's retry after it ended leaves it as it is.
 
 A schedule queues a job of a job type on a clock:
 

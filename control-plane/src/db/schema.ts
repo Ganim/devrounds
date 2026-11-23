@@ -1,9 +1,9 @@
 import type { ColumnType, Generated, Selectable } from 'kysely'
 
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
-// 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts, 0018_job_env.ts, 0019_placement.ts
-// and 0020_result_cache.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as strings, so those stay
-// strings here.
+// 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts, 0018_job_env.ts, 0019_placement.ts,
+// 0020_result_cache.ts and 0021_gates.ts (0002, 0003 and 0007 add no columns). pg returns int8 and numeric as
+// strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -276,6 +276,26 @@ export interface JobBatchesTable {
   created_at: Timestamp
 }
 
+export type GateState = 'running' | 'passed' | 'failed' | 'cancelled'
+
+export interface GatesTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  key: string
+  machine_id: string
+  // As the caller spelled it; cwd_key is the worktree lock's key (gates/file.ts normalizeCwd).
+  cwd: string
+  cwd_key: string
+  head_sha: string | null
+  dirty: boolean | null
+  batch_id: string
+  state: Generated<GateState>
+  created_by: string
+  created_at: Timestamp
+  finished_at: NullableTimestamp
+}
+
 export interface JobDependenciesTable {
   tenant_id: string
   job_id: string
@@ -393,6 +413,7 @@ export interface Database {
   queue_job_types: QueueJobTypesTable
   job_batches: JobBatchesTable
   job_dependencies: JobDependenciesTable
+  gates: GatesTable
   runs: RunsTable
   learned_needs: LearnedNeedsTable
   run_steps: RunStepsTable
