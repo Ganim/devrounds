@@ -1,0 +1,10 @@
+# The gate case of pnpm e2e: check a runs 4 s, b after it. pnpm e2e submits copies with its own cache keys and mark.
+key: e2e
+checks:
+  - ref: a
+    job_type: gate-check
+    args: [--run-ms, "4000"]
+    env: { DR_E2E_MARK: mark }
+  - ref: b
+    job_type: gate-check
+    depends_on: [a]

@@ -12,6 +12,9 @@
 //   expiry     `run` suspended, a run pinned to its machine is offered and not answered: after 5 s it is
 //              stopped/infra with a requeue run; `run` resumed → the requeue finishes, the first never started
 //   orphan     `run` killed under a live run, restarted by its supervisor: the run is orphaned, killed, tree gone
+//   gate       roadmap/fixtures/gates/e2e.yaml three times in one directory: a second gate refused with DR308 while the
+//              first runs; a waiting one (--wait-lock) created after the first ended; a third with the first's cache
+//              keys passes at submit, every check cachedFrom the first's runs; the mark in a log; gate indicators
 //   re-pair    the machine revoked, the same home paired again as a new machine: synthetic finishes on it
 // then measures both sides with scripts/footprint.ts after 60 s idle, plus `serve` alone against an early warning,
 // and checks that `run` exits once its supervisor is gone. Nothing is installed; everything it started, and nothing
@@ -28,6 +31,7 @@ import { bootstrap } from '../../control-plane/src/admin.ts'
 import { runCli } from '../../control-plane/src/cli/commands.ts'
 import { createDb } from '../../control-plane/src/db/connection.ts'
 import { migrateToLatest } from '../../control-plane/src/db/migrate.ts'
+import { parseGateFile } from '../../control-plane/src/gates/file.ts'
 import { parseBatchFile } from '../../control-plane/src/jobs/batch-file.ts'
 import {
   TEST_ADMIN_URL,
@@ -47,6 +51,7 @@ const EXE = join(RELEASE, 'devrounds-executor.exe')
 const FIXTURE = join(RELEASE, 'tree-fixture.exe')
 const JOB_TYPES = join(ROOT, 'roadmap', 'fixtures', 'job-types')
 const DAG_BATCH = join(ROOT, 'roadmap', 'fixtures', 'batches', 'dag.yaml')
+const GATE_FILE = join(ROOT, 'roadmap', 'fixtures', 'gates', 'e2e.yaml')
 const PORT = 4993
 const BASE = `http://127.0.0.1:${PORT}`
 const PROJECT = 'devrounds'
@@ -69,6 +74,13 @@ type RunJson = {
   steps: { name: string; outcome: string | null }[]
 }
 type Proc = { ProcessId: number; CommandLine: string | null }
+type GateJson = {
+  id: string
+  state: string
+  createdAt: string
+  finishedAt: string | null
+  checks: { ref: string; runId: string; cachedFrom: string | null }[]
+}
 
 const started = Date.now()
 const log = (line: string) => console.log(`[e2e ${((Date.now() - started) / 1000).toFixed(1)} s] ${line}`)
@@ -455,6 +467,78 @@ async function main(): Promise<void> {
       return p && p.ProcessId !== killed.ProcessId ? p : undefined
     })
     log(`orphan run orphaned, orphan_action killed, tree gone; run restarted as ${restarted.ProcessId}`)
+
+    // gate: one worktree, one running gate; the lock waits, the result cache answers.
+    log('gate: lock DR308, --wait-lock, and a full cache hit')
+    await cli('queue', 'set', 'gates', '--machine-concurrency', '2')
+    const gateDir = join(tmp, 'gate')
+    await mkdir(gateDir)
+    const mark = `mark-${randomBytes(4).toString('hex')}`
+    // JSON is YAML: copies of the fixture with this e2e's cache keys and mark.
+    const gateFile = async (name: string, keys: string): Promise<string> => {
+      const file = parseGateFile(await readFile(GATE_FILE, 'utf8'))
+      for (const check of file.checks) {
+        check.cache_key = `${keys}-${check.ref}`
+        if (check.env) check.env = { DR_E2E_MARK: mark }
+      }
+      const path = join(tmp, `gate-${name}.yaml`)
+      await writeFile(path, JSON.stringify(file))
+      return path
+    }
+    const firstKeys = `e2e-${randomUUID()}`
+    const firstFile = await gateFile('first', firstKeys)
+    const secondFile = await gateFile('second', `e2e-${randomUUID()}`)
+    const thirdFile = await gateFile('third', firstKeys)
+    await cli('jobtype', 'set', join(JOB_TYPES, 'gate-check.yaml'))
+    const gateJson = async (id: string) => api<GateJson>(`/projects/${PROJECT}/gates/${id}`)
+    const first = JSON.parse(await cli('gate', 'run', firstFile, '--cwd', gateDir, '--json')) as GateJson
+    assert.equal(first.state, 'running', JSON.stringify(first))
+    const refused = await runCli(['gate', 'run', secondFile, '--cwd', gateDir, '--no-wait-lock'], {
+      env: cliEnv,
+      configPath: join(tmp, 'cli.json'),
+    })
+    assert.equal(refused.exitCode, 1, `${refused.stdout}${refused.stderr}`)
+    assert.match(`${refused.stdout}${refused.stderr}`, /DR308/)
+    assert.ok(`${refused.stdout}${refused.stderr}`.includes(first.id), `DR308 does not name ${first.id}`)
+    const second = JSON.parse(
+      await cli('gate', 'run', secondFile, '--cwd', gateDir, '--wait-lock', '60', '--wait', '--json'),
+    ) as GateJson
+    assert.equal(second.state, 'passed', JSON.stringify(second))
+    const firstEnded = await gateJson(first.id)
+    assert.equal(firstEnded.state, 'passed', JSON.stringify(firstEnded))
+    assert.ok(
+      (firstEnded.finishedAt ?? '~') <= second.createdAt,
+      `gate 2 was created at ${second.createdAt}, before gate 1 ended at ${firstEnded.finishedAt}`,
+    )
+    // Every check a hit of gate 1's run: the gate passes at submit.
+    const third = JSON.parse(await cli('gate', 'run', thirdFile, '--cwd', gateDir, '--json')) as GateJson
+    assert.equal(third.state, 'passed', JSON.stringify(third))
+    for (const check of third.checks) {
+      const source = firstEnded.checks.find((c) => c.ref === check.ref)
+      assert.equal(check.cachedFrom, source?.runId, `check ${check.ref} is not a hit: ${JSON.stringify(third)}`)
+    }
+    const checkA = firstEnded.checks.find((c) => c.ref === 'a') ?? assert.fail(JSON.stringify(firstEnded))
+    await until('the mark in the log of check a', 30_000, async () => {
+      const out = await cli('run', 'logs', checkA.runId)
+      return out.includes(`DR_E2E_MARK=${mark}`) ? out : undefined
+    })
+    const indicators = await api<{ gates: { passed: number; cacheHitShare: number | null }[] }>(
+      `/projects/${PROJECT}/indicators/gates`,
+    )
+    assert.equal(
+      indicators.gates.reduce((sum, row) => sum + row.passed, 0),
+      3,
+      JSON.stringify(indicators),
+    )
+    assert.ok(
+      indicators.gates.some((row) => (row.cacheHitShare ?? 0) > 0),
+      JSON.stringify(indicators),
+    )
+    // Gates 1 and 2 ran a and b each; gate 3's hits are not runs of the machine.
+    const runRows = await api<{ jobType: string; runs: number }[]>(`/projects/${PROJECT}/indicators`)
+    const gateCheckRuns = runRows.filter((r) => r.jobType === 'gate-check').reduce((sum, r) => sum + r.runs, 0)
+    assert.equal(gateCheckRuns, 4, `cached runs are counted: ${JSON.stringify(runRows)}`)
+    log(`gate: DR308 named ${first.id}; gate 2 waited and passed; gate 3 hit gate 1's runs; indicators 3 passed`)
 
     // re-pair: the home keeps its event history while the control plane makes a new machine at last_seq 0, so the
     // executor's next seq used to read as a gap and then as a duplicate forever, and the run stayed offered.
