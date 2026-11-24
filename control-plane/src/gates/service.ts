@@ -39,6 +39,8 @@ export type GateView = {
     failureClass: FailureClass | null
     failureSummary: string | null
     durationMs: number | null
+    // The run's exit code; a cache hit shows its source run's. Null for a run that never exited.
+    exitCode: number | null
   }[]
 }
 
@@ -191,6 +193,8 @@ export async function waitForGate(
 const msBetween = (from: Date | null, to: Date | null) =>
   from === null || to === null ? null : to.getTime() - from.getTime()
 
+const exitCodeOf = (value: string | null) => (value === null ? null : Number(value))
+
 async function loadGateView(trx: Trx, projectId: string, id: string): Promise<GateView> {
   const gate = await trx
     .selectFrom('gates as g')
@@ -215,6 +219,7 @@ async function loadGateView(trx: Trx, projectId: string, id: string): Promise<Ga
     .selectFrom('jobs as j')
     .innerJoin('job_types as jt', 'jt.id', 'j.job_type_id')
     .innerJoin('runs as r', 'r.job_id', 'j.id')
+    .leftJoin('runs as src', 'src.id', 'r.cached_from_run_id')
     .select([
       'j.ref',
       'jt.key as job_type',
@@ -227,6 +232,8 @@ async function loadGateView(trx: Trx, projectId: string, id: string): Promise<Ga
       'r.failure_summary',
       'r.started_at',
       'r.finished_at',
+      'r.exit_code',
+      'src.exit_code as source_exit_code',
     ])
     .where('j.batch_id', '=', gate.batch_id)
     .where(({ eb, selectFrom }) =>
@@ -263,6 +270,7 @@ async function loadGateView(trx: Trx, projectId: string, id: string): Promise<Ga
       failureClass: check.failure_class,
       failureSummary: check.failure_summary,
       durationMs: msBetween(check.started_at, check.finished_at),
+      exitCode: exitCodeOf(check.exit_code ?? check.source_exit_code),
     })),
   }
 }

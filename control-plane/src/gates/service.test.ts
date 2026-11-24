@@ -220,6 +220,40 @@ test('the gate passes when its last check finishes, and the worktree takes a new
   assert.equal((await s.submit(ONE)).state, 'running')
 })
 
+test("gate view carries each check's exit code, null for skipped and queued", async () => {
+  const s = await setup()
+  const gate = await s.submit({
+    key: 'codes',
+    checks: [
+      { ref: 'a', job_type: 'check' },
+      { ref: 'b', job_type: 'check', depends_on: ['a'] },
+      { ref: 'c', job_type: 'lint' },
+      { ref: 'd', job_type: 'lint', depends_on: ['c'] },
+    ],
+  })
+  await s.end(runOf(gate, 'a'), 1)
+  await s.end(runOf(gate, 'c'), 0)
+  assert.deepEqual(
+    (await s.show(gate.id)).checks.map((c) => [c.ref, c.runState, c.exitCode]),
+    [
+      ['a', 'failed', 1],
+      ['b', 'skipped', null],
+      ['c', 'finished', 0],
+      ['d', 'queued', null],
+    ],
+  )
+})
+
+test("a cached check shows its source run's exit code", async () => {
+  const s = await setup()
+  const file: GateFile = { key: 'cached-code', checks: [{ ref: 'only', job_type: 'check', cache_key: 'tree-1' }] }
+  const first = await s.submit(file)
+  await s.end(runOf(first, 'only'))
+  const second = await s.submit(file)
+  assert.equal(second.checks[0].cachedFrom, runOf(first, 'only'))
+  assert.equal(second.checks[0].exitCode, 0)
+})
+
 test('a red check fails the gate once its dependents are skipped', async () => {
   const s = await setup()
   const gate = await s.submit({

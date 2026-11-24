@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
@@ -333,6 +333,32 @@ type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
 
 // GET /runs/:id/logs (runs/log-store.ts LogPage, with the cursor as a number).
 type LogPageJson = { lines: { seq: number; text: string }[]; nextCursor: number | null }
+
+// `run logs --out`: every page through the same route, one line per log line (the lines carry no newline), written
+// raw: unlike the printed page, nothing is escaped or cut. The directory is checked first so a typo costs no requests.
+async function writeWholeLog(api: Api, id: string, out: string, first: string | undefined): Promise<Result> {
+  const dir = dirname(out)
+  const isDir = await stat(dir).then(
+    (s) => s.isDirectory(),
+    () => false,
+  )
+  if (!isDir) {
+    fail('DR101', { path: '--out', reason: `directory ${dir} does not exist` })
+  }
+  const chunks: string[] = []
+  let cursor = first
+  for (;;) {
+    const page = await api.get<LogPageJson>(path('runs', id, 'logs'), { cursor })
+    for (const line of page.lines) chunks.push(`${line.text}\n`)
+    if (page.nextCursor === null) break
+    // A cursor that does not move would loop forever.
+    if (String(page.nextCursor) === cursor) fail('DR501', {})
+    cursor = String(page.nextCursor)
+  }
+  const bytes = Buffer.from(chunks.join(''))
+  await writeFile(out, bytes)
+  return { failures: [], body: [`wrote ${bytes.length} bytes to ${out}`], next: `devrounds run show ${shellArg(id)}` }
+}
 
 const TERMINAL_RUN = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 // Below the client's 30 s timeout, so a long wait is several requests that each answer in time.
@@ -1099,10 +1125,12 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['run', 'logs'],
-    usage: 'run logs <id> [--cursor <n>]   the run output, 16384 bytes a page; --cursor is a line seq',
+    usage:
+      'run logs <id> [--cursor <n>] [--out <file>]   the run output, 16384 bytes a page; --cursor is a line seq; ' +
+      '--out writes every page to the file',
     args: 1,
     // Not `pages`: the cursor is the seq of a log line, which the server pages by, not a body line index.
-    options: { cursor: str },
+    options: { cursor: str, out: str },
     run: async (inv, connect) => {
       const api = await connect()
       const id = arg(inv, 0, '<id>')
@@ -1110,6 +1138,8 @@ export const COMMANDS: Spec[] = [
       if (cursor !== undefined && !/^\d{1,19}$/.test(cursor)) {
         fail('DR101', { path: '--cursor', reason: 'must be a line seq (an integer >= 0)' })
       }
+      const out = text(inv, 'out')
+      if (out !== undefined) return writeWholeLog(api, id, out, cursor)
       const page = await api.get<LogPageJson>(path('runs', id, 'logs'), { cursor })
       const lines = page.lines.map((line) => line.text)
       // The server counts raw text; printed lines are escaped (oneLine) and may be longer, so the budget is checked

@@ -256,6 +256,9 @@ submit.
 The output lists failed, skipped and stopped checks first (`<ref> <runState> <class> <duration> <summary>`, then
 `log: devrounds run logs <runId>`), then the gate line and the other checks; the last line is the next command.
 `--json` prints the gate view as the control plane answers it (`GET /gates/<id>`), and nothing else.
+Each check carries `exitCode` there: the latest run's exit code, a cached check's source run's, null for a run that never exited (queued, skipped).
+
+`devrounds run logs <id> --out <file>` fetches every page and writes the whole log to the file (created or replaced), then prints `wrote <bytes> bytes to <file>`. DR101 when the directory does not exist. Without `--out` it prints one page.
 
 DevRounds's own checks are `roadmap/fixtures/gates/devrounds.yaml`, with job types `devrounds-*` in `roadmap/fixtures/job-types` (`jobtype set` each one first):
 

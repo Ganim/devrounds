@@ -701,6 +701,66 @@ test('gate show lists failed checks first with class, duration, summary and the 
   ])
 })
 
+test('run logs --out writes a 3-page log byte for byte and prints one line', async (t) => {
+  const dir = await scratch('logs-')
+  t.after(() => removeDir(dir))
+  const pages: Record<string, { lines: { seq: number; text: string }[]; nextCursor: number | null }> = {
+    '': {
+      lines: [
+        { seq: 1, text: 'alpha' },
+        { seq: 2, text: 'bravo' },
+      ],
+      nextCursor: 3,
+    },
+    '3': { lines: [{ seq: 3, text: 'charlie é' }], nextCursor: 4 },
+    '4': {
+      lines: [
+        { seq: 4, text: '' },
+        { seq: 5, text: 'echo' },
+      ],
+      nextCursor: null,
+    },
+  }
+  const cursors: string[] = []
+  const fake = await fakeServer((req, res) => {
+    const cursor = new URL(req.url ?? '', 'http://x').searchParams.get('cursor') ?? ''
+    cursors.push(cursor)
+    json(res, pages[cursor])
+  })
+  t.after(fake.close)
+
+  const file = join(dir, 'run.log')
+  await writeFile(file, 'stale content that is longer than the log')
+  const res = await runCli(['run', 'logs', 'run-1', '--out', file], { env: fake.env, configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 0, res.stderr)
+  const expected = 'alpha\nbravo\ncharlie é\n\necho\n'
+  assert.deepEqual(await readFile(file), Buffer.from(expected))
+  assert.deepEqual(cursors, ['', '3', '4'])
+  assert.deepEqual(res.stdout.trimEnd().split('\n'), [
+    `wrote ${Buffer.byteLength(expected)} bytes to ${file}`,
+    'next: devrounds run show run-1',
+  ])
+})
+
+test('run logs --out in a directory that does not exist exits 2 with DR101 before any request', async (t) => {
+  const dir = await scratch('logs-')
+  t.after(() => removeDir(dir))
+  let requests = 0
+  const fake = await fakeServer((_req, res) => {
+    requests++
+    json(res, { lines: [], nextCursor: null })
+  })
+  t.after(fake.close)
+
+  const res = await runCli(['run', 'logs', 'run-1', '--out', join(dir, 'missing', 'run.log')], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 2)
+  assert.match(res.stderr, /^DR101 /)
+  assert.equal(requests, 0)
+})
+
 test('a cached check prints cached from its source run', async (t) => {
   const fake = await fakeServer((_req, res) =>
     json(
