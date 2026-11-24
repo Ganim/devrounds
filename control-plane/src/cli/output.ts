@@ -118,6 +118,15 @@ export function planShow(plan: PlanView, opts: { phase?: string }): { body: stri
     for (const c of openPhaseCriteria) body.push(`    ${criterionLine(c)}`)
   }
 
+  const openUnphased = plan.unphased.filter((t) => t.state !== 'done' && t.state !== 'cancelled')
+  if (openUnphased.length > 0) {
+    body.push('unphased:')
+    for (const task of openUnphased) {
+      body.push(`  ${task.key} ${task.state}  ${task.title}`)
+      for (const c of task.criteria.filter((c) => !c.checked)) body.push(`    ${criterionLine(c)}`)
+    }
+  }
+
   const toStart = current.tasks.find(startable)
   if (toStart) return { body, next: `devrounds task start ${shellArg(toStart.key)}` }
   const toFinish = current.tasks.find((t) => t.state === 'in_progress' && allChecked(t))

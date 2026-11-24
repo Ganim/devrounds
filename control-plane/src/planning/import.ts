@@ -1,10 +1,11 @@
 import { fail } from '../errors/error.ts'
-import { findIssue, type PlanFile, type PlanFileCriterion, type PlanFileTask } from './plan-file.ts'
+import { findIssue, type PlanFile, type PlanFileCriterion, type PlanFileLink, type PlanFileTask } from './plan-file.ts'
 import { type Ctx, findProject, run, type Target, type Trx } from './resolve.ts'
 import { ALLOWED, isPhaseClosable, type TaskState } from './rules.ts'
 import {
   addCriterion,
   addDependency,
+  addLink,
   addPhase,
   addPhaseDependency,
   addTask,
@@ -17,7 +18,7 @@ import {
   movePhase,
   transition,
 } from './service.ts'
-import { type CriterionView, getPlan, type PhaseView, type PlanView, type TaskView } from './view.ts'
+import { type CriterionView, getPlan, type LinkView, type PhaseView, type PlanView, type TaskView } from './view.ts'
 
 export type ImportResult = {
   created: string[] // project, phase and task keys
@@ -73,14 +74,17 @@ class Importer {
   private readonly trx: Trx
   private readonly file: PlanFile
   private readonly projectKey: string
-  private readonly fileTasks: Array<{ phaseKey: string; task: PlanFileTask }>
+  private readonly fileTasks: Array<{ phaseKey: string | null; task: PlanFileTask }>
 
   constructor(c: Ctx, trx: Trx, file: PlanFile) {
     this.c = c
     this.trx = trx
     this.file = file
     this.projectKey = file.project.key
-    this.fileTasks = file.phases.flatMap((phase) => phase.tasks.map((task) => ({ phaseKey: phase.key, task })))
+    this.fileTasks = [
+      ...(file.tasks ?? []).map((task) => ({ phaseKey: null, task })),
+      ...file.phases.flatMap((phase) => phase.tasks.map((task) => ({ phaseKey: phase.key as string | null, task }))),
+    ]
   }
 
   async run(): Promise<ImportResult> {
@@ -100,6 +104,8 @@ class Importer {
     await this.addEdges(plan)
     plan = await getPlan(this.c, projectKey)
     await this.syncCriteria(plan)
+    plan = await getPlan(this.c, projectKey)
+    await this.syncLinks(plan)
     // A phase the file delivers that is closable already closes before the task states: no task transition would
     // deliver it, and a task of a phase it blocks could not start (DR304).
     await this.deliverPhases((p) =>
@@ -194,7 +200,7 @@ class Importer {
       const [{ phaseKey, task }] = pending.splice(index, 1)
       await addTask(c, {
         projectKey,
-        phaseKey,
+        phaseKey: phaseKey ?? undefined,
         key: task.key,
         title: task.title,
         description: task.description,
@@ -244,6 +250,25 @@ class Importer {
         tasks.get(task.key) ?? [],
         task.criteria,
       )
+    }
+  }
+
+  // Adds what the file lists and the plan lacks, by (kind, ref); never deletes.
+  private async syncLinks(plan: PlanView): Promise<void> {
+    const phases = new Map(plan.phases.map((p) => [p.key, p.links]))
+    const tasks = new Map(allTasks(plan).map((t) => [t.key, t.links]))
+    const sync = async (target: Target, db: LinkView[], file: PlanFileLink[] = []) => {
+      for (const link of file) {
+        if (db.some((d) => d.kind === link.kind && d.ref === link.ref)) continue
+        await addLink(this.c, { ...target, ...link })
+        this.touched.add((target.taskKey ?? target.phaseKey) as string)
+      }
+    }
+    for (const phase of this.file.phases) {
+      await sync({ projectKey: this.projectKey, phaseKey: phase.key }, phases.get(phase.key) ?? [], phase.links)
+    }
+    for (const { task } of this.fileTasks) {
+      await sync({ projectKey: this.projectKey, taskKey: task.key }, tasks.get(task.key) ?? [], task.links)
     }
   }
 

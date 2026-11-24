@@ -1,14 +1,19 @@
 import { stringify } from 'yaml'
 import type { PlanFile, PlanFileCriterion, PlanFileTask } from './plan-file.ts'
 import { type Ctx, run } from './resolve.ts'
-import { type CriterionView, getPlan, type TaskView } from './view.ts'
+import { type CriterionView, getPlan, type LinkView, type TaskView } from './view.ts'
 
 const criteriaOf = (criteria: CriterionView[]): PlanFileCriterion[] =>
   criteria.map((c) => (c.evidence === null ? c.text : { text: c.text, evidence: c.evidence }))
 
+const linksOf = (links: LinkView[]) =>
+  links.length === 0
+    ? {}
+    : { links: links.map((l) => ({ kind: l.kind, ref: l.ref, ...(l.title !== null && { title: l.title }) })) }
+
 // The current plan as a plan file that importPlan takes back as a no-op: optional fields appear only when set, and
-// blocked/cancelled carry the reason of the task's latest transition. Tasks without a phase have no place in the
-// file and are left out (an import reports them in onlyInDb).
+// blocked/cancelled carry the reason of the task's latest transition. Tasks without a phase go in the top-level
+// `tasks:`.
 export function exportPlan(ctx: Ctx, projectKey: string): Promise<string> {
   return run(ctx, async (trx) => {
     const plan = await getPlan({ ...ctx, trx }, projectKey)
@@ -36,12 +41,14 @@ export function exportPlan(ctx: Ctx, projectKey: string): Promise<string> {
         ...(t.parent !== null && { parent: t.parent }),
         ...(t.blockedBy.length > 0 && { blocked_by: t.blockedBy }),
         ...(t.criteria.length > 0 && { criteria: criteriaOf(t.criteria) }),
+        ...linksOf(t.links),
         ...(t.state !== 'todo' && { state: t.state }),
         ...(reason && { reason }),
       }
     }
     const file: PlanFile = {
       project: plan.project,
+      ...(plan.unphased.length > 0 && { tasks: plan.unphased.map(task) }),
       phases: plan.phases.map((p) => ({
         key: p.key,
         title: p.title,
@@ -49,6 +56,7 @@ export function exportPlan(ctx: Ctx, projectKey: string): Promise<string> {
         ...(p.state === 'delivered' && { state: 'delivered' as const }),
         ...(p.blockedBy.length > 0 && { blocked_by: p.blockedBy }),
         ...(p.criteria.length > 0 && { criteria: criteriaOf(p.criteria) }),
+        ...linksOf(p.links),
         tasks: p.tasks.map(task),
       })),
     }

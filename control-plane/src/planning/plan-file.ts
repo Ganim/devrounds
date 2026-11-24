@@ -12,6 +12,9 @@ const Criterion = Type.Union([
   Type.Object({ text: Text, evidence: Type.String({ pattern: EVIDENCE.source }) }, { additionalProperties: false }),
 ])
 
+// Added by (kind, ref) on import; import never removes one.
+const Link = Type.Object({ kind: Key, ref: Text, title: Type.Optional(Type.String()) }, { additionalProperties: false })
+
 const PlanFileTask = Type.Object(
   {
     key: Key,
@@ -22,6 +25,7 @@ const PlanFileTask = Type.Object(
     parent: Type.Optional(Key),
     blocked_by: Type.Optional(Type.Array(Key)),
     criteria: Type.Optional(Type.Array(Criterion)),
+    links: Type.Optional(Type.Array(Link)),
     // Omitted = todo. Import never moves a task back to todo (see import.ts).
     state: Type.Optional(
       Type.Union([
@@ -47,6 +51,7 @@ const PlanFilePhase = Type.Object(
     state: Type.Optional(Type.Union([Type.Literal('open'), Type.Literal('delivered')])),
     blocked_by: Type.Optional(Type.Array(Key)),
     criteria: Type.Optional(Type.Array(Criterion)),
+    links: Type.Optional(Type.Array(Link)),
     tasks: Type.Array(PlanFileTask),
   },
   { additionalProperties: false },
@@ -55,6 +60,8 @@ const PlanFilePhase = Type.Object(
 export const PlanFileSchema = Type.Object(
   {
     project: Type.Object({ key: Key, name: Text }, { additionalProperties: false }),
+    // Tasks without a phase (finding tasks among them).
+    tasks: Type.Optional(Type.Array(PlanFileTask)),
     phases: Type.Array(PlanFilePhase),
   },
   { additionalProperties: false },
@@ -62,6 +69,7 @@ export const PlanFileSchema = Type.Object(
 
 export type PlanFile = Static<typeof PlanFileSchema>
 export type PlanFileTask = Static<typeof PlanFileTask>
+export type PlanFileLink = Static<typeof Link>
 export type PlanFileCriterion = Static<typeof Criterion>
 
 // Schema first, then what a schema cannot say: keys are unique across the file.
@@ -77,6 +85,10 @@ export function findIssue(value: unknown): Issue | null {
       if (seen.has(task.key)) return { path: `/phases/${p}/tasks/${t}/key`, reason: `key ${task.key} appears twice` }
       seen.add(task.key)
     }
+  }
+  for (const [t, task] of (file.tasks ?? []).entries()) {
+    if (seen.has(task.key)) return { path: `/tasks/${t}/key`, reason: `key ${task.key} appears twice` }
+    seen.add(task.key)
   }
   return null
 }

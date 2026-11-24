@@ -347,3 +347,80 @@ phases:
   await rejectsWith(addCriterion(ctx, { projectKey, taskKey: 'P1-T01', text: 'late' }), 'DR307')
   assert.equal(await eventCount(ctx), before)
 })
+
+const WITH_LINKS = `
+project: { key: devrounds, name: DevRounds }
+tasks:
+  - key: F-0001
+    title: Loose finding
+    links:
+      - { kind: finding, ref: gate-1/lint, title: Lint failed }
+phases:
+  - key: P0
+    title: Foundation
+    goal: Plan in the database
+    links:
+      - { kind: doc, ref: docs/plan.md }
+    tasks:
+      - key: P0-T01
+        title: Repo
+        links:
+          - { kind: pr, ref: '12' }
+`
+
+test('export then import of a plan with links and unphased tasks changes nothing', async () => {
+  const { ctx } = await setup()
+  await importPlan(ctx, parsePlanFile(WITH_LINKS))
+  const before = await eventCount(ctx)
+
+  const exported = await exportPlan(ctx, projectKey)
+  const result = await importPlan(ctx, parsePlanFile(exported))
+
+  assert.match(exported, /^tasks:\n {2}- key: F-0001/m)
+  assert.deepEqual(result, { created: [], updated: [], unchanged: 3, onlyInDb: [] })
+  assert.equal(await eventCount(ctx), before)
+})
+
+test('import adds a link missing by kind and ref and never adds it twice', async () => {
+  const { ctx } = await setup()
+  await importPlan(ctx, parsePlanFile(SEED))
+
+  const withLink = SEED.replace('title: Repo\n', 'title: Repo\n        links: [{ kind: pr, ref: "7" }]\n')
+  const first = await importPlan(ctx, parsePlanFile(withLink))
+  const before = await eventCount(ctx)
+  const second = await importPlan(ctx, parsePlanFile(withLink))
+
+  assert.deepEqual(first.updated, ['P0-T01'])
+  assert.deepEqual(second.updated, [])
+  assert.equal(await eventCount(ctx), before)
+  const plan = await getPlan(ctx, projectKey)
+  assert.deepEqual(plan.phases[0].tasks[0].links, [{ kind: 'pr', ref: '7', title: null }])
+})
+
+test('a top-level task is created without a phase, and a phased task listed at top level leaves its phase', async () => {
+  const { ctx } = await setup()
+  await importPlan(ctx, parsePlanFile(WITH_LINKS))
+  let plan = await getPlan(ctx, projectKey)
+  assert.deepEqual(
+    plan.unphased.map((t) => t.key),
+    ['F-0001'],
+  )
+
+  const moved = WITH_LINKS.replace('tasks:\n', 'tasks:\n  - { key: P0-T01, title: Repo }\n').replace(
+    /\n {6}- key: P0-T01\n {8}title: Repo\n {8}links:\n {10}- \{ kind: pr, ref: '12' \}/,
+    ' []',
+  )
+  await importPlan(ctx, parsePlanFile(moved))
+
+  plan = await getPlan(ctx, projectKey)
+  assert.deepEqual(plan.unphased.map((t) => t.key).sort(), ['F-0001', 'P0-T01'])
+  assert.deepEqual(plan.phases[0].tasks, [])
+})
+
+test('a key at top level and in a phase answers DR101 at /tasks/0/key', () => {
+  const dup = WITH_LINKS.replace('key: F-0001', 'key: P0-T01')
+  assert.throws(
+    () => parsePlanFile(dup),
+    (err) => err instanceof DevRoundsError && err.code === 'DR101' && JSON.stringify(err.data).includes('/tasks/0/key'),
+  )
+})

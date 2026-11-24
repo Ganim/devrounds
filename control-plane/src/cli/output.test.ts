@@ -126,3 +126,13 @@ test('keys that are not plain words are quoted in next', () => {
   view.phases[0].tasks[0].state = 'blocked'
   assert.equal(planShow(view, {}).next, `nothing startable: 1 blocked — devrounds plan show --phase 'P 0'`)
 })
+
+test('plan show lists open unphased tasks under unphased:', () => {
+  const open = { position: 1, text: 'fixed', checked: false, checkedAt: null, checkedBy: null, evidence: null }
+  const view = plan([phase('P0', 1, [task('P0-T01', 'todo')])])
+  view.unphased = [task('F-0001', 'todo', { criteria: [open] }), task('F-0002', 'done')]
+  const body = planShow(view, {}).body
+  const at = body.indexOf('unphased:')
+  assert.ok(at > body.indexOf('  P0-T01 todo  Task P0-T01'), body.join('\n'))
+  assert.deepEqual(body.slice(at), ['unphased:', '  F-0001 todo  Task F-0001', '    [ ] 1 fixed'])
+})
