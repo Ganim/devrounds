@@ -193,7 +193,7 @@ export function improvementShow(r: ImprovementReport): { failures: string[]; bod
         `unclassified share ${share(r.unclassifiedShare)}`,
       ...r.slowestSteps.map((s) => fmt`slow step ${s.jobType} ${s.step} p50 ${seconds(s.p50Ms)} over ${s.runs} runs`),
       ...r.retries.map(
-        (x) => fmt`retries ${x.jobType} ${x.retries}, daily mean before ${x.baselineDailyMean?.toFixed(1)}`,
+        (x) => fmt`retries ${x.jobType} ${x.retries}, daily mean before ${x.baselineDailyMean.toFixed(1)}`,
       ),
     ],
   }

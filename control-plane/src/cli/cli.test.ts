@@ -745,10 +745,12 @@ test('report improvement --open-tasks opens each finding once across two runs', 
     .select(['job_id', 'job_type_id', 'project_id'])
     .where('id', '=', queued.id)
     .executeTakeFirstOrThrow()
-  // Two unclassified failures on 2026-11-10 in the tenant's default America/Sao_Paulo and none before: the class
-  // doubled and the unclassified share are the two findings.
-  for (const [i, at] of ['2026-11-10T15:00:00Z', '2026-11-10T16:00:00Z'].entries()) {
-    const finished = Date.parse(at)
+  // Two check_red and two unclassified failures on 2026-11-10 in the tenant's default America/Sao_Paulo and none
+  // before: check_red doubled and the unclassified share are the two findings. Unclassified doubled too, but the
+  // share already tracks it, so it opens no class task of its own.
+  const failures = ['check_red', 'check_red', 'unclassified', 'unclassified'] as const
+  for (const [i, failureClass] of failures.entries()) {
+    const finished = Date.parse(`2026-11-10T1${i}:00:00Z`)
     await t.admin
       .insertInto('runs')
       .values({
@@ -756,7 +758,7 @@ test('report improvement --open-tasks opens each finding once across two runs', 
         ...job,
         attempt: i + 2,
         state: 'failed',
-        failure_class: 'unclassified',
+        failure_class: failureClass,
         queued_at: new Date(finished - 5000),
         not_before: new Date(finished - 5000),
         started_at: new Date(finished - 1000),
@@ -775,7 +777,7 @@ test('report improvement --open-tasks opens each finding once across two runs', 
   assert.equal(second.exitCode, 0, second.stderr)
   assert.match(first.stdout, /^opened F-0001 /m)
   assert.match(first.stdout, /^opened F-0002 /m)
-  assert.match(second.stdout, /^already open F-0001 improvement:class:check:unclassified$/m)
+  assert.match(second.stdout, /^already open F-0001 improvement:class:check:check_red$/m)
   assert.match(second.stdout, /^already open F-0002 improvement:unclassified$/m)
   assert.doesNotMatch(second.stdout, /^opened /m)
   const tasks = await t.admin
@@ -787,11 +789,48 @@ test('report improvement --open-tasks opens each finding once across two runs', 
   assert.deepEqual(
     tasks.map((task) => [task.key, task.source_key, task.phase_id]),
     [
-      ['F-0001', 'improvement:class:check:unclassified', null],
+      ['F-0001', 'improvement:class:check:check_red', null],
       ['F-0002', 'improvement:unclassified', null],
     ],
   )
-  assert.match(tasks[1].description, /2 of 2 failed runs on 2026-11-10/)
+  assert.match(tasks[1].description, /2 of 4 failed runs on 2026-11-10/)
   const criteria = await t.admin.selectFrom('criteria').select('text').where('task_id', '=', tasks[0].id).execute()
   assert.deepEqual(criteria, [{ text: 'explained or fixed, with evidence' }])
+})
+
+test('report improvement --open-tasks tries every finding after one is refused and exits with its code', async (t) => {
+  const finding = (sourceKey: string) => ({ sourceKey, kind: 'class_doubled', title: sourceKey, evidence: 'e' })
+  const report = {
+    day: '2026-11-10',
+    timeZone: 'America/Sao_Paulo',
+    slowestSteps: [],
+    retries: [],
+    unclassifiedShare: 1,
+    findings: [finding('refused'), finding('improvement:unclassified')],
+  }
+  const posted: string[] = []
+  const fake = await fakeServer((req, res) => {
+    if (req.method === 'GET') return json(res, report)
+    let raw = ''
+    req.on('data', (chunk) => {
+      raw += chunk
+    })
+    req.on('end', () => {
+      const { sourceKey } = JSON.parse(raw)
+      posted.push(sourceKey)
+      if (sourceKey === 'refused') {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ code: 'DR101', text: 'Invalid input.', hint: 'fix it', data: {} }))
+      }
+      json(res, { key: 'F-0002', created: true, eventId: '1' })
+    })
+  })
+  t.after(fake.close)
+
+  const res = await runCli(['report', 'improvement', '--open-tasks'], { env: fake.env, configPath: NO_CONFIG })
+
+  assert.deepEqual(posted, ['refused', 'improvement:unclassified'])
+  assert.equal(res.exitCode, 2, res.stderr)
+  assert.match(res.stdout, /^not opened refused: DR101 Invalid input\.$/m)
+  assert.match(res.stdout, /^opened F-0002 improvement:unclassified$/m)
 })

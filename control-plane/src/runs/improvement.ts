@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { sql } from 'kysely'
 import type { FailureClass } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
@@ -25,6 +26,16 @@ export type FindingKind = 'step_growth' | 'class_doubled' | 'retries_doubled' | 
 // sourceKey names the finding across days, so a finding reported again while its task is open opens nothing new
 // (planning/findings.ts).
 export type Finding = { sourceKey: string; kind: FindingKind; title: string; evidence: string }
+
+// POST /findings refuses a longer sourceKey. Job type keys stop at 200 characters but run_steps.name has no cap, so a
+// step key that would pass the limit names the step by a hash prefix instead; the title keeps the full name.
+const SOURCE_KEY_MAX = 300
+
+function stepSourceKey(jobType: string, step: string): string {
+  const key = `improvement:step:${jobType}:${step}`
+  if (key.length <= SOURCE_KEY_MAX) return key
+  return `improvement:step:${jobType}:sha256-${createHash('sha256').update(step).digest('hex').slice(0, 16)}`
+}
 
 export type ImprovementReport = {
   day: string // local YYYY-MM-DD in the tenant time zone
@@ -65,7 +76,8 @@ const percent = (share: number) => `${Math.round(share * 100)} %`
  * p50 grew, failure classes and retries that doubled, and the share of failures nobody classified. Runs count by
  * the local day they finished; cache hits ran nothing and skipped runs never started, so both are left out.
  * Steps are run_steps durations of finished steps; a job type that reported no step in the window is measured on
- * the run time of its finished runs, as step `run`.
+ * the run time of its finished runs, as step `run`. So on the day a job type starts reporting steps, its steps have no
+ * baseline (fewer than 3 samples before) and its `run` step is gone: nothing of it is compared until steps build up.
  */
 export async function improvementReport(ctx: TenantCtx, projectKey: string, day?: string): Promise<ImprovementReport> {
   if (day !== undefined) checkDay(day)
@@ -144,7 +156,7 @@ function build(day: string, timeZone: string, steps: StepRow[], counts: CountRow
     const grew = s.day_p50 - s.base_p50
     if (grew <= STEP_GROWTH_MS || grew <= s.base_p50 * STEP_GROWTH_SHARE) continue
     findings.push({
-      sourceKey: `improvement:step:${s.job_type}:${s.step}`,
+      sourceKey: stepSourceKey(s.job_type, s.step),
       kind: 'step_growth',
       title: `Step ${s.step} of ${s.job_type} got slower`,
       evidence:
@@ -176,7 +188,8 @@ function build(day: string, timeZone: string, steps: StepRow[], counts: CountRow
     }
     failed += n
     if (c.failure_class === 'unclassified') unclassified += n
-    if (doubled(n, base, CLASS_MIN, CLASS_FACTOR)) {
+    // Unclassified failures are the unclassified_share finding: one cause, one task.
+    if (c.failure_class !== 'unclassified' && doubled(n, base, CLASS_MIN, CLASS_FACTOR)) {
       findings.push({
         sourceKey: `improvement:class:${c.job_type}:${c.failure_class}`,
         kind: 'class_doubled',

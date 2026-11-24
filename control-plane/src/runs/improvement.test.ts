@@ -260,3 +260,18 @@ test('a day that is not a calendar date is DR101', async () => {
     await assert.rejects(improvementReport(ctx, projectKey, day), { code: 'DR101' })
   }
 })
+
+test('a step name too long for a source key is keyed by its hash and keeps its name in the title', async () => {
+  const { ctx, many } = await setup()
+  const name = `compile ${'x'.repeat(400)}`
+  await many(3, '2026-11-05', { steps: [{ name, s: 48 }] })
+  await many(3, DAY, { steps: [{ name, s: 60 }] })
+
+  const [first] = (await improvementReport(ctx, projectKey, DAY)).findings
+  const [again] = (await improvementReport(ctx, projectKey, DAY)).findings
+
+  assert.ok(first.sourceKey.length <= 300, first.sourceKey)
+  assert.match(first.sourceKey, /^improvement:step:check:sha256-[0-9a-f]{16}$/)
+  assert.equal(again.sourceKey, first.sourceKey)
+  assert.ok(first.title.includes(name))
+})

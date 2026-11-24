@@ -22,9 +22,15 @@ env:
     DEVROUNDS_PROJECT,
   ]
 timeout_s: 300
-# CLI exit codes (AGENTS.md): 4 control plane unreachable, 5 auth or permission.
+# CLI exit codes (AGENTS.md), every one classified so a failed report never adds to the unclassified share it
+# measures. A refused finding exits with the code of its error after every other finding was tried.
+#   4 control plane unreachable, 6 internal: infra
+#   3 project not found, 5 auth or permission: environment (the machine's DEVROUNDS_* variables)
+#   1 state conflict, 2 input: check_red (the report sent something the control plane refuses: a defect to fix)
 classify:
   - class: infra
-    exit_codes: [4]
+    exit_codes: [4, 6]
   - class: environment
-    exit_codes: [5]
+    exit_codes: [3, 5]
+  - class: check_red
+    exit_codes: [1, 2]

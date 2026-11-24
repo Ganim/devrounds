@@ -293,7 +293,11 @@ on its run time as step `run`. The findings and their thresholds (constants in `
 | `unclassified_share` | `improvement:unclassified`            | unclassified failed runs of the day > 5 % of its failed runs         |
 
 `--open-tasks` opens each finding through `POST /findings` (title, the evidence as description, criterion `explained
-or fixed, with evidence`), so a finding reported again while its F- task is open opens nothing. The job type
+or fixed, with evidence`), so a finding reported again while its F- task is open opens nothing. Class `unclassified`
+is never a `class_doubled` finding (the share covers it), and a step key longer than 300 characters names the step as
+`sha256-<16 hex>` (the title keeps the name). A finding the control plane refuses does not stop the others: each is
+tried, refusals print first as `not opened <source key>: <error>`, and the command exits with the CLI code of the
+first one. The job type
 `roadmap/fixtures/job-types/improvement-report.yaml` runs it daily on a machine whose user variables hold
 `DEVROUNDS_URL`, `DEVROUNDS_TOKEN` (an agent token) and `DEVROUNDS_PROJECT`:
 

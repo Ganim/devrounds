@@ -208,7 +208,8 @@ type Values = Record<string, string | boolean | string[] | undefined>
 type Invocation = { args: string[]; values: Values; cursor: number }
 type Deps = { env: NodeJS.ProcessEnv; configPath: string; timeoutMs?: number }
 // `nextFor` gets the index one past the last body line printed, for a next step that depends on what was shown.
-type Result = AgentOutput & { nextFor?: (shownEnd: number) => string; raw?: string }
+// `exitCode` is for a command that completes its output but failed part of its work (default 0).
+type Result = AgentOutput & { nextFor?: (shownEnd: number) => string; raw?: string; exitCode?: number }
 
 type Spec = {
   path: string[]
@@ -894,17 +895,32 @@ export const COMMANDS: Spec[] = [
             : 'devrounds indicators'
         return { failures, body, next }
       }
-      // One at a time: openFinding takes the project lock, so parallel calls would only queue on it.
+      // One at a time: openFinding takes the project lock, so parallel calls would only queue on it. A refused finding
+      // must not cost the ones after it (unclassified_share is always last), so each is tried; the command exits with
+      // the CLI code of the first refusal, which the improvement-report job type classifies.
+      const refused: string[] = []
+      let exitCode: number | undefined
       for (const f of report.findings) {
-        const opened = await api.send<{ key: string; created: boolean }>('POST', '/findings', {
-          sourceKey: f.sourceKey,
-          title: f.title,
-          description: f.evidence,
-          criteria: [FINDING_CRITERION],
-        })
-        body.push(
-          opened.created ? fmt`opened ${opened.key} ${f.title}` : fmt`already open ${opened.key} ${f.sourceKey}`,
-        )
+        try {
+          const opened = await api.send<{ key: string; created: boolean }>('POST', '/findings', {
+            sourceKey: f.sourceKey,
+            title: f.title,
+            description: f.evidence,
+            criteria: [FINDING_CRITERION],
+          })
+          body.push(
+            opened.created ? fmt`opened ${opened.key} ${f.title}` : fmt`already open ${opened.key} ${f.sourceKey}`,
+          )
+        } catch (err) {
+          const { output, exitCode: code } = failureOutput(err)
+          refused.push(fmt`not opened ${f.sourceKey}: ${output.failures[0]}`)
+          exitCode ??= code
+        }
+      }
+      if (refused.length > 0) {
+        // Opening again is safe: an open source key answers its task instead of a new one.
+        const next = `devrounds report improvement --day ${shellArg(report.day)} --open-tasks`
+        return { failures: [...refused, ...failures], body, next, exitCode }
       }
       return { failures, body, next: report.findings.length > 0 ? 'devrounds plan show' : 'devrounds indicators' }
     },
@@ -1544,7 +1560,7 @@ export async function runCli(
     const budget = spec.pages ? BODY_BUDGET : Number.POSITIVE_INFINITY
     const opts = { budget, cursor: inv.cursor, moreCommand: moreCommandFor(argv) }
     const next = result.nextFor?.(fitBody(result.body, opts)) ?? result.next
-    return { exitCode: 0, stdout: `${renderAgent({ ...result, next }, opts)}\n`, stderr: '' }
+    return { exitCode: result.exitCode ?? 0, stdout: `${renderAgent({ ...result, next }, opts)}\n`, stderr: '' }
   } catch (err) {
     const { output, exitCode } = failureOutput(err)
     const text = renderAgent(output, { budget: BODY_BUDGET, cursor: 0, moreCommand: () => '' })
