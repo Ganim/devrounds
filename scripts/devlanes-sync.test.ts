@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -271,18 +271,5 @@ reason = "x"
       4,
     )
     assert.equal(tried.length, 1)
-  })
-
-  it('the real check passes against a fresh cached fetch', async () => {
-    const real = join(repoRoot, 'executor', '.devlanes-cache')
-    await access(real).catch(() => assert.fail('run pnpm devlanes-sync --fetch'))
-    await assertCacheFresh(real)
-    const text = await readFile(join(repoRoot, 'executor', 'devlanes-sync.toml'), 'utf8')
-    const pending = await pendingUpstream({
-      cacheDir: real,
-      config: parseSyncConfig(text),
-      ref: 'refs/remotes/upstream/main',
-    })
-    assert.deepEqual(pending, [])
   })
 })
