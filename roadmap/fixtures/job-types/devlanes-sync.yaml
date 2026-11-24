@@ -1,0 +1,31 @@
+# Daily upstream devlanes check as a job (run it with --cwd <repo root>): fetches upstream, then opens one F- task
+# per commit that is not yet ported or reviewed, never a second one while it is open. DEVROUNDS_URL, DEVROUNDS_TOKEN
+# (an agent token) and DEVROUNDS_PROJECT are user variables on the machine; git needs HOME to find its config. Schedule it with
+#   devrounds schedule set devlanes-sync --job-type devlanes-sync --cwd <repo> --daily 06:30
+key: devlanes-sync
+command:
+  program: pnpm
+  args: [devlanes-sync, --fetch, --open-tasks]
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    HOME,
+    DEVROUNDS_URL,
+    DEVROUNDS_TOKEN,
+    DEVROUNDS_PROJECT,
+  ]
+timeout_s: 900
+# Exit 1 means open tasks failed or a mapped path vanished; CLI codes 4 and 5 come from the task opens (AGENTS.md).
+classify:
+  - class: infra
+    exit_codes: [4]
+  - class: environment
+    exit_codes: [5]

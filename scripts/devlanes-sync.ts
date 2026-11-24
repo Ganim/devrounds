@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { parse } from 'smol-toml'
+import { defaultConfigPath, runCli } from '../control-plane/src/cli/commands.ts'
 
 const run = promisify(execFile)
 
@@ -135,6 +136,45 @@ export async function assertCacheFresh(cacheDir: string, maxAgeMs = MAX_CACHE_AG
   }
 }
 
+export type Finding = { sourceKey: string; title: string; description: string; criteria: string[] }
+
+/** One finding per upstream commit (a commit touching two crates is one task), in first-seen order. */
+export function findingsOf(pending: Pending[]): Finding[] {
+  const byCommit = new Map<string, Pending[]>()
+  for (const p of pending) byCommit.set(p.commit, [...(byCommit.get(p.commit) ?? []), p])
+  return [...byCommit].map(([commit, entries]) => ({
+    sourceKey: `devlanes:${commit}`,
+    title: `Port devlanes ${commit.slice(0, 12)}: ${entries[0]?.subject ?? ''}`,
+    description: `Upstream devlanes commit ${commit} touches the crates: ${entries.map((e) => e.crate).join(', ')}.`,
+    criteria: ['ported or recorded as [[reviewed]] in executor/devlanes-sync.toml'],
+  }))
+}
+
+/**
+ * Opens a finding task per pending commit (an open one is answered, not duplicated). Tries every commit
+ * even when one fails, so a single bad open does not hide the rest; true when all of them succeeded.
+ */
+export async function openPendingTasks(
+  pending: Pending[],
+  open: (finding: Finding) => Promise<number>,
+): Promise<boolean> {
+  let ok = true
+  for (const finding of findingsOf(pending)) {
+    if ((await open(finding)) !== 0) ok = false
+  }
+  return ok
+}
+
+async function openViaCli(finding: Finding): Promise<number> {
+  const argv = ['task', 'open-finding', '--source-key', finding.sourceKey, '--title', finding.title]
+  argv.push('--description', finding.description)
+  for (const criterion of finding.criteria) argv.push('--criterion', criterion)
+  const { exitCode, stdout, stderr } = await runCli(argv, { env: process.env, configPath: defaultConfigPath() })
+  process.stdout.write(stdout)
+  process.stderr.write(stderr)
+  return exitCode
+}
+
 async function main(): Promise<void> {
   const rootArg = process.argv.indexOf('--root')
   const root = rootArg >= 0 ? (process.argv[rootArg + 1] ?? '') : fileURLToPath(new URL('..', import.meta.url))
@@ -145,7 +185,7 @@ async function main(): Promise<void> {
   if (pending.length === 0) return
   for (const p of pending) console.log(`${p.commit} ${p.crate} ${p.subject}`)
   console.log('next: port it or add a [[reviewed]] entry, then advance synced_commit')
-  process.exitCode = 1
+  process.exitCode = process.argv.includes('--open-tasks') ? ((await openPendingTasks(pending, openViaCli)) ? 0 : 1) : 1
 }
 
 if (import.meta.main) {

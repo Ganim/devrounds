@@ -5,7 +5,15 @@ import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { assertCacheFresh, fetchUpstream, parseSyncConfig, pendingUpstream, type SyncConfig } from './devlanes-sync.ts'
+import {
+  assertCacheFresh,
+  fetchUpstream,
+  findingsOf,
+  openPendingTasks,
+  parseSyncConfig,
+  pendingUpstream,
+  type SyncConfig,
+} from './devlanes-sync.ts'
 
 const run = promisify(execFile)
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -215,6 +223,46 @@ reason = "x"
       .join('')
     await writeFile(join(root, 'executor', 'devlanes-sync.toml'), toml(reviewed))
     await run('node', [script, '--root', root])
+  })
+
+  it('one finding per commit with its crates joined and key devlanes:<sha>', () => {
+    const sha = 'a'.repeat(40)
+    const findings = findingsOf([
+      { commit: sha, subject: 'both: shared change', crate: 'logs' },
+      { commit: 'b'.repeat(40), subject: 'logs: rotate', crate: 'logs' },
+      { commit: sha, subject: 'both: shared change', crate: 'core' },
+    ])
+    assert.equal(findings.length, 2)
+    assert.equal(findings[0]?.sourceKey, `devlanes:${sha}`)
+    assert.equal(findings[0]?.title, 'Port devlanes aaaaaaaaaaaa: both: shared change')
+    assert.match(findings[0]?.description ?? '', /logs, core/)
+    assert.deepEqual(findings[0]?.criteria, ['ported or recorded as [[reviewed]] in executor/devlanes-sync.toml'])
+  })
+
+  it('--open-tasks is green once every commit has a task and red when an open fails', async () => {
+    const pending = [
+      { commit: 'a'.repeat(40), subject: 's1', crate: 'logs' },
+      { commit: 'b'.repeat(40), subject: 's2', crate: 'logs' },
+    ]
+    const opened: string[] = []
+    assert.equal(
+      await openPendingTasks(pending, async (f) => {
+        opened.push(f.sourceKey)
+        return 0
+      }),
+      true,
+    )
+    assert.equal(opened.length, 2)
+    const attempted: string[] = []
+    assert.equal(
+      await openPendingTasks(pending, async (f) => {
+        attempted.push(f.sourceKey)
+        return attempted.length === 1 ? 4 : 0
+      }),
+      false,
+    )
+    // A failed open does not stop the others.
+    assert.equal(attempted.length, 2)
   })
 
   it('the real check passes against a fresh cached fetch', async () => {

@@ -131,6 +131,17 @@ upstream or `synced_commit` is missing from the cache. Without `--fetch` it only
 same check against the cache as it is, so it only proves "nothing new since the last fetch" and fails when that fetch is
 older than 7 days: run `pnpm devlanes-sync --fetch` first (CI must do the same).
 
+`--open-tasks` opens one F- task per pending commit (key `devlanes:<sha>`, a commit touching two crates is one task)
+through `task open-finding`, so a commit that already has an open task opens nothing. It exits 0 once every pending
+commit has a task and 1 when an open failed. `roadmap/fixtures/job-types/devlanes-sync.yaml` runs
+`pnpm devlanes-sync --fetch --open-tasks` daily on a machine whose user variables hold `DEVROUNDS_URL`,
+`DEVROUNDS_TOKEN` and `DEVROUNDS_PROJECT`:
+
+```
+devrounds jobtype set roadmap/fixtures/job-types/devlanes-sync.yaml
+devrounds schedule set devlanes-sync --job-type devlanes-sync --cwd <repo> --daily 06:30
+```
+
 ## Queues, batches and schedules
 
 Every run waits in a queue of its project. `default` is created the first time a run uses it, and `gates` (where a
