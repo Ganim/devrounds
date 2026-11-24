@@ -738,6 +738,21 @@ fn remove_file(path: &Path) -> std::io::Result<()> {
     devrounds_sys_windows::file::remove_file_retrying(path)
 }
 
+/// [`fs::write`].
+#[cfg(unix)]
+fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    fs::write(path, contents)
+}
+
+/// [`fs::write`], retried as [`rename`] is. Rewriting a segment's metadata
+/// reuses the `.meta.json.tmp` name its first write renamed away moments
+/// before, and creating that name again can briefly fail with a sharing
+/// violation while antivirus is still scanning the earlier file.
+#[cfg(windows)]
+fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    devrounds_sys_windows::file::retry_while_held(|| fs::write(path, contents))
+}
+
 fn is_not_found(error: &Error) -> bool {
     matches!(error, Error::Io(error) if error.kind() == ErrorKind::NotFound)
 }
@@ -768,7 +783,7 @@ fn close_segment(directory: &Path, compress: bool, meta: &mut SegmentMetadata) -
     }
     let metadata_path = directory.join(metadata_name(meta.first_seq));
     let temporary = metadata_path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec(meta)?)?;
+    write_file(&temporary, &serde_json::to_vec(meta)?)?;
     rename(&temporary, &metadata_path)?;
     Ok(())
 }
