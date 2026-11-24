@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { parse } from 'smol-toml'
-import { defaultConfigPath, runCli } from '../control-plane/src/cli/commands.ts'
 
 const run = promisify(execFile)
 
@@ -151,21 +150,26 @@ export function findingsOf(pending: Pending[]): Finding[] {
 }
 
 /**
- * Opens a finding task per pending commit (an open one is answered, not duplicated). Tries every commit
- * even when one fails, so a single bad open does not hide the rest; true when all of them succeeded.
+ * Opens a finding task per pending commit (an open one is answered, not duplicated) and returns the first
+ * non-zero CLI exit code, or 0. A generic failure does not hide the other commits, but 4 (control plane
+ * unreachable) and 5 (auth) stop at once: every further open would only wait out the same timeout.
  */
 export async function openPendingTasks(
   pending: Pending[],
   open: (finding: Finding) => Promise<number>,
-): Promise<boolean> {
-  let ok = true
+): Promise<number> {
+  let first = 0
   for (const finding of findingsOf(pending)) {
-    if ((await open(finding)) !== 0) ok = false
+    const code = await open(finding)
+    if (code !== 0 && first === 0) first = code
+    if (code === 4 || code === 5) break
   }
-  return ok
+  return first
 }
 
 async function openViaCli(finding: Finding): Promise<number> {
+  // Loaded here so the plain check (no --open-tasks) never pulls in the CLI graph.
+  const { defaultConfigPath, runCli } = await import('../control-plane/src/cli/commands.ts')
   const argv = ['task', 'open-finding', '--source-key', finding.sourceKey, '--title', finding.title]
   argv.push('--description', finding.description)
   for (const criterion of finding.criteria) argv.push('--criterion', criterion)
@@ -185,7 +189,7 @@ async function main(): Promise<void> {
   if (pending.length === 0) return
   for (const p of pending) console.log(`${p.commit} ${p.crate} ${p.subject}`)
   console.log('next: port it or add a [[reviewed]] entry, then advance synced_commit')
-  process.exitCode = process.argv.includes('--open-tasks') ? ((await openPendingTasks(pending, openViaCli)) ? 0 : 1) : 1
+  process.exitCode = process.argv.includes('--open-tasks') ? await openPendingTasks(pending, openViaCli) : 1
 }
 
 if (import.meta.main) {

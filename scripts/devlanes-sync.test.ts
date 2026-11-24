@@ -239,30 +239,38 @@ reason = "x"
     assert.deepEqual(findings[0]?.criteria, ['ported or recorded as [[reviewed]] in executor/devlanes-sync.toml'])
   })
 
-  it('--open-tasks is green once every commit has a task and red when an open fails', async () => {
-    const pending = [
-      { commit: 'a'.repeat(40), subject: 's1', crate: 'logs' },
-      { commit: 'b'.repeat(40), subject: 's2', crate: 'logs' },
-    ]
+  it('--open-tasks is 0 once every commit has a task, keeps the first failing exit code and stops on 4 or 5', async () => {
+    const pending = ['a', 'b', 'c'].map((c) => ({ commit: c.repeat(40), subject: 's', crate: 'logs' }))
     const opened: string[] = []
     assert.equal(
       await openPendingTasks(pending, async (f) => {
         opened.push(f.sourceKey)
         return 0
       }),
-      true,
+      0,
     )
-    assert.equal(opened.length, 2)
+    assert.equal(opened.length, 3)
+    // A generic failure does not stop the others; the first non-zero code wins.
+    const codes = [6, 0, 2]
     const attempted: string[] = []
     assert.equal(
       await openPendingTasks(pending, async (f) => {
         attempted.push(f.sourceKey)
-        return attempted.length === 1 ? 4 : 0
+        return codes[attempted.length - 1] ?? 0
       }),
-      false,
+      6,
     )
-    // A failed open does not stop the others.
-    assert.equal(attempted.length, 2)
+    assert.equal(attempted.length, 3)
+    // Control plane unreachable: the rest would each wait for the timeout, so stop.
+    const tried: string[] = []
+    assert.equal(
+      await openPendingTasks(pending, async (f) => {
+        tried.push(f.sourceKey)
+        return 4
+      }),
+      4,
+    )
+    assert.equal(tried.length, 1)
   })
 
   it('the real check passes against a fresh cached fetch', async () => {

@@ -133,7 +133,8 @@ older than 7 days: run `pnpm devlanes-sync --fetch` first (CI must do the same).
 
 `--open-tasks` opens one F- task per pending commit (key `devlanes:<sha>`, a commit touching two crates is one task)
 through `task open-finding`, so a commit that already has an open task opens nothing. It exits 0 once every pending
-commit has a task and 1 when an open failed. `roadmap/fixtures/job-types/devlanes-sync.yaml` runs
+commit has a task and otherwise with the first failing CLI exit code (4 and 5 stop at once). Closing the F- task
+without advancing `synced_commit` or adding `[[reviewed]]` reopens it the next day. `roadmap/fixtures/job-types/devlanes-sync.yaml` runs
 `pnpm devlanes-sync --fetch --open-tasks` daily on a machine whose user variables hold `DEVROUNDS_URL`,
 `DEVROUNDS_TOKEN` and `DEVROUNDS_PROJECT`:
 
