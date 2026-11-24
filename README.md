@@ -222,7 +222,7 @@ pinned to the gate's machine (the one named, else the tenant's only live machine
 with the gate's cwd, in the `gates` queue unless the gate file names another. One gate runs per worktree (project,
 machine and cwd with the drive letter lowercased, `/` as `\` and no trailing separator): another submit for it answers
 DR308 naming the running one. The gate ends when no check is left open, in the same transaction: `failed` if a check
-failed or was skipped, else `cancelled` if one was stopped, else `passed`; a gate whose every check is a cache hit
+failed, else `cancelled` if one was stopped or skipped (a stop skips its dependents), else `passed`; a gate whose every check is a cache hit
 passes at submit. A policy retry keeps it running; a person's retry after it ended leaves it as it is.
 
 ### Gates

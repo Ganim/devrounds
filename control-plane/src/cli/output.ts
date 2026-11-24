@@ -149,8 +149,10 @@ export type GateJson = Omit<GateView, 'createdAt' | 'finishedAt'> & { createdAt:
 
 const seconds = (ms: number | null) => (ms === null ? null : `${(ms / 1000).toFixed(1)} s`)
 
-// A check that did not end well: its job failed, was skipped or stopped.
-const isBadCheck = (check: GateJson['checks'][number]) => ['failed', 'skipped', 'stopped'].includes(check.state)
+// A check that did not end well, in the order it is printed: failed, then stopped, then skipped (a skip's cause is
+// printed above it).
+const BAD_CHECK_STATES = ['failed', 'stopped', 'skipped']
+const isBadCheck = (check: GateJson['checks'][number]) => BAD_CHECK_STATES.includes(check.state)
 
 function gateCheckLine(check: GateJson['checks'][number]): string {
   if (check.cachedFrom !== null) return fmt`${check.ref} cached from ${check.cachedFrom}`
@@ -158,21 +160,28 @@ function gateCheckLine(check: GateJson['checks'][number]): string {
   return fmt`${check.ref} ${check.runState}`
 }
 
-/** Failed, skipped and stopped checks first (state, class, duration, summary, log command), then the others. */
+/**
+ * Failed, stopped and skipped checks first (state, class, duration, summary, log command), then the others. A skipped
+ * check never started, so it has no log line and `next` reads the first failed or stopped check's log instead.
+ */
 export function gateShow(g: GateJson): { failures: string[]; body: string[]; next: string } {
-  const bad = g.checks.filter(isBadCheck)
+  // Stable sort: the server's ref order holds within each state.
+  const bad = g.checks
+    .filter(isBadCheck)
+    .sort((x, y) => BAD_CHECK_STATES.indexOf(x.state) - BAD_CHECK_STATES.indexOf(y.state))
   const failures = bad.flatMap((c) => [
     fmt`${c.ref} ${c.runState} ${c.failureClass} ${seconds(c.durationMs)} ${c.failureSummary}`,
-    `  log: devrounds run logs ${shellArg(c.runId)}`,
+    ...(c.state === 'skipped' ? [] : [`  log: devrounds run logs ${shellArg(c.runId)}`]),
   ])
+  const logged = bad.find((c) => c.state !== 'skipped')
   const wall = seconds(g.wallMs)
   const body = [
     fmt`gate ${g.id} ${g.state} · ${g.key}${wall === null ? '' : ` · ${wall}`}`,
     ...g.checks.filter((c) => !bad.includes(c)).map(gateCheckLine),
   ]
   const next =
-    bad.length > 0
-      ? `devrounds run logs ${shellArg(bad[0].runId)}`
+    logged !== undefined
+      ? `devrounds run logs ${shellArg(logged.runId)}`
       : g.state === 'running'
         ? `devrounds gate show ${shellArg(g.id)} --wait`
         : 'devrounds plan show'

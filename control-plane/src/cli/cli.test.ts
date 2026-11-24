@@ -662,7 +662,8 @@ test('gate run past --wait-lock exits 1 with DR308', async (t) => {
   assert.ok(waits.length >= 1 && waits.every((w) => Number(w) <= 1), waits.join())
 })
 
-test('gate show lists failed checks first with class, duration, summary and the run logs command', async (t) => {
+test('gate show lists failed, then stopped, then skipped checks first, with the run logs command', async (t) => {
+  // In ref order, as gates/service.ts loadGateView returns them: the skipped and stopped checks sort before the failed.
   const fake = await fakeServer((_req, res) =>
     json(
       res,
@@ -672,6 +673,13 @@ test('gate show lists failed checks first with class, duration, summary and the 
         wallMs: 60_000,
         checks: [
           check('build', { state: 'finished', runState: 'finished', durationMs: 12_300 }),
+          check('docs'),
+          check('e2e', {
+            state: 'skipped',
+            runState: 'skipped',
+            failureSummary: 'skipped: dependency test failed',
+          }),
+          check('lint', { state: 'stopped', runState: 'stopped', failureClass: 'cancelled', durationMs: 1_000 }),
           check('test', {
             state: 'failed',
             runState: 'failed',
@@ -679,8 +687,6 @@ test('gate show lists failed checks first with class, duration, summary and the 
             failureSummary: '3 tests failed',
             durationMs: 45_600,
           }),
-          check('e2e', { state: 'skipped', runState: 'skipped' }),
-          check('docs'),
         ],
       }),
     ),
@@ -692,8 +698,9 @@ test('gate show lists failed checks first with class, duration, summary and the 
   assert.deepEqual(res.stdout.trimEnd().split('\n'), [
     'test failed check_red 45.6 s 3 tests failed',
     '  log: devrounds run logs run-test',
-    'e2e skipped - - -',
-    '  log: devrounds run logs run-e2e',
+    'lint stopped cancelled 1.0 s -',
+    '  log: devrounds run logs run-lint',
+    'e2e skipped - - skipped: dependency test failed',
     'gate gate-1 failed · pre-pr · 60.0 s',
     'build finished 12.3 s',
     'docs queued',

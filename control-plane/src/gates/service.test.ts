@@ -304,6 +304,27 @@ test('a check stopped with nothing red ends it cancelled', async () => {
   )
 })
 
+test('a stopped check whose dependent it skips ends the gate cancelled, not failed', async () => {
+  const s = await setup()
+  const gate = await s.submit({
+    key: 'stop-dep',
+    checks: [
+      { ref: 'a', job_type: 'check' },
+      { ref: 'b', job_type: 'lint', depends_on: ['a'] },
+    ],
+  })
+  await stopRun(s.ctx, new Sessions(), runOf(gate, 'a'), projectKey)
+  const cancelled = await s.show(gate.id)
+  assert.equal(cancelled.state, 'cancelled')
+  assert.deepEqual(
+    cancelled.checks.map((c) => [c.ref, c.state]),
+    [
+      ['a', 'stopped'],
+      ['b', 'skipped'],
+    ],
+  )
+})
+
 test('a check retried by its policy keeps the gate running until the retry ends', async () => {
   const s = await setup({ max_attempts: 2, on: ['check_red'] })
   const gate = await s.submit(ONE)
@@ -372,6 +393,15 @@ test('with two live machines and no --machine DR101 at /machine', async () => {
   await assert.rejects(
     submitGate(s.ctx, projectKey, { file: ONE, cwd: 'C:\\src\\two' }),
     failsWith('DR101', { path: '/machine' }),
+  )
+})
+
+test('a refused check names its path in the gate file, /checks/<i>', async () => {
+  const s = await setup()
+  const file: GateFile = { key: 'paths', checks: [{ ref: 'a', job_type: 'check', depends_on: ['nope'] }] }
+  await assert.rejects(
+    submitGate(s.ctx, projectKey, { file, cwd: 'C:\\src\\paths' }),
+    failsWith('DR101', { path: '/checks/0/depends_on/0' }),
   )
 })
 

@@ -6,17 +6,18 @@ import { fail } from '../errors/error.ts'
  * path (DR152, `cycle` = the refs of one cycle joined by ` → `, ending where it started). A cycle would leave its
  * jobs queued forever, since none of them can ever have its dependencies finished.
  */
-export function checkGraph(batch: string, jobs: { ref: string; dependsOn: string[] }[]): void {
+export function checkGraph(batch: string, jobs: { ref: string; dependsOn: string[] }[], listPath = '/jobs'): void {
   const index = new Map<string, number>()
   for (const [i, job] of jobs.entries()) {
     const first = index.get(job.ref)
-    if (first !== undefined) fail('DR101', { path: `/jobs/${i}/ref`, reason: `ref ${job.ref} is already job ${first}` })
+    if (first !== undefined)
+      fail('DR101', { path: `${listPath}/${i}/ref`, reason: `ref ${job.ref} is already job ${first}` })
     index.set(job.ref, i)
   }
   for (const [i, job] of jobs.entries()) {
     for (const [j, ref] of job.dependsOn.entries()) {
       if (!index.has(ref))
-        fail('DR101', { path: `/jobs/${i}/depends_on/${j}`, reason: `no job of the batch has ref ${ref}` })
+        fail('DR101', { path: `${listPath}/${i}/depends_on/${j}`, reason: `no job of the batch has ref ${ref}` })
     }
   }
   // Depth-first search; a dependency met again while still on the path closes a cycle.

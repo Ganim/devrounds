@@ -103,7 +103,7 @@ export async function submitGate(ctx: Ctx, projectKey: string, input: GateInput)
       project.id,
       batchId,
       { jobs: input.file.checks },
-      { machineId: machine.id, queueKey: input.file.queue ?? GATES_QUEUE, cwd: input.cwd },
+      { machineId: machine.id, queueKey: input.file.queue ?? GATES_QUEUE, cwd: input.cwd, listPath: '/checks' },
     )
     const { id } = await trx
       .insertInto('gates')

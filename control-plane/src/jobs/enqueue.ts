@@ -183,7 +183,8 @@ export type BatchJobValues = Omit<Static<typeof BatchJob>, 'cwd'> & { cwd?: stri
 /**
  * Inserts the jobs of `input` into batch `batchId` (the job_batches row is the caller's), each with its first run,
  * and their depends_on edges, and wakes the scheduler at commit when any run is queued. `defaults` fill a job's
- * missing cwd and queue, and pin a job without `machine` to a machine by id. The graph is checked before any job is
+ * missing cwd and queue, and pin a job without `machine` to a machine by id; `listPath` prefixes DR101 paths so they
+ * name the caller's file (`/checks` for a gate, default `/jobs`). The graph is checked before any job is
  * written; any error (graph, unknown key, DR153) throws, so the caller's transaction leaves nothing behind.
  */
 export async function insertBatch(
@@ -192,16 +193,18 @@ export async function insertBatch(
   projectId: string,
   batchId: string,
   input: { jobs: BatchJobValues[] },
-  defaults: { machineId?: string; queueKey?: string; cwd?: string } = {},
+  defaults: { machineId?: string; queueKey?: string; cwd?: string; listPath?: string } = {},
 ): Promise<void> {
+  const listPath = defaults.listPath ?? '/jobs'
   checkGraph(
     batchId,
     input.jobs.map((job) => ({ ref: job.ref, dependsOn: job.depends_on ?? [] })),
+    listPath,
   )
   const resolve = resolver(trx, projectId)
   const valuesOf = new Map<string, JobValues>()
   for (const [index, job] of input.jobs.entries()) {
-    const cwd = job.cwd ?? defaults.cwd ?? fail('DR101', { path: `/jobs/${index}/cwd`, reason: 'is required' })
+    const cwd = job.cwd ?? defaults.cwd ?? fail('DR101', { path: `${listPath}/${index}/cwd`, reason: 'is required' })
     const values = await resolve(
       {
         jobTypeKey: job.job_type,
@@ -213,7 +216,7 @@ export async function insertBatch(
         env: job.env,
         cacheKey: job.cache_key,
       },
-      `/jobs/${index}`,
+      `${listPath}/${index}`,
     )
     if (job.machine === undefined && defaults.machineId !== undefined) values.machine_id = defaults.machineId
     valuesOf.set(job.ref, values)

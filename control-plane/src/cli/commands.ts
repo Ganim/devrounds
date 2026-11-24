@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
@@ -48,7 +48,8 @@ const ENV = { url: 'DEVROUNDS_URL', token: 'DEVROUNDS_TOKEN', project: 'DEVROUND
 // Env vars override the file field by field; the file is read only when the env leaves a field unset, so agents
 // running with all three variables never depend on it.
 async function loadCliConfig(env: NodeJS.ProcessEnv, path: string, project?: string): Promise<CliConfig> {
-  // --project wins over the env and the file for this invocation only.
+  // --project wins over the env and the file for this invocation only. An empty one would fall back to the file below.
+  if (project === '') fail('DR101', { path: '--project', reason: 'must not be empty' })
   const fromEnv = { url: env[ENV.url], token: env[ENV.token], project: project ?? env[ENV.project] }
   let file: Partial<CliConfig> = {}
   if (!fromEnv.url || !fromEnv.token || !fromEnv.project) {
@@ -1333,6 +1334,8 @@ export const COMMANDS: Spec[] = [
       const api = await connect()
       const file = arg(inv, 0, '<file.yaml>')
       const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      // A relative cwd would be the worktree lock's key as typed (`.` shared by every repo) and the executor refuses it.
+      if (!isAbsolute(cwd)) fail('DR101', { path: '--cwd', reason: 'must be an absolute path' })
       const waitLock = integer(inv, 'wait-lock', 0)
       if (inv.values['no-wait-lock'] === true && waitLock !== undefined) {
         fail('DR101', { path: '--no-wait-lock', reason: 'cannot be combined with --wait-lock' })
