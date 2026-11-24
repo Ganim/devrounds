@@ -45,6 +45,7 @@ function task(key: string, state: TaskState, extra: Partial<TaskView> = {}): Tas
     version: 1,
     criteria: [],
     links: [],
+    sourceKey: null,
     ...extra,
   }
 }

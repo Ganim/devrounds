@@ -48,6 +48,8 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
   `retry` (`max_attempts`, `backoff_s`, `on`). Read trends with `devrounds indicators`.
 - Run a repo gate (its checks for one worktree, from a YAML file) with `devrounds gate run <file> --cwd <path> --wait`;
   failures come first, each with its `devrounds run logs` command. Read one later with `devrounds gate show <id>`.
+- Record a finding with `devrounds task open-finding --source-key <key> --title <text>`; while a task of that key is
+  open it answers that task instead of a new one.
 - Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days.
 - Write identifiers, errors, docs and commit messages in English.
 - Control plane listens on `127.0.0.1:4992`. Postgres is `devrounds-postgres` on host port 15433.

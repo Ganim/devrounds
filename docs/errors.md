@@ -138,6 +138,14 @@ Worktree {cwd} on machine {machine} is held by gate {gate}.
 
 One gate runs per worktree: wait for it with `devrounds gate show {gate} --wait`, or let `devrounds gate run --wait-lock <s>` wait for it and submit again.
 
+## DR309
+
+Task {task} already tracks finding {sourceKey}.
+
+### Fix
+
+A finding has one open task: work on {task} (`devrounds task start {task}`), or finish or cancel it before reopening another task of {sourceKey}.
+
 ## DR350
 
 Machine {machine} is not connected.

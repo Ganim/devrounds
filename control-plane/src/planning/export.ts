@@ -42,6 +42,7 @@ export function exportPlan(ctx: Ctx, projectKey: string): Promise<string> {
         ...(t.blockedBy.length > 0 && { blocked_by: t.blockedBy }),
         ...(t.criteria.length > 0 && { criteria: criteriaOf(t.criteria) }),
         ...linksOf(t.links),
+        ...(t.sourceKey !== null && { source_key: t.sourceKey }),
         ...(t.state !== 'todo' && { state: t.state }),
         ...(reason && { reason }),
       }

@@ -31,6 +31,7 @@ export type TaskView = {
   version: number
   criteria: CriterionView[]
   links: LinkView[]
+  sourceKey: string | null // what a finding task tracks (findings.ts); null on other tasks
 }
 
 export type PhaseView = {
@@ -120,6 +121,7 @@ export function getPlan(ctx: Ctx, projectKey: string): Promise<PlanView> {
         't.started_at',
         't.finished_at',
         't.version',
+        't.source_key',
         'm.name as assignee',
         'parent.key as parent',
       ])
@@ -183,6 +185,7 @@ export function getPlan(ctx: Ctx, projectKey: string): Promise<PlanView> {
         version: t.version,
         criteria: (criteriaOf.task.get(t.id) ?? []).map(criterionView),
         links: (linksOf.task.get(t.id) ?? []).map(linkView),
+        sourceKey: t.source_key,
       } satisfies TaskView,
     }))
     const tasksOf = groupBy(taskViews, (t) => t.phaseId)

@@ -20,6 +20,7 @@ import { jobEnv } from './0018_job_env.ts'
 import { placement } from './0019_placement.ts'
 import { resultCache } from './0020_result_cache.ts'
 import { gates } from './0021_gates.ts'
+import { taskSourceKey } from './0022_task_source_key.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -48,5 +49,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0019_placement': placement,
     '0020_result_cache': resultCache,
     '0021_gates': gates,
+    '0022_task_source_key': taskSourceKey,
   }
 }

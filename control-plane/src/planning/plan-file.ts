@@ -26,6 +26,8 @@ const PlanFileTask = Type.Object(
     blocked_by: Type.Optional(Type.Array(Key)),
     criteria: Type.Optional(Type.Array(Criterion)),
     links: Type.Optional(Type.Array(Link)),
+    // A finding task's source key (findings.ts): set when import creates the task, never changed by it.
+    source_key: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
     // Omitted = todo. Import never moves a task back to todo (see import.ts).
     state: Type.Optional(
       Type.Union([

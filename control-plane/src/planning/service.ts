@@ -45,6 +45,29 @@ async function insertKeyed<T>(kind: string, key: string, insert: () => Promise<T
   }
 }
 
+// Every path that can make a task with this source key open (openFinding, addTask, a reopen) takes this lock before
+// reading the open holder, so two of them at once see each other; the index tasks_open_source_key is the guarantee
+// behind it. Returns the key of the open task holding sourceKey, if any.
+export async function lockSourceKey(trx: Trx, projectId: string, sourceKey: string): Promise<string | null> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`devrounds.finding:${projectId}:${sourceKey}`}, 0))`.execute(
+    trx,
+  )
+  const holder = await trx
+    .selectFrom('tasks')
+    .select('key')
+    .where('project_id', '=', projectId)
+    .where('source_key', '=', sourceKey)
+    .where('state', 'not in', ['done', 'cancelled'])
+    .executeTakeFirst()
+  return holder?.key ?? null
+}
+
+function requireSourceKey(sourceKey: string | undefined): void {
+  if (sourceKey !== undefined && (sourceKey.length < 1 || sourceKey.length > 300)) {
+    fail('DR101', { path: '/sourceKey', reason: 'must be 1 to 300 characters' })
+  }
+}
+
 // A delivered phase accepts no open work; closing it again or reopening an open phase is the same conflict.
 function phaseConflict(phase: { key: string; state: string }): never {
   return fail('DR306', { phase: phase.key, state: phase.state })
@@ -379,9 +402,12 @@ export function addTask(
     estimateHours?: number
     criteria?: string[]
     blockedBy?: string[]
+    // Set only here, never edited: what the task tracks (see lockSourceKey).
+    sourceKey?: string
   },
 ): Promise<Mutation> {
   return run(ctx, async (trx) => {
+    requireSourceKey(i.sourceKey)
     const project = await findProject(trx, i.projectKey)
     const existing = await trx
       .selectFrom('tasks')
@@ -390,6 +416,10 @@ export function addTask(
       .where('key', '=', i.key)
       .executeTakeFirst()
     requireNewKey(existing, 'task', i.key)
+    if (i.sourceKey !== undefined) {
+      const holder = await lockSourceKey(trx, project.id, i.sourceKey)
+      if (holder) fail('DR309', { task: holder, sourceKey: i.sourceKey })
+    }
     const phase = i.phaseKey === undefined ? null : await findPhase(trx, project.id, i.phaseKey, { lock: 'share' })
     if (phase?.state === 'delivered') phaseConflict(phase)
     const parent = i.parentKey === undefined ? null : await findTask(trx, project.id, i.parentKey)
@@ -410,6 +440,7 @@ export function addTask(
           description: i.description ?? '',
           assignee_id: assignee?.id ?? null,
           estimate_hours: i.estimateHours ?? null,
+          source_key: i.sourceKey ?? null,
         })
         .returning('id')
         .executeTakeFirstOrThrow(),
@@ -599,6 +630,11 @@ export function transition(
       reason: i.reason,
     })
     if (phase?.state === 'delivered' && isBlockerOpen(i.to)) phaseConflict(phase)
+    // Reopening a finding task whose finding came back as another open task would make two open tasks of one key.
+    if (task.source_key !== null && !isBlockerOpen(from) && isBlockerOpen(i.to)) {
+      const holder = await lockSourceKey(trx, project.id, task.source_key)
+      if (holder) fail('DR309', { task: holder, sourceKey: task.source_key })
+    }
     // started_at keeps the first start; finished_at is set on done/cancelled and cleared on any move out of them.
     const finished = i.to === 'done' || i.to === 'cancelled'
     await trx

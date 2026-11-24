@@ -427,3 +427,25 @@ test('a key at top level and in a phase answers DR101 at /tasks/0/key', () => {
     (err) => err instanceof DevRoundsError && err.code === 'DR101' && JSON.stringify(err.data).includes('/tasks/0/key'),
   )
 })
+
+test('a finding that came back imports into a new project with both source keys', async () => {
+  const { ctx } = await setup()
+  const text = `
+project: { key: devrounds, name: DevRounds }
+tasks:
+  - { key: F-0001, title: Flaky, source_key: 'flaky:api', state: cancelled, reason: fixed upstream }
+  - { key: F-0002, title: Flaky again, source_key: 'flaky:api' }
+phases: []
+`
+  await importPlan(ctx, parsePlanFile(text))
+
+  const exported = await exportPlan(ctx, projectKey)
+  assert.deepEqual(
+    (await getPlan(ctx, projectKey)).unphased.map((t) => [t.key, t.state, t.sourceKey]),
+    [
+      ['F-0001', 'cancelled', 'flaky:api'],
+      ['F-0002', 'todo', 'flaky:api'],
+    ],
+  )
+  assert.deepEqual((await importPlan(ctx, parsePlanFile(exported))).updated, [])
+})

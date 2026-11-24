@@ -68,7 +68,7 @@ export async function findPhase(trx: Trx, projectId: string, key: string, opts: 
 export async function findTask(trx: Trx, projectId: string, key: string, opts: { lock?: boolean } = {}) {
   let query = trx
     .selectFrom('tasks')
-    .select(['id', 'key', 'state', 'phase_id'])
+    .select(['id', 'key', 'state', 'phase_id', 'source_key'])
     .where('project_id', '=', projectId)
     .where('key', '=', key)
   if (opts.lock) query = query.forNoKeyUpdate()

@@ -106,6 +106,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['cwd', 'machine', 'gate'],
   },
+  DR309: {
+    text: 'Task {task} already tracks finding {sourceKey}.',
+    hint: 'A finding has one open task: work on {task} (`devrounds task start {task}`), or finish or cancel it before reopening another task of {sourceKey}.',
+    httpStatus: 409,
+    keys: ['task', 'sourceKey'],
+  },
   DR350: {
     text: 'Machine {machine} is not connected.',
     hint: 'Start the executor on {machine} with `devrounds-executor run`, then check `devrounds machine list` shows it connected.',

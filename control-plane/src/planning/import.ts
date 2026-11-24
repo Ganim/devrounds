@@ -31,7 +31,7 @@ const REASON = 'import'
 
 // Upserts by key and never deletes. What the file can no longer express stays as it is: phases and tasks missing
 // from the file (reported in onlyInDb), dependency edges and criteria missing from it, a checked criterion listed
-// as a plain string, a task's parent (editTask cannot change it), the project name (no editProject yet), and an
+// as a plain string, a task's parent (editTask cannot change it) and source key (set only on create), the project name (no editProject yet), and an
 // optional task field the file omits (description, assignee, estimate_hours). A task without `state` (or `todo`) and a
 // phase without `state: delivered` are never moved back, so re-importing an old seed keeps the progress made since.
 //
@@ -75,6 +75,7 @@ class Importer {
   private readonly file: PlanFile
   private readonly projectKey: string
   private readonly fileTasks: Array<{ phaseKey: string | null; task: PlanFileTask }>
+  private readonly closedSourceKeys = new Map<string, string>()
 
   constructor(c: Ctx, trx: Trx, file: PlanFile) {
     this.c = c
@@ -116,6 +117,7 @@ class Importer {
     )
     plan = await getPlan(this.c, projectKey)
     await this.applyTaskStates(plan)
+    await this.setClosedSourceKeys(project.id)
     await this.deliverPhases()
 
     const inFile = new Set([...this.file.phases.map((p) => p.key), ...this.fileTasks.map((t) => t.task.key)])
@@ -198,6 +200,10 @@ class Importer {
       const index = pending.findIndex(({ task }) => task.parent === undefined || !waiting.has(task.parent))
       if (index === -1) fail('DR101', { path: '/phases', reason: `parent cycle among ${[...waiting].join(', ')}` })
       const [{ phaseKey, task }] = pending.splice(index, 1)
+      // A task the file closes is created todo, so with its source key it would hold the key against the open task of
+      // the same finding that came back (DR309); its key is set once its state is applied (setClosedSourceKeys).
+      const closed = task.state === 'done' || task.state === 'cancelled'
+      if (closed && task.source_key !== undefined) this.closedSourceKeys.set(task.key, task.source_key)
       await addTask(c, {
         projectKey,
         phaseKey: phaseKey ?? undefined,
@@ -208,6 +214,7 @@ class Importer {
         assigneeName: task.assignee,
         estimateHours: task.estimate_hours,
         criteria: (task.criteria ?? []).map(textOf),
+        sourceKey: closed ? undefined : task.source_key,
       })
       this.created.add(task.key)
     }
@@ -334,6 +341,19 @@ class Importer {
         state = to
       }
       this.touched.add(key)
+    }
+  }
+
+  // A closed task holds no key in tasks_open_source_key, so no lock is needed. The add_task event of these tasks lacks
+  // the key; the task itself carries it like any other.
+  private async setClosedSourceKeys(projectId: string): Promise<void> {
+    for (const [key, sourceKey] of this.closedSourceKeys) {
+      await this.trx
+        .updateTable('tasks')
+        .set({ source_key: sourceKey })
+        .where('project_id', '=', projectId)
+        .where('key', '=', key)
+        .execute()
     }
   }
 

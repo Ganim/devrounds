@@ -36,6 +36,12 @@ A tenant can hold several projects: `devrounds-admin project add --tenant <name>
 Every `devrounds` command except `login` takes `--project <key>` to use that project for one invocation instead of
 the configured one; a key outside the token's tenant answers DR201.
 
+Finding tasks track something a tool found (a lint rule, a flaky test, a failing check). `devrounds task open-finding
+--source-key <key> --title <text>` (`POST /findings`) opens an unphased task keyed `F-` plus 4 digits, the next after
+the highest such key, and prints `opened F-0003 <title>`; while a task of that source key is open (not done or
+cancelled) it prints `already open F-0001 <source key>` and writes nothing. Reopening a closed task of a key that
+another open task holds answers DR309. Plan files carry the key as `source_key`, set only when import creates the task.
+
 The web view at http://127.0.0.1:4992/ signs in with that email and password (Better Auth, schema `auth`). A session
 cookie only reads: every change goes through the CLI or the API with a token (DR402). `devrounds-admin login remove`
 deletes a login and its sessions. Besides the roadmap, the view shows machines (free memory, the needs reserved by

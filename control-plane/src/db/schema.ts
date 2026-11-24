@@ -77,6 +77,7 @@ export interface TasksTable {
   state: Generated<TaskState>
   assignee_id: string | null
   estimate_hours: ColumnType<string | null, string | number | null | undefined, string | number | null>
+  source_key: string | null
   started_at: NullableTimestamp
   finished_at: NullableTimestamp
   version: Generated<number>

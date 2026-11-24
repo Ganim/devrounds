@@ -17,6 +17,7 @@ export const ERROR_CODES = [
   'DR306',
   'DR307',
   'DR308',
+  'DR309',
   'DR350',
   'DR351',
   'DR352',

@@ -6,6 +6,7 @@ import type { Database } from '../db/schema.ts'
 import { fail } from '../errors/error.ts'
 import { getBalance } from '../planning/balance.ts'
 import { exportPlan } from '../planning/export.ts'
+import { openFinding } from '../planning/findings.ts'
 import { importPlan } from '../planning/import.ts'
 import { parsePlanFile } from '../planning/plan-file.ts'
 import type { TaskState as TaskStateName } from '../planning/rules.ts'
@@ -200,6 +201,24 @@ export const projectRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> 
     },
     (request, reply) =>
       mutate(request, reply, (ctx) => addTask(ctx, { projectKey: request.params.key, ...request.body })),
+  )
+
+  // Idempotent by sourceKey on top of Idempotency-Key: while a task of the key is open it answers that task.
+  app.post(
+    '/findings',
+    {
+      schema: {
+        params: ProjectParams,
+        headers: Headers,
+        body: object({
+          sourceKey: Type.String({ minLength: 1, maxLength: 300 }),
+          title: Text,
+          description: Type.Optional(Type.String()),
+          criteria: Type.Optional(Type.Array(Text)),
+        }),
+      },
+    },
+    (request, reply) => mutate(request, reply, (ctx) => openFinding(ctx, request.params.key, request.body)),
   )
 
   // `null` clears phaseKey, assigneeName or estimateHours; an omitted field stays as it is.

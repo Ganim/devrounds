@@ -622,6 +622,33 @@ export const COMMANDS: Spec[] = [
     },
   },
   {
+    path: ['task', 'open-finding'],
+    usage:
+      'task open-finding --source-key <key> --title <text> [--description <text>] [--criterion <text>]...\n' +
+      '      opens an F- task, or names the open task of that source key',
+    args: 0,
+    options: { 'source-key': str, title: str, description: str, criterion: many },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const sourceKey = text(inv, 'source-key') ?? fail('DR101', { path: '--source-key', reason: 'is required' })
+      const result = await api.send<{ key: string; created: boolean; eventId: string | null }>('POST', '/findings', {
+        sourceKey,
+        title: text(inv, 'title'),
+        description: text(inv, 'description'),
+        criteria: list(inv, 'criterion'),
+      })
+      // An already open task may be started already, so only a new one points at `task start`.
+      if (result.created) {
+        return {
+          failures: [],
+          body: [fmt`opened ${result.key} ${text(inv, 'title')}`],
+          next: `devrounds task start ${shellArg(result.key)}`,
+        }
+      }
+      return { failures: [], body: [fmt`already open ${result.key} ${sourceKey}`], next: 'devrounds plan show' }
+    },
+  },
+  {
     path: ['task', 'edit'],
     usage:
       'task edit <task> --reason <text> [--title <text>] [--description <text>] [--phase <key>|none]\n' +
