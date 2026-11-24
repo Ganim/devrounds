@@ -253,13 +253,17 @@ class Importer {
     }
   }
 
-  // Adds what the file lists and the plan lacks, by (kind, ref); never deletes.
+  // Adds what the file lists and the plan lacks, by (kind, ref); never deletes. A title change alone is not synced.
+  // The links table has no unique key, so a (kind, ref) the file repeats is skipped here, not left to the database.
   private async syncLinks(plan: PlanView): Promise<void> {
     const phases = new Map(plan.phases.map((p) => [p.key, p.links]))
     const tasks = new Map(allTasks(plan).map((t) => [t.key, t.links]))
     const sync = async (target: Target, db: LinkView[], file: PlanFileLink[] = []) => {
+      const seen = new Set(db.map((d) => JSON.stringify([d.kind, d.ref])))
       for (const link of file) {
-        if (db.some((d) => d.kind === link.kind && d.ref === link.ref)) continue
+        const id = JSON.stringify([link.kind, link.ref])
+        if (seen.has(id)) continue
+        seen.add(id)
         await addLink(this.c, { ...target, ...link })
         this.touched.add((target.taskKey ?? target.phaseKey) as string)
       }

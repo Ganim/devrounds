@@ -385,7 +385,10 @@ test('import adds a link missing by kind and ref and never adds it twice', async
   const { ctx } = await setup()
   await importPlan(ctx, parsePlanFile(SEED))
 
-  const withLink = SEED.replace('title: Repo\n', 'title: Repo\n        links: [{ kind: pr, ref: "7" }]\n')
+  const withLink = SEED.replace(
+    'title: Repo\n',
+    'title: Repo\n        links: [{ kind: pr, ref: "7" }, { kind: pr, ref: "7" }]\n',
+  )
   const first = await importPlan(ctx, parsePlanFile(withLink))
   const before = await eventCount(ctx)
   const second = await importPlan(ctx, parsePlanFile(withLink))
