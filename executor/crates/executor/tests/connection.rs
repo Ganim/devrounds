@@ -400,8 +400,11 @@ async fn silent_control_plane_is_dropped_after_45_s() {
     server.abort();
 
     // The HelloAck, the last frame, came a moment before the clock stopped.
+    // Tokio's timer rounds a deadline up to its next whole millisecond, and
+    // the paused clock jumps to that tick: when the HelloAck came less than
+    // 1 ms before `silent_since`, the drop lands up to 1 ms past `SILENCE`.
     assert!(
-        silent_for > Duration::from_secs(44) && silent_for <= SILENCE,
+        silent_for > Duration::from_secs(44) && silent_for <= SILENCE + Duration::from_millis(1),
         "{silent_for:?}"
     );
     assert_eq!(SILENCE, Duration::from_secs(45));
