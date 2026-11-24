@@ -12,6 +12,7 @@ import { parseBatchFile } from '../jobs/batch-file.ts'
 import { restrictToOwner } from '../owner-only.ts'
 import type { ImportResult } from '../planning/import.ts'
 import type { EventView, PlanView } from '../planning/view.ts'
+import type { ImprovementReport } from '../runs/improvement.ts'
 import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
 import {
@@ -21,6 +22,7 @@ import {
   fmt,
   type GateJson,
   gateShow,
+  improvementShow,
   planShow,
   renderAgent,
   shellArg,
@@ -315,6 +317,9 @@ function dependency(scope: 'phase' | 'task', verb: 'add' | 'rm'): Spec {
     },
   }
 }
+
+// The criterion of every task the improvement report opens: the agent working it says why it happened or fixes it.
+const FINDING_CRITERION = 'explained or fixed, with evidence'
 
 const IMPORT_SAMPLE = 20
 
@@ -869,6 +874,39 @@ export const COMMANDS: Spec[] = [
       )
       if (rows.length === 0) body.push('no runs ended in this window')
       return { failures, body, next: failing.length > 0 ? 'devrounds run list --state failed' : 'devrounds queue list' }
+    },
+  },
+  {
+    path: ['report', 'improvement'],
+    usage:
+      'report improvement [--day <date>] [--open-tasks]   one local day (default yesterday) against the 7 days ' +
+      'before: findings first; --open-tasks opens an F- task per finding, once while it stays open',
+    args: 0,
+    options: { day: str, 'open-tasks': { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const report = await api.get<ImprovementReport>('/reports/improvement', { day: text(inv, 'day') })
+      const { failures, body } = improvementShow(report)
+      if (inv.values['open-tasks'] !== true) {
+        const next =
+          report.findings.length > 0
+            ? `devrounds report improvement --day ${shellArg(report.day)} --open-tasks`
+            : 'devrounds indicators'
+        return { failures, body, next }
+      }
+      // One at a time: openFinding takes the project lock, so parallel calls would only queue on it.
+      for (const f of report.findings) {
+        const opened = await api.send<{ key: string; created: boolean }>('POST', '/findings', {
+          sourceKey: f.sourceKey,
+          title: f.title,
+          description: f.evidence,
+          criteria: [FINDING_CRITERION],
+        })
+        body.push(
+          opened.created ? fmt`opened ${opened.key} ${f.title}` : fmt`already open ${opened.key} ${f.sourceKey}`,
+        )
+      }
+      return { failures, body, next: report.findings.length > 0 ? 'devrounds plan show' : 'devrounds indicators' }
     },
   },
   {

@@ -10,6 +10,8 @@ import { sql } from 'kysely'
 import { pruneIdempotencyKeys } from '../api/idempotency.ts'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
+import { putJobType } from '../job-types/service.ts'
+import { enqueueRun } from '../jobs/enqueue.ts'
 import { addTask, createProject } from '../planning/service.ts'
 import { testDb } from '../test-support/db.ts'
 import { removeDir } from '../test-support/remove-dir.ts'
@@ -729,4 +731,67 @@ test('gate show --json prints the gate view only', async (t) => {
   const res = await runCli(['gate', 'show', 'gate-1', '--json'], { env: fake.env, configPath: NO_CONFIG })
   assert.equal(res.exitCode, 0)
   assert.equal(res.stdout, `${JSON.stringify(view)}\n`)
+})
+
+test('report improvement --open-tasks opens each finding once across two runs', async () => {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(ctx, { key: 'alpha', name: 'Alpha' })
+  await putJobType(ctx, 'alpha', { key: 'check', command: { program: 'node', args: ['check.js'] } })
+  const queued = await enqueueRun(ctx, { projectKey: 'alpha', jobTypeKey: 'check', cwd: 'C:\\work' })
+  const job = await t.admin
+    .selectFrom('runs')
+    .select(['job_id', 'job_type_id', 'project_id'])
+    .where('id', '=', queued.id)
+    .executeTakeFirstOrThrow()
+  // Two unclassified failures on 2026-11-10 in the tenant's default America/Sao_Paulo and none before: the class
+  // doubled and the unclassified share are the two findings.
+  for (const [i, at] of ['2026-11-10T15:00:00Z', '2026-11-10T16:00:00Z'].entries()) {
+    const finished = Date.parse(at)
+    await t.admin
+      .insertInto('runs')
+      .values({
+        tenant_id: tenant.tenantId,
+        ...job,
+        attempt: i + 2,
+        state: 'failed',
+        failure_class: 'unclassified',
+        queued_at: new Date(finished - 5000),
+        not_before: new Date(finished - 5000),
+        started_at: new Date(finished - 1000),
+        finished_at: new Date(finished),
+      })
+      .execute()
+  }
+  const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
+  const env = { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: 'alpha' }
+  const argv = ['report', 'improvement', '--day', '2026-11-10', '--open-tasks']
+
+  const first = await runCli(argv, { env, configPath: NO_CONFIG })
+  const second = await runCli(argv, { env, configPath: NO_CONFIG })
+
+  assert.equal(first.exitCode, 0, first.stderr)
+  assert.equal(second.exitCode, 0, second.stderr)
+  assert.match(first.stdout, /^opened F-0001 /m)
+  assert.match(first.stdout, /^opened F-0002 /m)
+  assert.match(second.stdout, /^already open F-0001 improvement:class:check:unclassified$/m)
+  assert.match(second.stdout, /^already open F-0002 improvement:unclassified$/m)
+  assert.doesNotMatch(second.stdout, /^opened /m)
+  const tasks = await t.admin
+    .selectFrom('tasks')
+    .select(['id', 'key', 'source_key', 'phase_id', 'description'])
+    .where('tenant_id', '=', tenant.tenantId)
+    .orderBy('key')
+    .execute()
+  assert.deepEqual(
+    tasks.map((task) => [task.key, task.source_key, task.phase_id]),
+    [
+      ['F-0001', 'improvement:class:check:unclassified', null],
+      ['F-0002', 'improvement:unclassified', null],
+    ],
+  )
+  assert.match(tasks[1].description, /2 of 2 failed runs on 2026-11-10/)
+  const criteria = await t.admin.selectFrom('criteria').select('text').where('task_id', '=', tasks[0].id).execute()
+  assert.deepEqual(criteria, [{ text: 'explained or fixed, with evidence' }])
 })

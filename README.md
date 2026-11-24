@@ -266,3 +266,26 @@ is back. `schedule set` replaces the whole definition; saving the same timing ag
 `devrounds run list` and `devrounds indicators` (runs, queue wait, run time and failure classes per day or week) read
 what happened; `devrounds indicators --gates` reads gates instead (pass rate, cache hit share and wall time p50/p90
 per gate key, red checks per job type, by the day the gate ended); the web view shows the same at `#/queues`, `#/jobs` and `#/runs`.
+
+`devrounds report improvement [--day <date>] [--open-tasks]` (`GET /reports/improvement?day=`) compares one local day
+of the tenant (default yesterday) with the 7 days before it and prints each finding as a failure, then the 5 slowest
+steps, the retries per job type and the unclassified share of the day. Runs count by the local day they finished;
+cache hits and skipped runs are left out. A step is a `run_steps` entry; a job type that reports no steps is measured
+on its run time as step `run`. The findings and their thresholds (constants in `control-plane/src/runs/improvement.ts`):
+
+| Kind                 | Source key                            | When                                                                 |
+| -------------------- | ------------------------------------- | -------------------------------------------------------------------- |
+| `step_growth`        | `improvement:step:<jobType>:<step>`   | p50 grew > 20 % and > 10 s, with ≥ 3 samples on the day and before   |
+| `class_doubled`      | `improvement:class:<jobType>:<class>` | failures of the class on the day ≥ 2 and ≥ 2 × the daily mean before |
+| `retries_doubled`    | `improvement:retries:<jobType>`       | retries on the day ≥ 3 and ≥ 2 × the daily mean before               |
+| `unclassified_share` | `improvement:unclassified`            | unclassified failed runs of the day > 5 % of its failed runs         |
+
+`--open-tasks` opens each finding through `POST /findings` (title, the evidence as description, criterion `explained
+or fixed, with evidence`), so a finding reported again while its F- task is open opens nothing. The job type
+`roadmap/fixtures/job-types/improvement-report.yaml` runs it daily on a machine whose user variables hold
+`DEVROUNDS_URL`, `DEVROUNDS_TOKEN` (an agent token) and `DEVROUNDS_PROJECT`:
+
+```
+devrounds jobtype set roadmap/fixtures/job-types/improvement-report.yaml
+devrounds schedule set improvement-report --job-type improvement-report --cwd <repo> --daily 06:00
+```

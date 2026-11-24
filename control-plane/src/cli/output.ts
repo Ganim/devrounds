@@ -1,6 +1,7 @@
 import type { GateView } from '../gates/service.ts'
 import { isBlockerOpen, type TaskState } from '../planning/rules.ts'
 import type { CriterionView, PhaseView, PlanView, TaskView } from '../planning/view.ts'
+import type { ImprovementReport } from '../runs/improvement.ts'
 
 // Agent output mode (AGENTS.md): failures first, then the body cut to a byte budget on a whole line, then the
 // command to continue reading, and `next:` always last. Agents read the head and the tail of a long output, so
@@ -176,4 +177,24 @@ export function gateShow(g: GateJson): { failures: string[]; body: string[]; nex
         ? `devrounds gate show ${shellArg(g.id)} --wait`
         : 'devrounds plan show'
   return { failures, body, next }
+}
+
+const share = (value: number | null) => (value === null ? '-' : `${Math.round(value * 100)} %`)
+
+/**
+ * GET /reports/improvement: each finding is a failure (title, source key, evidence); the body is the day, the slowest
+ * steps and the retries of the day.
+ */
+export function improvementShow(r: ImprovementReport): { failures: string[]; body: string[] } {
+  return {
+    failures: r.findings.map((f) => fmt`${f.title} (${f.sourceKey}): ${f.evidence}`),
+    body: [
+      fmt`improvement ${r.day} (${r.timeZone}) · findings ${r.findings.length} · ` +
+        `unclassified share ${share(r.unclassifiedShare)}`,
+      ...r.slowestSteps.map((s) => fmt`slow step ${s.jobType} ${s.step} p50 ${seconds(s.p50Ms)} over ${s.runs} runs`),
+      ...r.retries.map(
+        (x) => fmt`retries ${x.jobType} ${x.retries}, daily mean before ${x.baselineDailyMean?.toFixed(1)}`,
+      ),
+    ],
+  }
 }

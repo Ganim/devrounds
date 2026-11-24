@@ -1,0 +1,30 @@
+# DevRounds's daily improvement report as a job (run it with --cwd <repo root>): yesterday in the tenant time zone
+# against the 7 days before, one F- task per finding, never a second one while it is open. DEVROUNDS_URL,
+# DEVROUNDS_TOKEN (an agent token) and DEVROUNDS_PROJECT are user variables on the machine. Schedule it with
+#   devrounds schedule set improvement-report --job-type improvement-report --cwd <repo> --daily 06:00
+key: improvement-report
+command:
+  program: node
+  args: [control-plane/src/cli/main.ts, report, improvement, --open-tasks]
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    DEVROUNDS_URL,
+    DEVROUNDS_TOKEN,
+    DEVROUNDS_PROJECT,
+  ]
+timeout_s: 300
+# CLI exit codes (AGENTS.md): 4 control plane unreachable, 5 auth or permission.
+classify:
+  - class: infra
+    exit_codes: [4]
+  - class: environment
+    exit_codes: [5]
