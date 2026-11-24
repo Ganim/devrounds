@@ -265,6 +265,10 @@ test('placement prefers the machine with more free memory', async () => {
   const { ctx, machines, enqueue } = await setup(['build-01', 'build-02'])
   const small = await executor(cp, machines[0], 4 * GIB)
   const large = await executor(cp, machines[1], 20 * GIB)
+  // The gateway's poke on large's HelloAck starts a pass that may list the sessions before large's report lands; if
+  // the run is enqueued while that pass is still going, it is placed on small, the only machine that pass sees. Wait
+  // for it, so every pass that can see the run also sees both reports.
+  await cp.scheduler.tick()
   const run = await enqueue()
   await cp.scheduler.tick()
   const offer = await large.next()
