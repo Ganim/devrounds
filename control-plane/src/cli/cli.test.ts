@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { addTask, createProject } from '../planning/service.ts'
 import { testDb } from '../test-support/db.ts'
+import { removeDir } from '../test-support/remove-dir.ts'
 import { moreCommandFor, runCli } from './commands.ts'
 
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url))
@@ -201,7 +202,7 @@ test('plan import never offers more: long lists are capped samples, and --cursor
   })
   t.after(fake.close)
   const dir = await scratch('devrounds-import-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const file = join(dir, 'plan.yaml')
   await writeFile(file, 'project: {key: alpha, name: Alpha}\n')
 
@@ -268,7 +269,7 @@ test('login writes the config through a restricted temp file and leaves nothing 
   )
   t.after(fake.close)
   const dir = await scratch('devrounds-login-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const configPath = join(dir, '.devrounds', 'config.json')
   const args = ['login', '--url', fake.env.DEVROUNDS_URL, '--token', 'drt_secret', '--project', 'alpha']
 
@@ -410,7 +411,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
   })
   t.after(fake.close)
   const dir = await scratch('devrounds-missing-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
 
   const commands = [
     ['run', 'show', 'r1'],
@@ -429,7 +430,7 @@ test('fields the server leaves out print as "-" in every formatter, never as und
 
 test('a config file that is not a JSON object answers DR502', async (t) => {
   const dir = await scratch('devrounds-config-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const configPath = join(dir, 'config.json')
   for (const content of ['null', '[]', '"text"', '5']) {
     await writeFile(configPath, content)
@@ -572,7 +573,7 @@ const refusal = (res: ServerResponse) =>
 
 test('gate run --wait-lock waits for the holder to end and then submits', async (t) => {
   const dir = await scratch('gate-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const file = join(dir, 'gate.yaml')
   await writeFile(file, GATE_FILE)
   const posts: { key: string | string[] | undefined; body: unknown }[] = []
@@ -614,7 +615,7 @@ test('gate run --wait-lock waits for the holder to end and then submits', async 
 
 test('gate run --no-wait-lock exits 1 with DR308 and the holder id at once', async (t) => {
   const dir = await scratch('gate-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const file = join(dir, 'gate.yaml')
   await writeFile(file, GATE_FILE)
   let requests = 0
@@ -635,7 +636,7 @@ test('gate run --no-wait-lock exits 1 with DR308 and the holder id at once', asy
 
 test('gate run past --wait-lock exits 1 with DR308', async (t) => {
   const dir = await scratch('gate-')
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const file = join(dir, 'gate.yaml')
   await writeFile(file, GATE_FILE)
   const waits: string[] = []

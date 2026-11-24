@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -10,10 +10,11 @@ import { defaultLogsRoot, loadConfig, loadServerConfig } from './config.ts'
 import { DevRoundsError } from './errors/error.ts'
 import { withTenant } from './tenancy/scope.ts'
 import { TEST_ADMIN_URL, TEST_APP_PASSWORD, TEST_APP_ROLE, testDb } from './test-support/db.ts'
+import { removeDir } from './test-support/remove-dir.ts'
 
 test('init writes a loadable config and refuses to overwrite it without force', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-init-'))
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const path = join(dir, 'nested', 'server.json')
 
   const written = await initConfig(path, { force: false })
@@ -36,7 +37,7 @@ test('init writes a loadable config and refuses to overwrite it without force', 
 
 test('serve config loads without an admin URL and never returns owner credentials', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-serve-'))
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const path = join(dir, 'server.json')
   await writeFile(path, JSON.stringify({ databaseUrl: 'postgres://app@127.0.0.1/devrounds', port: 4992 }))
   assert.deepEqual(await loadServerConfig({}, path), {
@@ -119,7 +120,7 @@ test('project add for an unknown tenant answers DR201 kind tenant', async () => 
 // The secret signs session cookies: a second migrate must keep it, or every browser would be signed out.
 test('migrate writes authSecret once and keeps it', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'devrounds-migrate-'))
-  t.after(() => rm(dir, { recursive: true, force: true }))
+  t.after(() => removeDir(dir))
   const path = join(dir, 'server.json')
   // The test role's own password, so this migrate leaves the role as every other test file expects it.
   const file = {
