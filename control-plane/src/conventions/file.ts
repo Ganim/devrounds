@@ -7,7 +7,9 @@ import { patternExamplesIssue } from './examples.ts'
 // A project's conventions document (design §3): YAML for `devrounds conventions propose`, JSON in the API. A version
 // stores it as given; readers use parseConventionsFile's def, with every default filled.
 const ItemKey = Type.String({ pattern: '^[a-z0-9][a-z0-9.-]{0,99}$' })
-const Section = Type.String({ minLength: 1, maxLength: 100 })
+// Section and title render as a heading and the start of a line (render.ts), so neither may break a line.
+const SINGLE_LINE = '^[^\\r\\n]*$'
+const Section = Type.String({ minLength: 1, maxLength: 100, pattern: SINGLE_LINE })
 // A POSIX path relative to the repo root; findConventionsIssue refuses `\`, absolute paths and `.`/`..` segments, in
 // globs too.
 const RepoPath = Type.String({ minLength: 1, maxLength: 500 })
@@ -47,7 +49,7 @@ const CHECKS: Record<string, TSchema> = {
 
 // One line each: the checker matches added lines one at a time, so a multi-line example could pass the rule's
 // self-test with a pattern that never fires on a diff.
-const Example = Type.String({ maxLength: 1000, pattern: '^[^\\r\\n]*$' })
+const Example = Type.String({ maxLength: 1000, pattern: SINGLE_LINE })
 const Examples = Type.Object(
   {
     bad: Type.Optional(Type.Array(Example, { maxItems: 20 })),
@@ -60,7 +62,7 @@ const Rule = Type.Object(
   {
     key: ItemKey,
     section: Section,
-    title: Type.String({ minLength: 1, maxLength: 200 }),
+    title: Type.String({ minLength: 1, maxLength: 200, pattern: SINGLE_LINE }),
     why: Type.String({ minLength: 1, maxLength: 1000 }),
     target: Type.Optional(RepoPath),
     // Files the rule applies to; none means every file (judgment rules are often repo-wide).

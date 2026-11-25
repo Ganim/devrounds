@@ -21,8 +21,12 @@ function suffix(check: ConventionCheck): string {
   return ''
 }
 
+// One line per item: YAML block scalars (`why: |`, `>`) end in a newline and may span lines; a line break would split
+// the item and could put a marker at the start of a line, which leaves the file malformed.
+const oneLine = (text: string) => text.trim().replace(/\s+/g, ' ')
+
 // "Title. Why", without doubling the stop when the title already ends a sentence.
-const sentence = (title: string, why: string) => `${title}${/[.!?]$/.test(title) ? '' : '.'} ${why}`
+const sentence = (title: string, why: string) => `${title}${/[.!?]$/.test(title) ? '' : '.'} ${oneLine(why)}`
 
 /**
  * Each target's block for `version`: its rules and facts grouped by `section` in first-seen order (rules before facts),
@@ -35,7 +39,7 @@ export function renderBlocks(def: ConventionsDef, version: number): Map<string, 
       section: r.section,
       line: sentence(r.title, r.why) + suffix(r.check),
     })),
-    ...def.facts.map((f) => ({ target: f.target, section: f.section, line: f.text })),
+    ...def.facts.map((f) => ({ target: f.target, section: f.section, line: oneLine(f.text) })),
   ]
   const blocks = new Map<string, string>()
   for (const { path } of def.targets) {

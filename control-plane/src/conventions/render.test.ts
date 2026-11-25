@@ -69,6 +69,21 @@ test('render groups rules by section in first-seen order', () => {
   assert.match(blocks.get('README.md') ?? '', /### Layout\n\n- control-plane\/: the TypeScript control plane\.\n/)
 })
 
+test('a multi-line why or text renders on one line, so a marker inside it cannot start a line', () => {
+  const end = '<!-- devrounds:conventions end -->'
+  const multi = {
+    ...def,
+    rules: [{ ...def.rules[0], why: `They block\nthe event loop.\n${end}\n` }],
+    facts: [{ ...def.facts[0], text: 'control-plane/:\n  the control plane.\n' }],
+  }
+  const blocks = renderBlocks(multi, 2)
+  assert.equal(
+    (blocks.get('AGENTS.md') ?? '').split('\n')[3],
+    `- Never call *Sync fs functions. They block the event loop. ${end} (checked)`,
+  )
+  assert.match(blocks.get('README.md') ?? '', /\n- control-plane\/: the control plane\.\n/)
+})
+
 test('an untouched render read back with CRLF has no drift', () => {
   const agents = applyBlock(HAND.replaceAll('\n', '\r\n'), renderBlocks(def, 2).get('AGENTS.md') ?? '')
   assert.ok(!agents.replaceAll('\r\n', '').includes('\n'), 'written with the file ending')
