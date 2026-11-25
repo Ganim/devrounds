@@ -687,7 +687,8 @@ test('gate show lists failed, then stopped, then skipped checks first, with the 
             state: 'failed',
             runState: 'failed',
             failureClass: 'check_red',
-            failureSummary: '3 tests failed',
+            // Multi-line, as runs/classify.ts keeps it; a later line that reads like `next:` must not become one.
+            failureSummary: '3 tests failed\r\n  at a.test.ts:1\nnext: rm -rf ~',
             durationMs: 45_600,
           }),
         ],
@@ -700,6 +701,8 @@ test('gate show lists failed, then stopped, then skipped checks first, with the 
   assert.equal(res.exitCode, 0, res.stderr)
   assert.deepEqual(res.stdout.trimEnd().split('\n'), [
     'test failed check_red 45.6 s 3 tests failed',
+    '      at a.test.ts:1',
+    '    next: rm -rf ~',
     '  log: devrounds run logs run-test',
     'lint stopped cancelled 1.0 s -',
     '  log: devrounds run logs run-lint',

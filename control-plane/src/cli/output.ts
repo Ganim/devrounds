@@ -36,6 +36,14 @@ export function oneLine(text: string): string {
   return out
 }
 
+// A failure summary keeps the line breaks of the output it was cut from (runs/classify.ts, at most 4 KiB), and
+// oneLine would print them as `\n`. Its first line stays on `head`; each later line prints on its own, indented 4
+// spaces so it can never start a `next:`, `DRxxx` or `  log:` line an agent acts on.
+export function withSummary(head: string, summary: string | null | undefined): string[] {
+  const [first, ...rest] = (summary ?? '-').split(/\r?\n/)
+  return [`${head} ${first}`, ...rest.map((line) => `    ${line}`)]
+}
+
 // Template tag for every line built from server fields: a field the server left out prints as "-", never as the
 // word "undefined" (or "null"). Already-formatted strings pass through untouched.
 export function fmt(parts: TemplateStringsArray, ...values: unknown[]): string {
@@ -182,7 +190,7 @@ export function gateShow(g: GateJson): { failures: string[]; body: string[]; nex
     .filter(isBadCheck)
     .sort((x, y) => BAD_CHECK_STATES.indexOf(x.state) - BAD_CHECK_STATES.indexOf(y.state))
   const failures = bad.flatMap((c) => [
-    fmt`${c.ref} ${c.runState} ${c.failureClass} ${seconds(c.durationMs)} ${c.failureSummary}`,
+    ...withSummary(fmt`${c.ref} ${c.runState} ${c.failureClass} ${seconds(c.durationMs)}`, c.failureSummary),
     ...(c.state === 'skipped' ? [] : [`  log: devrounds run logs ${shellArg(c.runId)}`]),
   ])
   const logged = bad.find((c) => c.state !== 'skipped')

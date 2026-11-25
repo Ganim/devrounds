@@ -262,7 +262,7 @@ until it ended. While a check stays queued with no live machine able to take it,
 `unplaced` on each check of `GET /gates/<id>` and on `GET /runs/<id>`. The checks hit the result cache by their `cache_key`, so a gate whose every check is a hit passes at
 submit.
 
-The output lists failed, skipped and stopped checks first (`<ref> <runState> <class> <duration> <summary>`, then
+The output lists failed, skipped and stopped checks first (`<ref> <runState> <class> <duration> <summary>`, the later summary lines under it indented 4 spaces, then
 `log: devrounds run logs <runId>`), then the gate line and the other checks; the last line is the next command.
 `--json` prints the gate view as the control plane answers it (`GET /gates/<id>`), and nothing else.
 Each check carries `exitCode` there: the latest run's exit code, a cached check's source run's, null for a run that never exited (queued, skipped).

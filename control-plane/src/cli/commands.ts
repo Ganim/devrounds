@@ -51,6 +51,7 @@ import {
   planShow,
   renderAgent,
   shellArg,
+  withSummary,
 } from './output.ts'
 
 // `devrounds`: the agent CLI. It talks only to the control plane's HTTP API (imports here are types and pure
@@ -512,7 +513,7 @@ function runShow(r: RunJson): Result {
   const failures = failed
     ? [
         fmt`run ${r.id} ${r.state}${r.outcome.failureClass ? `: ${r.outcome.failureClass}` : ''}${exit}`,
-        ...(r.outcome.failureSummary ? [fmt`summary: ${r.outcome.failureSummary}`] : []),
+        ...(r.outcome.failureSummary ? withSummary('summary:', r.outcome.failureSummary) : []),
       ]
     : []
   const t = r.timeline
