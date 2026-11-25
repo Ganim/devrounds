@@ -1187,6 +1187,23 @@ test('conventions check --diff <fixture> prints blocking first and exits 1', asy
   assert.match(drift.stdout, /\nnext: devrounds conventions render --cwd /)
 })
 
+test('conventions check inside a run whose result is refused exits 6, never a pass', async (t) => {
+  const { human, envFor } = await conventionsTenant()
+  await decide(human, 'alpha', 1, 'approve', undefined)
+  const repo = await scratch('check-run-')
+  t.after(() => removeDir(repo))
+  const env = await envFor('agent')
+  assert.equal((await runCli(['conventions', 'render', '--cwd', repo], { env, configPath: NO_CONFIG })).exitCode, 0)
+  const runId = '00000000-0000-4000-8000-000000000000'
+  const res = await runCli(['conventions', 'check', '--cwd', repo, '--diff', CHECK_DIFF], {
+    env: { ...env, DEVROUNDS_RUN_ID: runId },
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 6, res.stdout + res.stderr)
+  assert.match(res.stdout, new RegExp(`^not recorded for run ${runId}: DR201 `))
+  assert.match(res.stdout, /\nchecked 2 files against version 1: 1 blocking, 2 warnings\n/)
+})
+
 test('conventions check with no active version exits 3', async () => {
   const { envFor } = await conventionsTenant()
   const res = await runCli(['conventions', 'check', '--cwd', '.', '--diff', CHECK_DIFF], {

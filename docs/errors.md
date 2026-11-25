@@ -162,6 +162,14 @@ Proposal {version} is open for project {project}.
 
 One proposal is open at a time: approve or reject {version} (`devrounds conventions diff {version}` shows it), or propose with `--replace` to withdraw it.
 
+## DR312
+
+Run {run} is {state}; a check result needs a running run.
+
+### Fix
+
+A run holds one result, posted by `devrounds conventions check` while the run is running (its DEVROUNDS_RUN_ID); a finished run takes none. Check {run} with `devrounds run show {run}` and run the check again in a new run.
+
 ## DR313
 
 Conventions version {version} is {state}; only a proposed version can be approved or rejected.

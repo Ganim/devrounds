@@ -1,6 +1,7 @@
 import { DOCS_DRIFT, type Violation } from '../conventions/check.ts'
 import type { DiffItem, VersionDiff } from '../conventions/diff-versions.ts'
 import { type ConventionsDef, withDefaults } from '../conventions/file.ts'
+import type { ConventionIndicators } from '../conventions/results.ts'
 import { rulesFor } from '../conventions/select.ts'
 import type { VersionView } from '../conventions/service.ts'
 import type { GateView } from '../gates/service.ts'
@@ -320,5 +321,34 @@ export function conventionsCheckShow(
     ],
     next,
     exitCode: blocking.length > 0 ? 1 : 0,
+  }
+}
+
+/**
+ * `indicators --conventions`: each rule that blocked in a period first, then per period the checks, the other rule
+ * hits, the active version's rules by kind with the mechanical share, and the checked rules that never fired.
+ */
+export function conventionsIndicatorsShow(i: ConventionIndicators): AgentOutput {
+  const blocked = i.rows.filter((r) => r.blocking > 0)
+  const kinds = i.rules.map((r) => fmt`${r.kind} ${r.count}`).join(' · ')
+  const share = i.mechanicalShare === null ? '-' : `${Math.round(i.mechanicalShare * 100)} %`
+  return {
+    failures: blocked.map(
+      (r) =>
+        fmt`${r.period} ${r.rule} blocking ${r.blocking} in ${r.checks} checks · warnings ${r.warnings} · ` +
+        fmt`gates failed ${r.gatesFailed}`,
+    ),
+    body: [
+      ...i.periods.map(
+        (p) => fmt`${p.period} conventions  checks ${p.checks} · blocked ${p.blocked} · files ${p.filesChecked}`,
+      ),
+      ...i.rows
+        .filter((r) => r.blocking === 0)
+        .map((r) => fmt`${r.period} ${r.rule} (${r.kind})  warnings ${r.warnings} in ${r.checks} checks`),
+      ...(i.periods.length === 0 ? ['no conventions check in this window'] : []),
+      i.rules.length === 0 ? 'no active conventions version' : `rules ${kinds} · mechanical share ${share}`,
+      ...(i.silentRules.length > 0 ? [fmt`silent ${i.silentRules.join(', ')}`] : []),
+    ],
+    next: blocked.length > 0 ? 'devrounds conventions show' : 'devrounds indicators --conventions --period week',
   }
 }

@@ -78,6 +78,15 @@ export function checkChange(def: ConventionsDef, files: DiffFile[]): Violation[]
 /** The rule name of a target whose generated block differs from the active version's render (always blocking). */
 export const DOCS_DRIFT = 'docs_drift'
 
+/** Violations a check result keeps (results.ts); its blocking and warnings counts stay exact. */
+export const MAX_KEPT_VIOLATIONS = 500
+
+/** The violations a result keeps: blocking first, then warnings, each in the checker's order, at most 500. */
+export function keptViolations(violations: Violation[]): Violation[] {
+  const blocking = violations.filter((v) => v.severity === 'block')
+  return [...blocking, ...violations.filter((v) => v.severity !== 'block')].slice(0, MAX_KEPT_VIOLATIONS)
+}
+
 /** Drift (render.ts) as blocking violations, the reason as excerpt, so the check reports and counts it with the rest. */
 export function driftViolations(drift: Drift[]): Violation[] {
   return drift.map((d) => ({ rule: DOCS_DRIFT, severity: 'block', path: d.path, line: null, excerpt: d.reason }))

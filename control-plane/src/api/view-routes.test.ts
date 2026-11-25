@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import { sql } from 'kysely'
 import { createToken } from '../auth/tokens.ts'
+import { recordCheck } from '../conventions/results.ts'
+import { decide, propose } from '../conventions/service.ts'
 import { putJobType } from '../job-types/service.ts'
 import { enqueueRun, submitBatch } from '../jobs/enqueue.ts'
 import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import type { Ctx } from '../planning/resolve.ts'
-import { createProject } from '../planning/service.ts'
+import { addTask, createProject } from '../planning/service.ts'
 import { putQueue } from '../queues/service.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { buildServer } from './server.ts'
@@ -192,6 +194,56 @@ test("another tenant's runs, jobs and indicators never appear", async () => {
     assert.equal(res.status, 404)
     assert.equal(res.body.code, 'DR201')
   }
+})
+
+test("another tenant's conventions indicators never appear", async () => {
+  // Each tenant: version 1 of `devrounds` active with rule `mine` or `theirs`, and one check that hit it.
+  const recorded = async (s: Awaited<ReturnType<typeof setup>>, key: string) => {
+    await addTask(s.ctx, { projectKey, key: 'P3-T07', title: 'Conventions' })
+    const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
+    const document = {
+      targets: [{ path: 'AGENTS.md' }],
+      rules: [{ key, section: 'Never', title: key, why: 'why', check: { kind: 'judgment' }, evidence }],
+    }
+    await propose(s.ctx, projectKey, { document, basedOn: null, headSha: null, task: 'P3-T07' })
+    await decide(s.ctx, projectKey, 1, 'approve', undefined)
+    const run = await enqueue(s.ctx, 'check')
+    await t.admin
+      .updateTable('runs')
+      .set({ state: 'running', machine_id: s.machineId })
+      .where('id', '=', run.id)
+      .execute()
+    const violations = [{ rule: key, severity: 'block' as const, path: 'a.ts', line: 1, excerpt: 'x' }]
+    await recordCheck(s.ctx, projectKey, {
+      runId: run.id,
+      version: 1,
+      source: 'mechanical',
+      filesChecked: 1,
+      violations,
+    })
+  }
+  const mine = await setup()
+  const other = await setup()
+  await recorded(mine, 'mine')
+  await recorded(other, 'theirs')
+
+  const res = await mine.get(`/api/projects/${projectKey}/indicators/conventions`)
+  assert.equal(res.status, 200)
+  assert.deepEqual(
+    res.body.rows.map((r: { rule: string }) => r.rule),
+    ['mine'],
+  )
+  assert.deepEqual(
+    res.body.periods.map((p: { checks: number }) => p.checks),
+    [1],
+  )
+
+  const stranger = await t.newTenant()
+  const strangerCtx: Ctx = { db: t.db, tenantId: stranger.tenantId, actor: { id: stranger.human.id, kind: 'human' } }
+  await createProject(strangerCtx, { key: 'hidden', name: 'Hidden' })
+  const hidden = await mine.get('/api/projects/hidden/indicators/conventions')
+  assert.equal(hidden.status, 404)
+  assert.equal(hidden.body.code, 'DR201')
 })
 
 test('job list shows dependsOn refs and the last run', async () => {

@@ -124,6 +124,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['version', 'project'],
   },
+  DR312: {
+    text: 'Run {run} is {state}; a check result needs a running run.',
+    hint: 'A run holds one result, posted by `devrounds conventions check` while the run is running (its DEVROUNDS_RUN_ID); a finished run takes none. Check {run} with `devrounds run show {run}` and run the check again in a new run.',
+    httpStatus: 409,
+    keys: ['run', 'state'],
+  },
   DR313: {
     text: 'Conventions version {version} is {state}; only a proposed version can be approved or rejected.',
     hint: 'Read it with `devrounds conventions show --version {version}`: a decided or withdrawn version stays as it is; propose a new version to change the conventions.',

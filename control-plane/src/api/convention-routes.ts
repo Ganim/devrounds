@@ -1,6 +1,7 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
 import { Type } from '@sinclair/typebox'
 import type { Kysely } from 'kysely'
+import { CheckInput, conventionIndicators, recordCheck } from '../conventions/results.ts'
 import {
   checkProposal,
   conventionsSummary,
@@ -13,6 +14,7 @@ import {
 import type { Database } from '../db/schema.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
+import { periodWindow } from './period-window.ts'
 
 const Key = Type.String({ minLength: 1, maxLength: 200 })
 const Headers = Type.Object({ 'idempotency-key': Type.Optional(Key) })
@@ -23,8 +25,8 @@ const Reason = Type.String({ maxLength: 2000 })
 // A document may be 1 MB (conventions/file.ts); the body wraps it, and JSON escaping can grow it.
 const PROPOSAL_BODY_LIMIT = 4 * 1024 * 1024
 
-// A project's conventions (design §4): versions, proposals and the human decision on them. The check results and their
-// indicators are added with convention_checks.
+// A project's conventions (design §4): versions, proposals and the human decision on them, check results and their
+// indicators.
 export const conventionRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> }> = async (app, { db }) => {
   authenticateMembers(app, db)
 
@@ -59,6 +61,36 @@ export const conventionRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> 
       await checkProposal(request.body)
       return mutateIdempotent(db, request, reply, (ctx) => recordProposal(ctx, request.params.key, request.body))
     },
+  )
+
+  app.post(
+    '/conventions/checks',
+    { schema: { params: Type.Object({ key: Key }), headers: Headers, body: CheckInput } },
+    (request, reply) =>
+      mutateIdempotent(db, request, reply, (ctx) => recordCheck(ctx, request.params.key, request.body)),
+  )
+
+  app.get(
+    '/indicators/conventions',
+    {
+      schema: {
+        params: Type.Object({ key: Key }),
+        querystring: Type.Object(
+          {
+            period: Type.Unsafe<'day' | 'week'>({ type: 'string', enum: ['day', 'week'], default: 'day' }),
+            from: Type.Optional(Type.String()),
+            to: Type.Optional(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      },
+    },
+    (request) =>
+      conventionIndicators(
+        memberCtx(db, request),
+        request.params.key,
+        periodWindow('conventions indicators', request.query),
+      ),
   )
 
   for (const decision of ['approve', 'reject'] as const) {

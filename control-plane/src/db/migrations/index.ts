@@ -23,6 +23,7 @@ import { gates } from './0021_gates.ts'
 import { taskSourceKey } from './0022_task_source_key.ts'
 import { learnedNeedP90 } from './0023_learned_need_p90.ts'
 import { conventionSets } from './0024_convention_sets.ts'
+import { conventionChecks } from './0025_convention_checks.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -54,5 +55,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0022_task_source_key': taskSourceKey,
     '0023_learned_need_p90': learnedNeedP90,
     '0024_convention_sets': conventionSets,
+    '0025_convention_checks': conventionChecks,
   }
 }

@@ -454,3 +454,20 @@ an empty diff. Exit 1 is `check_red`, 2, 3 and 5 `environment`, 4 and 6 `infra`.
 
 Give the check no `cache_key`, or one that includes the active `documentSha` (`devrounds conventions show --json`):
 a green cached before a new version was approved would otherwise pass without checking against it.
+
+Inside a run (the executor sets `DEVROUNDS_RUN_ID`), `check` records its result before printing: the version, the
+files checked, the exact blocking and warning counts and up to 500 violations, blocking first. A run holds one result,
+and only while it is running (DR312 otherwise; DR201 for a run of another project). A refused record prints
+`not recorded for run <id>: <error>` first and exits 6, so the gate never reads it as a pass. A cached check posts
+nothing.
+
+```
+devrounds indicators --conventions [--period day|week] [--from <date>] [--to <date>]
+```
+
+reads the recorded checks by the tenant's local day (or week) they were posted: each rule that blocked first (hits,
+checks it fired in, failed gates it blocked), then per period the checks, how many blocked and the files read, the
+rules that only warned (`docs_drift` counts as kind `drift`), the active version's rules by kind with the mechanical
+share (`pattern`, `path` and `job_type` over all rules), and the `pattern` and `path` rules that never fired in the
+window (`silent`), candidates to drop or rewrite. A check with more than 500 violations counts per rule only the 500
+it kept.

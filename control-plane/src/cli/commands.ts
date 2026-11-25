@@ -7,7 +7,7 @@ import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
 import { DEFAULT_CANDIDATE_GLOBS, findCandidates } from '../conventions/candidates.ts'
-import { checkChange, driftViolations } from '../conventions/check.ts'
+import { checkChange, driftViolations, keptViolations } from '../conventions/check.ts'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
 import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
 import {
@@ -18,6 +18,7 @@ import {
   withDefaults,
 } from '../conventions/file.ts'
 import { applyBlock, driftOf, readBlock, removeBlock, renderBlocks } from '../conventions/render.ts'
+import type { ConventionIndicators } from '../conventions/results.ts'
 import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
@@ -38,6 +39,7 @@ import {
   type ConventionsVersionJson,
   conventionsCheckShow,
   conventionsDiffShow,
+  conventionsIndicatorsShow,
   conventionsShow,
   fitBody,
   fmt,
@@ -943,15 +945,22 @@ export const COMMANDS: Spec[] = [
   {
     path: ['indicators'],
     usage:
-      'indicators [--gates] [--period day|week] [--from <date>] [--to <date>] [--cursor <n>]   runs per local ' +
-      'period and job type, in the tenant time zone; the failure classes of each row with failures first; --gates: ' +
-      'pass rate, cache share and wall time per gate, red checks per job type',
+      'indicators [--gates|--conventions] [--period day|week] [--from <date>] [--to <date>] [--cursor <n>]   runs ' +
+      'per local period and job type, in the tenant time zone; the failure classes of each row with failures first; ' +
+      '--gates: pass rate, cache share and wall time per gate, red checks per job type; --conventions: conventions ' +
+      'checks, hits per rule (blocking first), rules by kind and the checked rules that never fired',
     args: 0,
     pages: true,
-    options: { gates: { type: 'boolean' }, period: str, from: str, to: str },
+    options: { gates: { type: 'boolean' }, conventions: { type: 'boolean' }, period: str, from: str, to: str },
     run: async (inv, connect) => {
       const api = await connect()
       const query = { period: text(inv, 'period'), from: text(inv, 'from'), to: text(inv, 'to') }
+      if (inv.values.gates === true && inv.values.conventions === true) {
+        fail('DR101', { path: '--conventions', reason: 'cannot be combined with --gates' })
+      }
+      if (inv.values.conventions === true) {
+        return conventionsIndicatorsShow(await api.get<ConventionIndicators>('/indicators/conventions', query))
+      }
       if (inv.values.gates === true) {
         const { gates, checks } = await api.get<{ gates: GateIndicatorRow[]; checks: CheckIndicatorRow[] }>(
           '/indicators/gates',
@@ -1721,10 +1730,11 @@ export const COMMANDS: Spec[] = [
     path: ['conventions', 'check'],
     usage:
       'conventions check --cwd <repo> --diff <-|path>   check the added lines and new paths of a unified diff (- reads ' +
-      'stdin) and the generated blocks against the active version; blocking first, exits 1 on any',
+      'stdin) and the generated blocks against the active version; blocking first, exits 1 on any; inside a run ' +
+      '(DEVROUNDS_RUN_ID) it records the result first, and a refused record exits 6',
     args: 0,
     options: { cwd: str, diff: str },
-    run: async (inv, connect) => {
+    run: async (inv, connect, deps) => {
       const cwd = await repoDir(inv)
       const source = text(inv, 'diff') ?? fail('DR101', { path: '--diff', reason: 'is required' })
       const diff =
@@ -1736,8 +1746,31 @@ export const COMMANDS: Spec[] = [
       const api = await connect()
       const { view, def, files: targets } = await conventionsWorktree(api, cwd)
       const files = parseUnifiedDiff(diff).filter((file) => file.status !== 'deleted')
-      const drift = driftViolations(driftOf(def, view.version, targets))
-      return conventionsCheckShow(view.version, def, files.length, [...drift, ...checkChange(def, files)], cwd)
+      const violations = [...driftViolations(driftOf(def, view.version, targets)), ...checkChange(def, files)]
+      // filesChecked is the count the output prints: the diff's files that are not deleted.
+      const shown = conventionsCheckShow(view.version, def, files.length, violations, cwd)
+      const runId = deps.env.DEVROUNDS_RUN_ID
+      if (!runId) return shown
+      // Recorded before printing; a refused record must not read as a pass, so it fails the run as infra (exit 6).
+      try {
+        await api.send('POST', '/conventions/checks', {
+          runId,
+          version: view.version,
+          source: 'mechanical',
+          filesChecked: files.length,
+          violations: keptViolations(violations),
+          blocking: violations.filter((v) => v.severity === 'block').length,
+          warnings: violations.filter((v) => v.severity === 'warn').length,
+        })
+      } catch (err) {
+        const { output } = failureOutput(err)
+        return {
+          ...shown,
+          failures: [fmt`not recorded for run ${runId}: ${output.failures[0]}`, ...shown.failures],
+          exitCode: 6,
+        }
+      }
+      return shown
     },
   },
 ]
