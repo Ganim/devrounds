@@ -21,6 +21,7 @@ import { placement } from './0019_placement.ts'
 import { resultCache } from './0020_result_cache.ts'
 import { gates } from './0021_gates.ts'
 import { taskSourceKey } from './0022_task_source_key.ts'
+import { learnedNeedP90 } from './0023_learned_need_p90.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -50,5 +51,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0020_result_cache': resultCache,
     '0021_gates': gates,
     '0022_task_source_key': taskSourceKey,
+    '0023_learned_need_p90': learnedNeedP90,
   }
 }

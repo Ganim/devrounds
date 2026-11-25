@@ -9,7 +9,7 @@ const COLUMNS = [
   'alter table queues add column machine_concurrency int check (machine_concurrency > 0)',
 ]
 
-// The need of a key is its learned median once it has 3 samples (runs/learned-need.ts MIN_LEARNED_SAMPLES), else the
+// The need of a key is its learned need (p90 since 0023) once it has 3 samples (runs/learned-need.ts MIN_LEARNED_SAMPLES), else the
 // job type's need_bytes, else the learned one of fewer samples, else the 512 MiB default.
 // The per-machine count looks at the runs of the queue on p_machine only; the global cap is untouched beside it.
 const CLAIM_RUN = `create or replace function claim_run(p_machine uuid, p_free bigint, p_reserve bigint, p_offer_timeout_s int)

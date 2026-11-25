@@ -323,7 +323,7 @@ test('counts past the int columns are stored at the column maximum instead of fa
   )
 })
 
-test('learned need is the median of the last 10 peaks, 536870912 without history', async () => {
+test('learned need is the p90 of the last 10 peaks, 536870912 without history', async () => {
   const { t, tenant, ctx, machineId, start } = await setup()
   const ids = async () =>
     withTenant(t.db, tenant.tenantId, (trx) =>
@@ -335,7 +335,7 @@ test('learned need is the median of the last 10 peaks, 536870912 without history
   assert.equal(await need(), 536870912n)
   assert.equal(DEFAULT_MEMORY_NEED, 536870912n)
 
-  // 12 runs; the two oldest (huge) fall out of the window, leaving peaks 1..10 MiB: median = 5.5 MiB.
+  // 12 runs; the two oldest (huge) fall out of the window, leaving peaks 1..10 MiB: p90 (nearest rank, the 9th of 10) = 9 MiB.
   const peaks = [1000, 1000, 3, 1, 4, 10, 5, 9, 2, 6, 8, 7].map((mib) => mib * MIB)
   const base = Date.now() + SECOND
   for (const [i, peak] of peaks.entries()) {
@@ -353,7 +353,7 @@ test('learned need is the median of the last 10 peaks, 536870912 without history
   }
   // A run without a peak does not count.
   await start()
-  assert.equal(await need(), BigInt(5.5 * MIB))
+  assert.equal(await need(), BigInt(9 * MIB))
 })
 
 test('a run of another tenant is not found (DR201)', async () => {

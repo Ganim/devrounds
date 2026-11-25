@@ -344,7 +344,7 @@ test('public cannot execute claim_run; the app role can', async () => {
   assert.equal(none, null)
 })
 
-test('a RunFinished with a peak updates learned_needs to the median of the last 10 peaks', async () => {
+test('a RunFinished with a peak updates learned_needs to the p90 of the last 10 peaks', async () => {
   const s = await setup()
   const machineId = s.machineId('build-01')
   const row = () =>
@@ -357,7 +357,7 @@ test('a RunFinished with a peak updates learned_needs to the median of the last 
       .executeTakeFirst()
   assert.equal(await row(), undefined)
 
-  // 12 runs; the two oldest (huge) fall out of the window, leaving peaks 1..10 MiB: median = 5.5 MiB.
+  // 12 runs; the two oldest (huge) fall out of the window, leaving peaks 1..10 MiB: p90 (nearest rank, the 9th of 10) = 9 MiB.
   const peaks = [1000, 1000, 3, 1, 4, 10, 5, 9, 2, 6, 8, 7].map((mib) => mib * Number(MIB))
   const base = Date.now() + 1000
   for (const [i, peak] of peaks.entries()) {
@@ -400,13 +400,13 @@ test('a RunFinished with a peak updates learned_needs to the median of the last 
   }
   assert.deepEqual(await row(), {
     tenant_id: s.tenant.tenantId,
-    need_bytes: String((11n * MIB) / 2n),
+    need_bytes: String(9n * MIB),
     samples: 10,
   })
   const stored = await withTenant(s.t.db, s.tenant.tenantId, (trx) =>
     storedNeed(trx, s.ids.projectId, s.ids.jobTypeId, machineId),
   )
-  assert.equal(stored, (11n * MIB) / 2n)
+  assert.equal(stored, 9n * MIB)
 })
 
 test('two runs of one key finishing at once both count in learned_needs', async () => {
@@ -463,5 +463,5 @@ test('two runs of one key finishing at once both count in learned_needs', async 
     .select(['need_bytes', 'samples'])
     .where('machine_id', '=', machineId)
     .executeTakeFirstOrThrow()
-  assert.deepEqual(row, { need_bytes: String(200n * MIB), samples: 2 })
+  assert.deepEqual(row, { need_bytes: String(300n * MIB), samples: 2 })
 })

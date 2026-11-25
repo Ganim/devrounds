@@ -24,20 +24,21 @@ async function recentPeaks(trx: Trx, projectId: string, jobTypeId: string, machi
   return rows.map((row) => BigInt(row.peak_private_bytes as string)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
 }
 
-// Mean of the middle pair, rounded half up, like the executor's median. Empty: DEFAULT_MEMORY_NEED.
-function median(peaks: bigint[]): bigint {
+// The 90th percentile by nearest rank (the 9th of 10 peaks), not the median: a key's peaks are often bimodal (a build
+// that hits the shared cache peaks at ~250 MiB, one that rebuilds at 6-9 GiB), and the median took the cheap side, so
+// four rebuilding builds were admitted at once on a 253 MiB need (P2-T08, 25/11/2026). Too high a need only delays a
+// start; too low a need risks an out-of-memory build. Empty: DEFAULT_MEMORY_NEED.
+function p90(peaks: bigint[]): bigint {
   if (peaks.length === 0) return DEFAULT_MEMORY_NEED
-  const middle = Math.floor(peaks.length / 2)
-  if (peaks.length % 2 === 1) return peaks[middle]
-  return (peaks[middle - 1] + peaks[middle] + 1n) / 2n
+  return peaks[Math.ceil(peaks.length * 0.9) - 1]
 }
 
 /**
- * Memory the next run of this job type on this machine is expected to need: the median peak of its last 10 runs that
+ * Memory the next run of this job type on this machine is expected to need: the p90 peak of its last 10 runs that
  * reported one, else DEFAULT_MEMORY_NEED. Computed from the runs; storedNeed reads the same value from learned_needs.
  */
 export async function learnedNeed(trx: Trx, projectId: string, jobTypeId: string, machineId: string): Promise<bigint> {
-  return median(await recentPeaks(trx, projectId, jobTypeId, machineId))
+  return p90(await recentPeaks(trx, projectId, jobTypeId, machineId))
 }
 
 /**
@@ -57,7 +58,7 @@ export async function updateLearnedNeed(
   await sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(trx)
   const peaks = await recentPeaks(trx, projectId, jobTypeId, machineId)
   if (peaks.length === 0) return
-  const need = median(peaks).toString()
+  const need = p90(peaks).toString()
   // The tenant comes from the machine row (RLS already limits it to the current tenant).
   await trx
     .insertInto('learned_needs')
