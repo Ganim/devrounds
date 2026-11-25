@@ -1,3 +1,7 @@
+import type { DiffItem, VersionDiff } from '../conventions/diff-versions.ts'
+import { withDefaults } from '../conventions/file.ts'
+import { rulesFor } from '../conventions/select.ts'
+import type { VersionView } from '../conventions/service.ts'
 import type { GateView } from '../gates/service.ts'
 import { isBlockerOpen, type TaskState } from '../planning/rules.ts'
 import type { CriterionView, PhaseView, PlanView, TaskView } from '../planning/view.ts'
@@ -205,5 +209,61 @@ export function improvementShow(r: ImprovementReport): { failures: string[]; bod
         (x) => fmt`retries ${x.jobType} ${x.retries}, daily mean before ${x.baselineDailyMean.toFixed(1)}`,
       ),
     ],
+  }
+}
+
+// GET /conventions/:version (conventions/service.ts VersionView), dates as ISO strings.
+export type ConventionsVersionJson = Omit<VersionView, 'proposedAt' | 'decidedAt'> & {
+  proposedAt: string
+  decidedAt: string | null
+}
+
+/**
+ * `conventions show`: one line per rule (`key severity kind title`) with `why` under it, blocking first, then warn,
+ * then judgment (plan call 5). With `paths`, only the rules that cover one of them; without, the facts follow.
+ */
+export function conventionsShow(v: ConventionsVersionJson, paths: string[] | undefined): AgentOutput {
+  const def = withDefaults(v.document)
+  const rules = rulesFor(def, paths)
+  const scope = paths === undefined ? '' : ` for ${paths.join(', ')}`
+  return {
+    failures: [],
+    body: [
+      fmt`conventions version ${v.version} ${v.state} · sha ${v.documentSha.slice(0, 12)} · ${rules.length} rules${scope}`,
+      ...rules.flatMap((r) => [fmt`${r.key} ${r.severity} ${r.check.kind} ${r.title}`, fmt`  ${r.why}`]),
+      ...(paths === undefined ? def.facts.map((f) => fmt`fact ${f.key}: ${f.text}`) : []),
+    ],
+    next: 'devrounds plan show',
+  }
+}
+
+const diffLine = (verb: string, d: DiffItem, fields?: string[]) =>
+  fmt`${verb} ${d.item} ${d.key}${d.severity === null ? '' : ` (${d.severity})`}${fields ? `: ${fields.join(', ')}` : ''}`
+
+/**
+ * `conventions diff`: removed and changed blocking rules first, since those are what an approver must not miss (plan
+ * call 7); a changed rule whose severity moved counts as blocking. Then the other removed, changed and added items,
+ * then targets.
+ */
+export function conventionsDiffShow(d: VersionDiff & { version: number; against: number | null }): AgentOutput {
+  const blocking = (x: DiffItem & { fields?: string[] }) =>
+    x.item === 'rule' && (x.severity === 'block' || (x.fields?.includes('severity') ?? false))
+  const removed = d.removed.map((x) => ({ x, line: diffLine('removed', x) }))
+  const changed = d.changed.map((x) => ({ x, line: diffLine('changed', x, x.fields) }))
+  const first = [...removed, ...changed].filter(({ x }) => blocking(x))
+  const rest = [...removed, ...changed].filter(({ x }) => !blocking(x))
+  const against = d.against === null ? 'an empty document' : `version ${d.against}`
+  return {
+    failures: [],
+    body: [
+      fmt`conventions version ${d.version} against ${against}: ${d.added.length} added, ${d.removed.length} removed, ` +
+        fmt`${d.changed.length} changed`,
+      ...first.map(({ line }) => line),
+      ...rest.map(({ line }) => line),
+      ...d.added.map((x) => diffLine('added', x)),
+      ...d.targets.added.map((path) => fmt`added target ${path}`),
+      ...d.targets.removed.map((path) => fmt`removed target ${path}`),
+    ],
+    next: `devrounds conventions show --version ${d.version}`,
   }
 }

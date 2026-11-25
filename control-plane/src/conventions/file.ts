@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { type Static, type TSchema, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
+import { patternExamplesIssue } from './examples.ts'
 
 // A project's conventions document (design §3): YAML for `devrounds conventions propose`, JSON in the API. A version
 // stores it as given; readers use parseConventionsFile's def, with every default filled.
@@ -94,7 +95,7 @@ export const ConventionsFile = Type.Object(
 )
 
 export type ConventionsFile = Static<typeof ConventionsFile>
-type RuleFile = Static<typeof Rule>
+export type RuleFile = Static<typeof Rule>
 type FactFile = Static<typeof Fact>
 export type Evidence = Static<typeof Evidence>
 export type ConventionCheck = RuleFile['check']
@@ -153,34 +154,27 @@ function compile(at: string, source: string, flags: string): RegExp | Issue {
   }
 }
 
-// A pattern rule tests itself (design call 11): every bad example is a violation and no good one is.
-function patternIssue(at: string, rule: RuleFile, check: Static<typeof PatternCheck>): Issue | null {
+// A pattern rule needs paths and a bad example, and its regexes must compile. Cheap at any size, unlike running them
+// (patternExamplesIssue).
+function patternShapeIssue(at: string, rule: RuleFile, check: Static<typeof PatternCheck>): Issue | null {
   if (!rule.paths?.length) return { path: `${at}/paths`, reason: 'a pattern rule needs paths' }
-  const bad = rule.examples?.bad ?? []
-  if (bad.length === 0) return { path: `${at}/examples/bad`, reason: 'a pattern rule needs at least one bad example' }
+  if (!rule.examples?.bad?.length) {
+    return { path: `${at}/examples/bad`, reason: 'a pattern rule needs at least one bad example' }
+  }
   const flags = check.flags ?? ''
   if (new Set(flags).size !== flags.length) return { path: `${at}/check/flags`, reason: 'a flag appears twice' }
   const forbid = compile(`${at}/check/forbid`, check.forbid, flags)
   if (!(forbid instanceof RegExp)) return forbid
   const unless = check.unless === undefined ? null : compile(`${at}/check/unless`, check.unless, flags)
-  if (unless !== null && !(unless instanceof RegExp)) return unless
-  for (const [j, line] of bad.entries()) {
-    if (!forbid.test(line)) return { path: `${at}/examples/bad/${j}`, reason: 'does not match forbid' }
-    if (unless?.test(line)) return { path: `${at}/examples/bad/${j}`, reason: 'matches unless' }
-  }
-  for (const [j, line] of (rule.examples?.good ?? []).entries()) {
-    if (forbid.test(line) && !unless?.test(line)) {
-      return { path: `${at}/examples/good/${j}`, reason: 'matches forbid' }
-    }
-  }
-  return null
+  return unless !== null && !(unless instanceof RegExp) ? unless : null
 }
 
 /**
  * Schema first, then what a schema cannot say: the size cap, repo-relative paths, unique targets and keys (rules and
- * facts share one key space), targets named in `targets`, and pattern rules that compile and pass their examples.
+ * facts share one key space), targets named in `targets`, and pattern rules that compile. Everything but running the
+ * examples (patternExamplesIssue).
  */
-export function findConventionsIssue(value: unknown): Issue | null {
+export function findConventionsShapeIssue(value: unknown): Issue | null {
   if (Buffer.byteLength(JSON.stringify(value) ?? '') > MAX_DOCUMENT_BYTES) {
     return { path: '/', reason: 'the document is over 1 MB' }
   }
@@ -209,7 +203,19 @@ export function findConventionsIssue(value: unknown): Issue | null {
     if (evidence) return evidence
   }
   for (const [i, rule] of file.rules.entries()) {
-    const issue = rule.check.kind === 'pattern' ? patternIssue(`/rules/${i}`, rule, rule.check) : null
+    const issue = rule.check.kind === 'pattern' ? patternShapeIssue(`/rules/${i}`, rule, rule.check) : null
+    if (issue) return issue
+  }
+  return null
+}
+
+/** findConventionsShapeIssue, then each pattern rule's examples, on this thread: for the CLI, which runs the caller's own
+ * document in the caller's own process. */
+export function findConventionsIssue(value: unknown): Issue | null {
+  const shape = findConventionsShapeIssue(value)
+  if (shape) return shape
+  for (const [i, rule] of (value as ConventionsFile).rules.entries()) {
+    const issue = patternExamplesIssue(`/rules/${i}`, rule)
     if (issue) return issue
   }
   return null
@@ -237,7 +243,7 @@ export function parseConventionsFile(text: string): ConventionsDef {
 
 // JSON with keys sorted at every level. Kept here rather than shared with api/idempotency.ts so this module stays free
 // of the server's imports: the CLI reads documents in the worktree (render, check, verify).
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))

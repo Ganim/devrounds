@@ -3,6 +3,11 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
+import type { TSchema } from '@sinclair/typebox'
+import { Value } from '@sinclair/typebox/value'
+import { stringify as stringifyYaml } from 'yaml'
+import type { VersionDiff } from '../conventions/diff-versions.ts'
+import { ConventionsFile, findConventionsIssue } from '../conventions/file.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseGateFile } from '../gates/file.ts'
@@ -15,9 +20,13 @@ import type { EventView, PlanView } from '../planning/view.ts'
 import type { ImprovementReport } from '../runs/improvement.ts'
 import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
+import { parseYamlFile } from '../yaml-file.ts'
 import {
   type AgentOutput,
   BODY_BUDGET,
+  type ConventionsVersionJson,
+  conventionsDiffShow,
+  conventionsShow,
   fitBody,
   fmt,
   type GateJson,
@@ -455,6 +464,62 @@ function runShow(r: RunJson): Result {
         ? 'devrounds plan show'
         : `devrounds run show ${id} --wait`
   return { failures, body, next }
+}
+
+// jsonb keeps object keys in its own order (shortest first), so `conventions export` puts them back in the order the
+// file schema lists them (targets, rules, facts; key, section, title...) and the YAML reads like the file proposed.
+function inSchemaOrder(value: unknown, schema: TSchema): unknown {
+  if (Array.isArray(value)) return schema.items ? value.map((item) => inSchemaOrder(item, schema.items)) : value
+  if (schema.anyOf) {
+    const variant = (schema.anyOf as TSchema[]).find((v) => Value.Check(v, value))
+    return variant ? inSchemaOrder(value, variant) : value
+  }
+  if (value === null || typeof value !== 'object' || !schema.properties) return value
+  const record = value as Record<string, unknown>
+  const known = Object.keys(schema.properties).filter((key) => key in record)
+  const rest = Object.keys(record).filter((key) => !(key in schema.properties))
+  return Object.fromEntries([
+    ...known.map((key) => [key, inSchemaOrder(record[key], schema.properties[key])]),
+    ...rest.map((key) => [key, record[key]]),
+  ])
+}
+
+// A version positional: a number from 1.
+function versionArg(inv: Invocation): string {
+  const version = arg(inv, 0, '<version>')
+  if (!/^[1-9][0-9]{0,8}$/.test(version)) fail('DR101', { path: '<version>', reason: 'must be an integer >= 1' })
+  return version
+}
+
+// --version for reads; without it, the active version.
+function conventionsVersion(inv: Invocation): string {
+  const version = integer(inv, 'version', 1)
+  return version === undefined ? 'active' : String(version)
+}
+
+// Human members only: an agent token answers DR453 (exit 5).
+function conventionsDecision(decision: 'approve' | 'reject'): Spec {
+  const reason = decision === 'approve' ? '[--reason <text>]' : '--reason <text>'
+  return {
+    path: ['conventions', decision],
+    usage: `conventions ${decision} <version> ${reason}   ${decision} a proposal; needs a human member token`,
+    args: 1,
+    options: { reason: str },
+    run: async (inv, connect) => {
+      const version = versionArg(inv)
+      const api = await connect()
+      const v = await api.send<{ version: number; state: string; decidedBy: string | null }>(
+        'POST',
+        path('conventions', version, decision),
+        { reason: text(inv, 'reason') },
+      )
+      return {
+        failures: [],
+        body: [fmt`conventions version ${v.version} ${v.state} by ${v.decidedBy}`],
+        next: 'devrounds conventions show',
+      }
+    },
+  }
 }
 
 export const COMMANDS: Spec[] = [
@@ -1383,6 +1448,98 @@ export const COMMANDS: Spec[] = [
       return gateResult(inv, await waitGate(api, gate, wait))
     },
   },
+  {
+    path: ['conventions', 'show'],
+    usage:
+      'conventions show [--version <n>] [--paths <a,b>] [--json]   the active version (or --version) one rule per ' +
+      'line, blocking first, then warn, then judgment; --paths keeps the rules that cover those repo paths',
+    args: 0,
+    pages: true,
+    options: { version: str, paths: str, json: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const view = await api.get<ConventionsVersionJson>(path('conventions', conventionsVersion(inv)))
+      if (inv.values.json === true)
+        return {
+          failures: [],
+          body: [],
+          next: '',
+          raw: `${JSON.stringify(view)}
+`,
+        }
+      const paths = text(inv, 'paths')
+        ?.split(',')
+        .map((p) => p.trim())
+        .filter((p) => p !== '')
+      return conventionsShow(view, paths)
+    },
+  },
+  {
+    path: ['conventions', 'export'],
+    usage: 'conventions export [--version <n>]   the active version (or --version) as YAML, ready to edit and propose',
+    args: 0,
+    options: { version: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const view = await api.get<ConventionsVersionJson>(path('conventions', conventionsVersion(inv)))
+      return { failures: [], body: [], next: '', raw: stringifyYaml(inSchemaOrder(view.document, ConventionsFile)) }
+    },
+  },
+  {
+    path: ['conventions', 'propose'],
+    usage:
+      'conventions propose <file.yaml> --cwd <repo> --task <key> [--head-sha <sha>] [--replace]   propose the next ' +
+      'version, based on the active one; --replace withdraws the open proposal',
+    args: 1,
+    options: { cwd: str, task: str, 'head-sha': str, replace: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const file = arg(inv, 0, '<file.yaml>')
+      // Required now so callers keep working once propose verifies the evidence in the worktree.
+      text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const task = text(inv, 'task') ?? fail('DR101', { path: '--task', reason: 'is required' })
+      const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
+        fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
+      )
+      // Checked here so a problem points at its line in the file; the server checks the document again.
+      const document = parseYamlFile<ConventionsFile>(yaml, findConventionsIssue)
+      const api = await connect()
+      const { active } = await api.get<{ active: { version: number } | null }>('/conventions')
+      const basedOn = active?.version ?? null
+      const { version } = await api.send<{ version: number }>('POST', '/conventions/proposals', {
+        document,
+        basedOn,
+        headSha: text(inv, 'head-sha') ?? null,
+        task,
+        replace: inv.values.replace === true ? true : undefined,
+      })
+      return {
+        failures: [],
+        body: [`proposed conventions version ${version} based on ${basedOn ?? 'none'}`],
+        next: `devrounds conventions diff ${version}`,
+      }
+    },
+  },
+  {
+    path: ['conventions', 'diff'],
+    usage:
+      'conventions diff <version> [--against <n>]   what <version> changes from the active version (or --against), ' +
+      'removed and changed blocking rules first',
+    args: 1,
+    pages: true,
+    options: { against: str },
+    run: async (inv, connect) => {
+      const version = versionArg(inv)
+      const against = integer(inv, 'against', 1)
+      const api = await connect()
+      const diff = await api.get<VersionDiff & { version: number; against: number | null }>(
+        path('conventions', version, 'diff'),
+        { against: against === undefined ? undefined : String(against) },
+      )
+      return conventionsDiffShow(diff)
+    },
+  },
+  conventionsDecision('approve'),
+  conventionsDecision('reject'),
 ]
 
 // GET /queues (queues/service.ts QueueView) and GET /batches/:id (jobs/enqueue.ts BatchView) as JSON.

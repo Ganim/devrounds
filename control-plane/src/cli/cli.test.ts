@@ -10,6 +10,7 @@ import { sql } from 'kysely'
 import { pruneIdempotencyKeys } from '../api/idempotency.ts'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
+import { decide, propose } from '../conventions/service.ts'
 import { putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
 import { addTask, createProject } from '../planning/service.ts'
@@ -900,4 +901,80 @@ test('report improvement --open-tasks tries every finding after one is refused a
   assert.equal(res.exitCode, 2, res.stderr)
   assert.match(res.stdout, /^not opened refused: DR101 Invalid input\.$/m)
   assert.match(res.stdout, /^opened F-0002 improvement:unclassified$/m)
+})
+
+// A tenant with project `alpha`, task P3-T06 and version 1 proposed by the agent: pattern rules for web and for the
+// engine (warn, block), a block rule for docs, and a repo-wide judgment rule.
+async function conventionsTenant() {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  const human = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  const agent = { db: t.db, tenantId: tenant.tenantId, actor: tenant.agent }
+  await createProject(human, { key: 'alpha', name: 'Alpha' })
+  await addTask(human, { projectKey: 'alpha', key: 'P3-T06', title: 'Conventions' })
+  const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
+  const pattern = (key: string, paths: string[], severity: 'warn' | 'block') => ({
+    key,
+    section: 'Never',
+    title: `title of ${key}`,
+    why: `why of ${key}`,
+    paths,
+    check: { kind: 'pattern' as const, forbid: 'TODO' },
+    severity,
+    examples: { bad: ['// TODO'] },
+    evidence,
+  })
+  await propose(agent, 'alpha', {
+    document: {
+      targets: [{ path: 'AGENTS.md' }],
+      rules: [
+        {
+          key: 'repo.judgment',
+          section: 'Always',
+          title: 'title of repo.judgment',
+          why: 'why',
+          check: { kind: 'judgment' },
+          severity: 'block',
+          evidence,
+        },
+        pattern('web.warn', ['web/**'], 'warn'),
+        pattern('engine.warn', ['control-plane/src/**/*.ts'], 'warn'),
+        pattern('engine.block', ['control-plane/src/**/*.ts'], 'block'),
+        pattern('docs.block', ['docs/**'], 'block'),
+      ],
+    },
+    basedOn: null,
+    headSha: null,
+    task: 'P3-T06',
+  })
+  const envFor = async (kind: 'human' | 'agent') => ({
+    DEVROUNDS_URL: url,
+    DEVROUNDS_TOKEN: await createToken(t.admin, tenant.tenantId, kind, kind),
+    DEVROUNDS_PROJECT: 'alpha',
+  })
+  return { human, envFor }
+}
+
+test('conventions approve with an agent token exits 5', async () => {
+  const { envFor } = await conventionsTenant()
+  const res = await runCli(['conventions', 'approve', '1'], { env: await envFor('agent'), configPath: NO_CONFIG })
+  assert.equal(res.exitCode, 5, res.stderr)
+  assert.match(res.stderr, /^DR453 Only a human member can approve conventions\./)
+})
+
+test('conventions show --paths prints the rules of those paths, blocking first', async () => {
+  const { human, envFor } = await conventionsTenant()
+  await decide(human, 'alpha', 1, 'approve', undefined)
+  const res = await runCli(['conventions', 'show', '--paths', 'control-plane/src/a.ts,README.md'], {
+    env: await envFor('agent'),
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 0, res.stderr)
+  const rules = res.stdout.split('\n').filter((line) => /^[a-z]+\.[a-z]+ /.test(line))
+  assert.deepEqual(rules, [
+    'engine.block block pattern title of engine.block',
+    'engine.warn warn pattern title of engine.warn',
+    'repo.judgment block judgment title of repo.judgment',
+  ])
+  assert.match(res.stdout, /^engine\.block block pattern title of engine\.block\n {2}why of engine\.block$/m)
 })

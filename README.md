@@ -309,3 +309,44 @@ first one. The job type
 devrounds jobtype set roadmap/fixtures/job-types/improvement-report.yaml
 devrounds schedule set improvement-report --job-type improvement-report --cwd <repo> --daily 06:00
 ```
+
+## Conventions
+
+A project's conventions are a versioned document of rules and facts (`control-plane/src/conventions/file.ts`). Any
+member proposes a version; only a human member approves or rejects it. One version is active and one proposal is open
+at a time.
+
+```
+devrounds conventions show [--version <n>] [--paths <a,b>] [--json]
+devrounds conventions export [--version <n>]
+devrounds conventions propose <file.yaml> --cwd <repo> --task <key> [--head-sha <sha>] [--replace]
+devrounds conventions diff <version> [--against <n>]
+devrounds conventions approve <version> [--reason <text>]
+devrounds conventions reject <version> --reason <text>
+```
+
+`propose` checks the file locally (a problem is DR101 with its line) and sends it as the next version, based on the
+active one, for the task that asked for it. The control plane checks it again and runs each pattern rule against its
+examples in a worker under a 1 s budget for the whole document: a pattern still running then is DR101 at its
+`check/forbid`. A second proposal while one is open is DR311; `--replace` withdraws the open one. `--cwd` names the
+worktree the evidence comes from.
+
+`diff` lists what a version changes from the active one (or `--against <n>`), by key: removed and changed blocking
+rules first, then the other removed and changed items with the fields that differ, then the added ones and the
+targets. Against no active version, everything is added.
+
+Approve and reject need a human member token; an agent token exits 5 with DR453:
+
+```
+DEVROUNDS_TOKEN=<human token> devrounds conventions approve <n>
+```
+
+Approving makes the version active and the previous one superseded, in one transaction. A version proposed on top of
+a version that is no longer active is DR310: export the active version, apply the change, and propose again.
+Approving or rejecting a version that is not a proposal (or the loser of two approvals at once) is DR313.
+
+`show` prints the active version (or `--version <n>`), one line per rule (`key severity kind title`) with `why` under
+it: blocking rules first, then warn, then judgment. `--paths` keeps the rules that cover one of those repo paths (by
+`paths` and `exclude`; a rule without `paths` covers every file). `--json` prints the version as the control plane
+answers it (`GET /conventions/<n|active>`), with its `documentSha`. No active version is DR201 kind `conventions`.
+`export` prints the document as YAML, ready to edit and propose.

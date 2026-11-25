@@ -15,6 +15,7 @@ import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { executorRoutes, MAX_PAYLOAD, type SchedulerPoke, Sessions } from '../executor/gateway.ts'
 import { PairingLimiter } from '../machines/pairing.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
+import { conventionRoutes } from './convention-routes.ts'
 import { gateRoutes } from './gate-routes.ts'
 import { jobRoutes } from './job-routes.ts'
 import { machineRoutes } from './machine-routes.ts'
@@ -124,6 +125,7 @@ export function buildServer(opts: ServerOptions) {
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(gateRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(conventionRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(viewRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(reportRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })

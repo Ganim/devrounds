@@ -146,6 +146,30 @@ Task {task} already tracks finding {sourceKey}.
 
 A finding has one open task: work on {task} (`devrounds task start {task}`), or finish or cancel it before reopening another task of {sourceKey}.
 
+## DR310
+
+Proposal {version} is based on version {basedOn}, but version {active} is active.
+
+### Fix
+
+Export the active version (`devrounds conventions export`), apply the change to it, and propose again.
+
+## DR311
+
+Proposal {version} is open for project {project}.
+
+### Fix
+
+One proposal is open at a time: approve or reject {version} (`devrounds conventions diff {version}` shows it), or propose with `--replace` to withdraw it.
+
+## DR313
+
+Conventions version {version} is {state}; only a proposed version can be approved or rejected.
+
+### Fix
+
+Read it with `devrounds conventions show --version {version}`: a decided or withdrawn version stays as it is; propose a new version to change the conventions.
+
 ## DR350
 
 Machine {machine} is not connected.

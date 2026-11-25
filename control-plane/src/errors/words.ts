@@ -112,6 +112,24 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['task', 'sourceKey'],
   },
+  DR310: {
+    text: 'Proposal {version} is based on version {basedOn}, but version {active} is active.',
+    hint: 'Export the active version (`devrounds conventions export`), apply the change to it, and propose again.',
+    httpStatus: 409,
+    keys: ['version', 'basedOn', 'active'],
+  },
+  DR311: {
+    text: 'Proposal {version} is open for project {project}.',
+    hint: 'One proposal is open at a time: approve or reject {version} (`devrounds conventions diff {version}` shows it), or propose with `--replace` to withdraw it.',
+    httpStatus: 409,
+    keys: ['version', 'project'],
+  },
+  DR313: {
+    text: 'Conventions version {version} is {state}; only a proposed version can be approved or rejected.',
+    hint: 'Read it with `devrounds conventions show --version {version}`: a decided or withdrawn version stays as it is; propose a new version to change the conventions.',
+    httpStatus: 409,
+    keys: ['version', 'state'],
+  },
   DR350: {
     text: 'Machine {machine} is not connected.',
     hint: 'Start the executor on {machine} with `devrounds-executor run`, then check `devrounds machine list` shows it connected.',
