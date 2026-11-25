@@ -297,3 +297,11 @@ The installed executor copy {path} is still there after `service uninstall`.
 ### Fix
 
 A process still holds {path}: the installed executor itself when `service uninstall` ran from it, or another program such as an antivirus scan. Run `service uninstall` again from another copy (executor\target\release\devrounds-executor.exe), or once that process is done.
+
+## DR553
+
+`service install` refused {path}: {status}.
+
+### Fix
+
+Sign {path} with the code-signing certificate this machine trusts (Set-AuthenticodeSignature), then install again. An antivirus may delete an unsigned executor once it is installed, leaving the service with nothing to run; pass --unsigned only where none does.

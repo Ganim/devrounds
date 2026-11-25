@@ -8,7 +8,7 @@ use std::process::ExitCode;
 mod serve;
 
 const USAGE: &str = "usage: devrounds-executor pair --url <url> --code <code> | run | supervise \
-                     | service install|uninstall | version";
+                     | service install [--unsigned]|uninstall | version";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -48,8 +48,14 @@ fn main() -> ExitCode {
         Some("supervise") if args.next().is_none() => supervise(),
         #[cfg(windows)]
         Some("service") => match (args.next(), args.next()) {
-            (Some(verb), None) if verb == "install" => service(true),
-            (Some(verb), None) if verb == "uninstall" => service(false),
+            (Some(verb), None) if verb == "install" => service(true, false),
+            (Some(verb), Some(flag)) if verb == "install" && flag == "--unsigned" => {
+                if args.next().is_some() {
+                    return usage();
+                }
+                service(true, true)
+            }
+            (Some(verb), None) if verb == "uninstall" => service(false, false),
             _ => usage(),
         },
         _ => usage(),
@@ -98,9 +104,10 @@ fn supervise() -> ExitCode {
 }
 
 /// `service install` registers and starts the `DevRoundsExecutor` task for
-/// a paired home; `service uninstall` stops and removes it.
+/// a paired home; `service uninstall` stops and removes it. `--unsigned`
+/// skips the signature check.
 #[cfg(windows)]
-fn service(install: bool) -> ExitCode {
+fn service(install: bool, unsigned: bool) -> ExitCode {
     use devrounds_executor::service::{
         TASK_NAME, check_removed, current_target, register_script, run_powershell,
         unregister_script,
@@ -116,6 +123,9 @@ fn service(install: bool) -> ExitCode {
                 serde_json::json!({ "reason": format!("current executable: {error}") }),
             )
         })?;
+        if install && !unsigned && target.source != target.exe {
+            check_signed(&target.source)?;
+        }
         let script = if install {
             register_script(&target)
         } else {
@@ -142,6 +152,25 @@ fn service(install: bool) -> ExitCode {
         }
         Err(error) => fail(&error),
     }
+}
+
+/// DR553 unless `exe` carries a trusted Authenticode signature. An antivirus
+/// with machine-learning heuristics (Kaspersky KSN, 25/11/2026) deletes an
+/// unsigned rebuild once it lands in `bin`, which leaves the scheduled task
+/// pointing at nothing; refusing before the copy keeps the running service.
+#[cfg(windows)]
+fn check_signed(exe: &std::path::Path) -> Result<(), devrounds_core::DrError> {
+    use devrounds_sys_windows::trust::{Signature, file_signature};
+    let status = match file_signature(exe) {
+        Ok(Signature::Valid) => return Ok(()),
+        Ok(Signature::Unsigned) => "unsigned".to_owned(),
+        Ok(Signature::Invalid(hresult)) => format!("signature not trusted (0x{hresult:08X})"),
+        Err(error) => format!("signature unreadable: {error}"),
+    };
+    Err(devrounds_core::DrError::new(
+        "DR553",
+        serde_json::json!({ "path": exe.display().to_string(), "status": status }),
+    ))
 }
 
 #[cfg(windows)]

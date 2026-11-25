@@ -41,6 +41,8 @@ pub mod system;
 #[allow(unsafe_code)]
 pub mod token;
 #[allow(unsafe_code)]
+pub mod trust;
+#[allow(unsafe_code)]
 pub mod usage;
 #[allow(unsafe_code)]
 mod util;

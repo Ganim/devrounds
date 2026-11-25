@@ -226,4 +226,10 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 500,
     keys: ['path'],
   },
+  DR553: {
+    text: '`service install` refused {path}: {status}.',
+    hint: 'Sign {path} with the code-signing certificate this machine trusts (Set-AuthenticodeSignature), then install again. An antivirus may delete an unsigned executor once it is installed, leaving the service with nothing to run; pass --unsigned only where none does.',
+    httpStatus: 500,
+    keys: ['path', 'status'],
+  },
 }
