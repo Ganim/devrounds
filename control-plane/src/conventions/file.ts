@@ -223,16 +223,24 @@ export function findConventionsShapeIssue(value: unknown): Issue | null {
   return null
 }
 
+// A `{1..2000000}` range expands in the matcher (posix.matchesGlob took 43 s on one), and the checker and `show
+// --paths` run globs in the agent's process; a few literal alternatives cover real rules.
+function globIssue(glob: string): string | null {
+  if (/\{[^}]*\.\.[^}]*\}/.test(glob)) return 'no {n..m} ranges'
+  if ((glob.match(/\{/g)?.length ?? 0) > 4) return 'at most 4 brace groups'
+  return repoPathIssue(glob)
+}
+
 // Globs match repo-relative POSIX diff paths, so one written like a Windows or absolute path would never match.
 function globsIssue(at: string, rule: RuleFile): Issue | null {
   for (const field of ['paths', 'exclude'] as const) {
     for (const [i, glob] of (rule[field] ?? []).entries()) {
-      const reason = repoPathIssue(glob)
+      const reason = globIssue(glob)
       if (reason) return { path: `${at}/${field}/${i}`, reason }
     }
   }
   if (rule.check.kind === 'path') {
-    const reason = repoPathIssue(rule.check.forbid_new)
+    const reason = globIssue(rule.check.forbid_new)
     if (reason) return { path: `${at}/check/forbid_new`, reason }
   }
   return null

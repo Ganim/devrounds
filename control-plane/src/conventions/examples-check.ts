@@ -18,7 +18,24 @@ export async function findDocumentIssue(value: unknown, budgetMs = EXAMPLES_BUDG
     .map((rule, i) => ({ at: `/rules/${i}`, rule }))
     .filter(({ rule }) => rule.check.kind === 'pattern')
   if (rules.length === 0) return null
-  return new Promise((resolve) => {
+  // Each worker can spin a core for the whole budget; a burst of hostile proposals waits here instead of taking
+  // every core from the control plane.
+  while (running >= MAX_WORKERS) await new Promise<void>((resolve) => waiting.push(resolve))
+  running++
+  try {
+    return await examplesIssue(rules, budgetMs)
+  } finally {
+    running--
+    waiting.shift()?.()
+  }
+}
+
+const MAX_WORKERS = 2
+let running = 0
+const waiting: (() => void)[] = []
+
+function examplesIssue(rules: { at: string; rule: ConventionsFile['rules'][number] }[], budgetMs: number) {
+  return new Promise<Issue | null>((resolve) => {
     // A worker that cannot start (ERR_WORKER_INIT_FAILED) throws here, which rejects: an unchecked document is refused.
     const worker = new Worker(new URL('./examples-worker.ts', import.meta.url), { workerData: { rules } })
     let evaluated = 0
@@ -32,8 +49,9 @@ export async function findDocumentIssue(value: unknown, budgetMs = EXAMPLES_BUDG
       resolve(issue)
     }
     // Out of budget, or a worker that died mid-rule (a regex can overflow the stack): the rule it was on is at fault.
-    const stalled = (reason = `the pattern took over ${budgetMs} ms on the examples; make it simpler`) =>
-      finish({ path: `${rules[Math.min(evaluated, rules.length - 1)].at}/check/forbid`, reason })
+    const stalled = (
+      reason = `the examples went over the ${budgetMs} ms budget while this rule ran; make its pattern simpler`,
+    ) => finish({ path: `${rules[Math.min(evaluated, rules.length - 1)].at}/check/forbid`, reason })
     worker.on('online', () => {
       timer = setTimeout(() => stalled(), budgetMs)
     })

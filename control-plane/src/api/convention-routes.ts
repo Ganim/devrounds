@@ -1,7 +1,15 @@
 import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
 import { Type } from '@sinclair/typebox'
 import type { Kysely } from 'kysely'
-import { conventionsSummary, decide, ProposeInput, propose, versionDiff, versionView } from '../conventions/service.ts'
+import {
+  checkProposal,
+  conventionsSummary,
+  decide,
+  ProposeInput,
+  recordProposal,
+  versionDiff,
+  versionView,
+} from '../conventions/service.ts'
 import type { Database } from '../db/schema.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
@@ -47,7 +55,10 @@ export const conventionRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database> 
       bodyLimit: PROPOSAL_BODY_LIMIT,
       schema: { params: Type.Object({ key: Key }), headers: Headers, body: ProposeInput },
     },
-    (request, reply) => mutateIdempotent(db, request, reply, (ctx) => propose(ctx, request.params.key, request.body)),
+    async (request, reply) => {
+      await checkProposal(request.body)
+      return mutateIdempotent(db, request, reply, (ctx) => recordProposal(ctx, request.params.key, request.body))
+    },
   )
 
   for (const decision of ['approve', 'reject'] as const) {

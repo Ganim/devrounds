@@ -63,6 +63,10 @@ test('an alias that contains itself is DR101 at /, not a crash', () => {
   refusedAt('targets: &a [*a]\nrules: []\n', '/')
 })
 
+test('a brace range glob is refused: the matcher expands it', () => {
+  refusedAt(FILE.replace('control-plane/src/**/*.ts', '"src/{1..2000000}.ts"'), '/rules/0/paths/0')
+})
+
 test('defaults fill severity warn and the first target', () => {
   const def = parseConventionsFile(FILE)
   assert.equal(def.rules[0].severity, 'warn')

@@ -151,14 +151,27 @@ async function activeRow(trx: Trx, projectId: string) {
 }
 
 /**
- * Proposes the next version. The document is checked first, its examples off the event loop (findDocumentIssue).
- * Serialized per project on the project row: one proposal is open at a time (DR311; `replace` withdraws it), and
- * `basedOn` must be the active version (null for none), else DR310.
+ * DR101 unless the proposal is valid, its examples checked off the event loop (findDocumentIssue). The route runs it
+ * before opening the idempotency transaction: the check can take up to the examples budget, and inside a
+ * transaction it would hold a pooled connection that long.
  */
-export async function propose(ctx: Ctx, projectKey: string, input: ProposeInput): Promise<{ version: number }> {
+export async function checkProposal(input: ProposeInput): Promise<void> {
   validate(ProposeInput, input)
   const issue = await findDocumentIssue(input.document)
   if (issue) fail('DR101', { path: `/document${issue.path === '/' ? '' : issue.path}`, reason: issue.reason })
+}
+
+/** checkProposal, then recordProposal. */
+export async function propose(ctx: Ctx, projectKey: string, input: ProposeInput): Promise<{ version: number }> {
+  await checkProposal(input)
+  return recordProposal(ctx, projectKey, input)
+}
+
+/**
+ * Records a checked proposal as the next version. Serialized per project on the project row: one proposal is open at
+ * a time (DR311; `replace` withdraws it), and `basedOn` must be the active version (null for none), else DR310.
+ */
+export async function recordProposal(ctx: Ctx, projectKey: string, input: ProposeInput): Promise<{ version: number }> {
   const document = input.document as ConventionsFile
   return run(ctx, async (trx) => {
     const project = await findProject(trx, projectKey, { lock: true })

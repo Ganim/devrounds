@@ -24,7 +24,7 @@ test('a pattern that backtracks past the budget is an issue at its forbid, and t
   try {
     assert.deepEqual(await findDocumentIssue(document, 100), {
       path: '/rules/1/check/forbid',
-      reason: 'the pattern took over 100 ms on the examples; make it simpler',
+      reason: 'the examples went over the 100 ms budget while this rule ran; make its pattern simpler',
     })
   } finally {
     clearInterval(timer)
