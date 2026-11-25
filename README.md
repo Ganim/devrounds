@@ -366,13 +366,19 @@ devrounds conventions render --cwd <repo> [--check]
 item goes to its `target` (default: the first target), grouped by `section` in first-seen order (`### <section>`), one
 line per item: a rule as `- <title>. <why>`, followed by `(checked)` for pattern and path rules or
 `(checked by <job type>)` for job type rules; a fact as `- <text>`. A file without a block gets one appended; a
-missing file is created. Text outside the block is kept byte for byte, and the file keeps its line ending.
+missing file is created. Text outside the block is kept byte for byte, and the file keeps its line ending (and a
+leading UTF-8 BOM). A target the active version dropped (one of the version it replaced) loses its block. `--cwd`
+must be an absolute path to an existing directory. `render` refuses a target under `.git` and writing through a
+symbolic link (or junction); it checks every file before writing any.
 
 Never edit inside a block: change the rule, have a human approve the version, and render again. `render --check`
 writes nothing and prints one `docs_drift <path> <reason>` line per target that differs from the render of the active
-version (`missing_file`, `missing_block`, `malformed`, `different`), then exits 1. A hand edit, a render of a version
-that is not the active one, and a target without its block all drift; a CRLF checkout of an untouched render does not
-(compared after CRLF to LF). A marker counts only as a whole line, so quoting one inside a sentence, as here, is safe.
+version (`missing_file`, `missing_block`, `malformed`, `different`), and per dropped target that still holds a block
+(`stale_block`), then exits 1. A hand edit, a render of a version that is not the active one, and a target without its
+block all drift; a CRLF checkout of an untouched render does not (compared after CRLF to LF). Only the previous
+version's targets are looked at: a block left in a target dropped two versions ago with no render in between, or
+pasted into a file that was never a target, is not detected. A marker counts only as a whole line, so quoting one
+inside a sentence, as here, is safe; one at the start of a line, in a code block too, makes the file malformed.
 
 ### Evidence
 

@@ -9,9 +9,18 @@ const MARKER = '<!-- devrounds:conventions '
 
 export type Block = { version: number; sha: string; body: string }
 
-export type Drift = { path: string; reason: 'missing_file' | 'missing_block' | 'malformed' | 'different' }
+// `stale_block`: a block in a file that is no longer a target (the caller passes the previously active version's
+// targets too), so the superseded rules it carries do not stay there looking generated.
+export type Drift = {
+  path: string
+  reason: 'missing_file' | 'missing_block' | 'malformed' | 'different' | 'stale_block'
+}
 
 const lf = (text: string) => text.replaceAll('\r\n', '\n')
+
+// An editor may save a UTF-8 BOM before the begin marker of a block that starts the file; it is not part of the line.
+const BOM = '\uFEFF'
+const splitBom = (text: string) => (text.startsWith(BOM) ? [BOM, text.slice(1)] : ['', text])
 
 const shortSha = (body: string) => createHash('sha256').update(body).digest('hex').slice(0, 16)
 
@@ -70,7 +79,7 @@ function locate(lines: string[]): { begin: number; end: number } | null | 'malfo
 
 /** The generated block of a file's text (CRLF read as LF), null when it has none, 'malformed' when it is broken. */
 export function readBlock(text: string): Block | null | 'malformed' {
-  const lines = lf(text).split('\n')
+  const lines = lf(splitBom(text)[1]).split('\n')
   const at = locate(lines)
   if (at === null || at === 'malformed') return at
   const [, version, sha] = BEGIN.exec(lines[at.begin]) ?? []
@@ -82,7 +91,8 @@ export function readBlock(text: string): Block | null | 'malformed' {
  * Written with the file's own line ending; every byte outside the block stays as it was. A malformed block throws:
  * the caller reports it with the path (readBlock first).
  */
-export function applyBlock(text: string, block: string): string {
+export function applyBlock(file: string, block: string): string {
+  const [bom, text] = splitBom(file)
   const eol = text.includes('\r\n') ? '\r\n' : '\n'
   const generated = block.split('\n').join(eol)
   // Lines with their own endings, so the text around the block is copied as is.
@@ -90,17 +100,35 @@ export function applyBlock(text: string, block: string): string {
   const at = locate(lines.map((line) => line.replace(/\r?\n$/, '')))
   if (at === 'malformed') throw new Error('malformed conventions block')
   if (at === null) {
-    if (text === '') return `${generated}${eol}`
-    return `${text}${text.endsWith('\n') ? '' : eol}${eol}${generated}${eol}`
+    if (text === '') return `${bom}${generated}${eol}`
+    return `${bom}${text}${text.endsWith('\n') ? '' : eol}${eol}${generated}${eol}`
   }
   const endLine = lines[at.end]
   const ending = endLine.slice(endLine.replace(/\r?\n$/, '').length)
-  return [...lines.slice(0, at.begin), generated, ending, ...lines.slice(at.end + 1)].join('')
+  return bom + [...lines.slice(0, at.begin), generated, ending, ...lines.slice(at.end + 1)].join('')
+}
+
+/**
+ * `text` without its block (lines begin..end). When the block ends the file, the blank line applyBlock put before it
+ * goes too, so removing an appended block gives the text back. No block: `text` as is; a malformed one throws.
+ */
+export function removeBlock(file: string): string {
+  const [bom, text] = splitBom(file)
+  const lines = text.split(/(?<=\n)/)
+  const at = locate(lines.map((line) => line.replace(/\r?\n$/, '')))
+  if (at === 'malformed') throw new Error('malformed conventions block')
+  if (at === null) return file
+  const before = lines.slice(0, at.begin)
+  const after = lines.slice(at.end + 1)
+  if (after.length === 0 && before.length > 1 && /^\r?\n$/.test(before[before.length - 1])) before.pop()
+  return bom + [...before, ...after].join('')
 }
 
 /**
  * What differs between each target file and the render of `version` (`files`: the target's text, null when it does
  * not exist), in target order. Compared after CRLF → LF, so a CRLF checkout of an untouched render has no drift.
+ * A path of `files` that is not a target (a former one) drifts while it still holds a block (`stale_block`, or
+ * `malformed` when broken).
  */
 export function driftOf(def: ConventionsDef, version: number, files: Map<string, string | null>): Drift[] {
   const drift: Drift[] = []
@@ -119,6 +147,12 @@ export function driftOf(def: ConventionsDef, version: number, files: Map<string,
               ? 'different'
               : null
     if (reason) drift.push({ path, reason })
+  }
+  const targets = new Set(def.targets.map((t) => t.path))
+  for (const [path, text] of files) {
+    if (targets.has(path) || text === null) continue
+    const found = readBlock(text)
+    if (found !== null) drift.push({ path, reason: found === 'malformed' ? 'malformed' : 'stale_block' })
   }
   return drift
 }

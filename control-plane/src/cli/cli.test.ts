@@ -1010,6 +1010,46 @@ test('conventions render writes the blocks; render --check exits 1 after a hand 
   }
 })
 
+test('a target dropped by the active version: render --check reports its block, render removes it', async (t) => {
+  const tdb = await testDb()
+  const tenant = await tdb.newTenant()
+  const human = { db: tdb.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(human, { key: 'alpha', name: 'Alpha' })
+  await addTask(human, { projectKey: 'alpha', key: 'P3-T05', title: 'Conventions' })
+  const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
+  const fact = { key: 'layout.cp', section: 'Layout', text: 'control-plane/: the control plane.', evidence }
+  const version = async (basedOn: number | null, targets: string[], factTarget: string) => {
+    const document = { targets: targets.map((path) => ({ path })), rules: [], facts: [{ ...fact, target: factTarget }] }
+    const { version: v } = await propose(human, 'alpha', { document, basedOn, headSha: null, task: 'P3-T05' })
+    await decide(human, 'alpha', v, 'approve', undefined)
+  }
+  const repo = await scratch('stale-')
+  t.after(() => removeDir(repo))
+  const readme = join(repo, 'README.md')
+  await writeFile(readme, '# README\r\n\r\nHand-written.\r\n')
+  const opts = {
+    env: {
+      DEVROUNDS_URL: url,
+      DEVROUNDS_TOKEN: await createToken(tdb.admin, tenant.tenantId, 'agent', 'agent'),
+      DEVROUNDS_PROJECT: 'alpha',
+    },
+    configPath: NO_CONFIG,
+  }
+  await version(null, ['AGENTS.md', 'README.md'], 'README.md')
+  assert.equal((await runCli(['conventions', 'render', '--cwd', repo], opts)).exitCode, 0)
+  await version(1, ['AGENTS.md'], 'AGENTS.md')
+
+  const drift = await runCli(['conventions', 'render', '--cwd', repo, '--check'], opts)
+  assert.equal(drift.exitCode, 1, drift.stdout + drift.stderr)
+  assert.match(drift.stdout, /^docs_drift AGENTS\.md different\ndocs_drift README\.md stale_block\n/)
+
+  const rendered = await runCli(['conventions', 'render', '--cwd', repo], opts)
+  assert.equal(rendered.exitCode, 0, rendered.stdout + rendered.stderr)
+  assert.match(rendered.stdout, /^removed the version 1 block from README\.md$/m)
+  assert.equal(await readFile(readme, 'utf8'), '# README\r\n\r\nHand-written.\r\n')
+  assert.equal((await runCli(['conventions', 'render', '--cwd', repo, '--check'], opts)).exitCode, 0)
+})
+
 test('conventions propose with a stale excerpt exits 2 and sends nothing', async (t) => {
   const repo = await scratch('propose-')
   t.after(() => removeDir(repo))

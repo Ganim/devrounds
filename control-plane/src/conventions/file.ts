@@ -144,6 +144,16 @@ function repoPathIssue(path: string): string | null {
   return null
 }
 
+/**
+ * Why `path` cannot be a target, or null. `render` writes there, so on top of a repo path it may not enter `.git`
+ * (a hook is run by the shell); case-insensitive, as on Windows. The CLI checks the targets it receives again.
+ */
+export function targetPathIssue(path: string): string | null {
+  const issue = repoPathIssue(path)
+  if (issue) return issue
+  return path.split('/').some((part) => part.toLowerCase() === '.git') ? 'no .git segment' : null
+}
+
 function evidenceIssue(at: string, evidence: Evidence[]): Issue | null {
   for (const [i, item] of evidence.entries()) {
     const reason = repoPathIssue(item.path)
@@ -196,7 +206,7 @@ export function findConventionsShapeIssue(value: unknown): Issue | null {
   // Case-insensitive: on Windows `AGENTS.md` and `agents.md` are one file, which would get two generated blocks.
   const folded = new Set<string>()
   for (const [i, { path }] of file.targets.entries()) {
-    const reason = repoPathIssue(path) ?? (folded.has(path.toLowerCase()) ? 'duplicate target' : null)
+    const reason = targetPathIssue(path) ?? (folded.has(path.toLowerCase()) ? 'duplicate target' : null)
     if (reason) return { path: `/targets/${i}/path`, reason }
     targets.add(path)
     folded.add(path.toLowerCase())

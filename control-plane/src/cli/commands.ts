@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
@@ -10,8 +10,14 @@ import { DEFAULT_CANDIDATE_GLOBS, findCandidates } from '../conventions/candidat
 import { checkChange, driftViolations } from '../conventions/check.ts'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
 import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
-import { type ConventionsDef, ConventionsFile, findConventionsIssue, withDefaults } from '../conventions/file.ts'
-import { applyBlock, driftOf, readBlock, renderBlocks } from '../conventions/render.ts'
+import {
+  type ConventionsDef,
+  ConventionsFile,
+  findConventionsIssue,
+  targetPathIssue,
+  withDefaults,
+} from '../conventions/file.ts'
+import { applyBlock, driftOf, readBlock, removeBlock, renderBlocks } from '../conventions/render.ts'
 import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
@@ -342,9 +348,12 @@ const FINDING_CRITERION = 'explained or fixed, with evidence'
 // says what the rule rests on now.
 const EVIDENCE_CRITERION = 'evidence restored or rule changed, with evidence'
 
-// --cwd of the commands that read a worktree (conventions propose, verify): required, and a directory.
-async function repoDir(inv: Invocation): Promise<string> {
+// --cwd of the commands that read a worktree (conventions propose, verify, check, render): required, and a directory,
+// so a typo fails instead of reading nothing (or, for render, creating a new tree). `absolute` for render, as in
+// `gate run`; check stays relative-friendly since its job type runs it with `--cwd .`.
+async function repoDir(inv: Invocation, absolute = false): Promise<string> {
   const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+  if (absolute && !isAbsolute(cwd)) fail('DR101', { path: '--cwd', reason: 'must be an absolute path' })
   const isDir = await stat(cwd).then(
     (s) => s.isDirectory(),
     () => false,
@@ -1660,11 +1669,9 @@ export const COMMANDS: Spec[] = [
     args: 0,
     options: { cwd: str, check: { type: 'boolean' } },
     run: async (inv, connect) => {
-      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const cwd = await repoDir(inv, true)
       const api = await connect()
-      const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
-      const def = withDefaults(view.document)
-      const files = await readTargets(cwd, def)
+      const { view, def, files } = await conventionsWorktree(api, cwd)
       if (inv.values.check === true) {
         const drift = driftOf(def, view.version, files)
         return {
@@ -1675,23 +1682,37 @@ export const COMMANDS: Spec[] = [
         }
       }
       const blocks = renderBlocks(def, view.version)
-      // Every target is read and checked before the first write, so a malformed block leaves all files untouched.
-      for (const [target, current] of files) {
-        if (current !== null && readBlock(current) === 'malformed') {
-          fail('DR101', { path: target, reason: 'has a broken conventions block; fix or remove its marker lines' })
-        }
-      }
+      // Every file is read and checked before the first write, so a malformed block or a link leaves all untouched.
+      const writes: { target: string; next: string; line: string }[] = []
       const body: string[] = []
       for (const [target, current] of files) {
-        const next = applyBlock(current ?? '', blocks.get(target) ?? '')
+        const found = current === null ? null : readBlock(current)
+        if (found === 'malformed') {
+          fail('DR101', { path: target, reason: 'has a broken conventions block; fix or remove its marker lines' })
+        }
+        const block = blocks.get(target)
+        // A former target (not in `blocks`) only loses its block; one without a block is left alone.
+        if (block === undefined && found === null) continue
+        const next = block === undefined ? removeBlock(current ?? '') : applyBlock(current ?? '', block)
         if (next === current) {
           body.push(fmt`unchanged ${target}`)
           continue
         }
+        const link = await linkUnder(cwd, target)
+        if (link !== null) fail('DR101', { path: target, reason: `${link} is a symbolic link; render writes no link` })
+        const line =
+          block === undefined
+            ? fmt`removed the version ${found?.version} block from ${target}`
+            : fmt`rendered version ${view.version} into ${target}`
+        writes.push({ target, next, line })
+      }
+      // Not atomic across files: an I/O error midway leaves the earlier files at the new version; --check shows the
+      // rest and a second render finishes them.
+      for (const { target, next, line } of writes) {
         const file = join(cwd, target)
         await mkdir(dirname(file), { recursive: true })
         await writeFile(file, next)
-        body.push(fmt`rendered version ${view.version} into ${target}`)
+        body.push(line)
       }
       return { failures: [], body, next: `devrounds conventions render --cwd ${shellArg(cwd)} --check` }
     },
@@ -1704,7 +1725,7 @@ export const COMMANDS: Spec[] = [
     args: 0,
     options: { cwd: str, diff: str },
     run: async (inv, connect) => {
-      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const cwd = await repoDir(inv)
       const source = text(inv, 'diff') ?? fail('DR101', { path: '--diff', reason: 'is required' })
       const diff =
         source === '-'
@@ -1713,10 +1734,9 @@ export const COMMANDS: Spec[] = [
               fail('DR101', { path: source, reason: `cannot be read (${err.code ?? err.message})` }),
             )
       const api = await connect()
-      const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
-      const def = withDefaults(view.document)
+      const { view, def, files: targets } = await conventionsWorktree(api, cwd)
       const files = parseUnifiedDiff(diff).filter((file) => file.status !== 'deleted')
-      const drift = driftViolations(driftOf(def, view.version, await readTargets(cwd, def)))
+      const drift = driftViolations(driftOf(def, view.version, targets))
       return conventionsCheckShow(view.version, def, files.length, [...drift, ...checkChange(def, files)], cwd)
     },
   },
@@ -1728,17 +1748,52 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-// Each target file of `def` under `cwd`, null when it does not exist.
-async function readTargets(cwd: string, def: ConventionsDef): Promise<Map<string, string | null>> {
+/**
+ * The active version and the files render and drift look at under `cwd`: its targets, then the targets of the
+ * version it replaced that it dropped (a block left there is `stale_block`), each null when it does not exist.
+ * `basedOn` of an active version is the one it superseded (approve checks it). Only one version back: a target dropped
+ * two versions ago without a render in between, or a block pasted into a file that was never a target, is not seen.
+ */
+async function conventionsWorktree(
+  api: Api,
+  cwd: string,
+): Promise<{ view: ConventionsVersionJson; def: ConventionsDef; files: Map<string, string | null> }> {
+  const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
+  const def = withDefaults(view.document)
+  const paths = def.targets.map((t) => t.path)
+  if (view.basedOn !== null) {
+    const former = await api.get<ConventionsVersionJson>(path('conventions', String(view.basedOn)))
+    const current = new Set(paths.map((p) => p.toLowerCase()))
+    paths.push(...former.document.targets.map((t) => t.path).filter((p) => !current.has(p.toLowerCase())))
+  }
   const files = new Map<string, string | null>()
-  for (const { path: target } of def.targets) {
+  for (const target of paths) {
+    // Checked again here: render writes these paths, and they come from the server.
+    const issue = targetPathIssue(target)
+    if (issue) fail('DR101', { path: target, reason: issue })
     const content = await readFile(join(cwd, target), 'utf8').catch((err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') return null
-      throw err
+      return fail('DR101', { path: target, reason: `cannot be read (${err.code ?? err.message})` })
     })
     files.set(target, content)
   }
-  return files
+  return { view, def, files }
+}
+
+// The first part of `target` under `cwd` that is a symbolic link (Node reports a Windows junction as one too), or
+// null; render must not write through one (a committed `AGENTS.md -> ~/.bashrc`).
+async function linkUnder(cwd: string, target: string): Promise<string | null> {
+  const parts = target.split('/')
+  for (let i = 1; i <= parts.length; i++) {
+    const sub = parts.slice(0, i).join('/')
+    const info = await lstat(join(cwd, sub)).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null
+      return fail('DR101', { path: target, reason: `cannot be read (${err.code ?? err.message})` })
+    })
+    if (info === null) return null
+    if (info.isSymbolicLink()) return sub
+  }
+  return null
 }
 
 // GET /queues (queues/service.ts QueueView) and GET /batches/:id (jobs/enqueue.ts BatchView) as JSON.

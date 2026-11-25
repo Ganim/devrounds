@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { type ConventionsFile, withDefaults } from './file.ts'
-import { applyBlock, driftOf, readBlock, renderBlocks } from './render.ts'
+import { applyBlock, driftOf, readBlock, removeBlock, renderBlocks } from './render.ts'
 
 const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
 
@@ -146,4 +146,20 @@ test('applyBlock keeps the text outside the block byte-identical', () => {
     sha: next.match(/sha256=([0-9a-f]{16})/)?.[1],
     body: next.split('\n').slice(1, -1).join('\n'),
   })
+})
+
+test('a block left in a file that is no longer a target is stale_block, and removeBlock undoes the append', () => {
+  const agentsOnly = { ...def, targets: [{ path: 'AGENTS.md' }], facts: [] }
+  const readme = '# README\r\n\r\nHand-written.\r\n'
+  const stale = applyBlock(readme, renderBlocks(def, 1).get('README.md') ?? '')
+  const files = new Map<string, string | null>([
+    ['AGENTS.md', applyBlock(HAND, renderBlocks(agentsOnly, 2).get('AGENTS.md') ?? '')],
+    ['README.md', stale],
+  ])
+  assert.deepEqual(driftOf(agentsOnly, 2, files), [{ path: 'README.md', reason: 'stale_block' }])
+  assert.equal(removeBlock(stale), readme)
+  files.set('README.md', readme)
+  assert.deepEqual(driftOf(agentsOnly, 2, files), [])
+  const between = `a\n${renderBlocks(def, 1).get('README.md')}\nb\n`
+  assert.equal(removeBlock(between), 'a\nb\n')
 })
