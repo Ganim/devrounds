@@ -25,7 +25,7 @@ use tokio::{
 pub const SLOT_INTERVAL: Duration = Duration::from_secs(1);
 /// Sampling period otherwise.
 pub const IDLE_INTERVAL: Duration = Duration::from_secs(5);
-/// How often changed members are written to the store.
+/// How often members are written to the store when some only exited.
 pub const MEMBERS_EVERY: Duration = Duration::from_secs(5);
 
 /// The sampling task of one run. Dropping it stops sampling; [`Sampler::finish`]
@@ -61,8 +61,9 @@ impl Sampler {
     }
 
     /// [`Sampler::spawn`] that also keeps the run's members in `store`
-    /// ([`Store::record_members`]): on the first reading, then every
-    /// [`MEMBERS_EVERY`] when they changed. A restarted executor stops an
+    /// ([`Store::record_members`]): on the first reading and on any reading
+    /// with a member not recorded yet, otherwise every [`MEMBERS_EVERY`]
+    /// when members exited. A restarted executor stops an
     /// orphaned run from these, since its job cannot be reopened.
     pub fn spawn_recording(
         run: impl Into<String>,
@@ -159,9 +160,14 @@ async fn sample_loop(
     loop {
         if let Some((reading, members)) = read(&run, &source, &unit).await {
             if let Some(store) = &store {
-                let due = recorded
-                    .as_ref()
-                    .is_none_or(|(at, known)| at.elapsed() >= MEMBERS_EVERY && *known != members);
+                // A member the store lacks is written on this reading: until
+                // then a crash leaves it out of the orphan stop, and the
+                // leader alone may have been recorded. Exits only are
+                // throttled, since a stale identity matches no process.
+                let due = recorded.as_ref().is_none_or(|(at, known)| {
+                    members.iter().any(|member| !known.contains(member))
+                        || (at.elapsed() >= MEMBERS_EVERY && *known != members)
+                });
                 if due {
                     if let Err(error) = store.record_members(&run, members.clone()).await {
                         tracing::warn!(%run, %error, "run members not recorded");

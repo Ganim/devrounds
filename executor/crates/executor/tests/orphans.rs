@@ -396,6 +396,7 @@ fn kill_policy_ends_the_orphan_tree() {
 #[test]
 fn a_run_whose_leader_exited_but_a_member_lives_is_alive() {
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    // The leader must outlive a sample that sees its child, about 1 s in.
     let stored = crash_after(
         home.path(),
         "orphan-5",
@@ -403,7 +404,7 @@ fn a_run_whose_leader_exited_but_a_member_lives_is_alive() {
             "--children",
             "1",
             "--run-ms",
-            "1500",
+            "3000",
             "--linger-ms",
             "30000",
         ],
