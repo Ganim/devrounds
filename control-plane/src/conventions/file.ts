@@ -8,12 +8,13 @@ import { patternExamplesIssue } from './examples.ts'
 // stores it as given; readers use parseConventionsFile's def, with every default filled.
 const ItemKey = Type.String({ pattern: '^[a-z0-9][a-z0-9.-]{0,99}$' })
 const Section = Type.String({ minLength: 1, maxLength: 100 })
-// A POSIX path relative to the repo root; findConventionsIssue refuses `\`, absolute paths and `.`/`..` segments.
+// A POSIX path relative to the repo root; findConventionsIssue refuses `\`, absolute paths and `.`/`..` segments, in
+// globs too.
 const RepoPath = Type.String({ minLength: 1, maxLength: 500 })
 const Glob = Type.String({ minLength: 1, maxLength: 500 })
 const Globs = Type.Array(Glob, { maxItems: 100 })
-// No `g` or `y`: a RegExp with either keeps `lastIndex` between test() calls, so one line's match shifts the next.
 const Regex = Type.String({ minLength: 1, maxLength: 1000 })
+// No `g` or `y`: a RegExp with either keeps `lastIndex` between test() calls, so one line's match shifts the next.
 const Flags = Type.String({ pattern: '^[imsu]{0,4}$' })
 
 const Evidence = Type.Object(
@@ -44,10 +45,13 @@ const CHECKS: Record<string, TSchema> = {
   judgment: JudgmentCheck,
 }
 
+// One line each: the checker matches added lines one at a time, so a multi-line example could pass the rule's
+// self-test with a pattern that never fires on a diff.
+const Example = Type.String({ maxLength: 1000, pattern: '^[^\\r\\n]*$' })
 const Examples = Type.Object(
   {
-    bad: Type.Optional(Type.Array(Type.String({ maxLength: 1000 }), { maxItems: 20 })),
-    good: Type.Optional(Type.Array(Type.String({ maxLength: 1000 }), { maxItems: 20 })),
+    bad: Type.Optional(Type.Array(Example, { maxItems: 20 })),
+    good: Type.Optional(Type.Array(Example, { maxItems: 20 })),
   },
   { additionalProperties: false },
 )
@@ -175,17 +179,25 @@ function patternShapeIssue(at: string, rule: RuleFile, check: Static<typeof Patt
  * examples (patternExamplesIssue).
  */
 export function findConventionsShapeIssue(value: unknown): Issue | null {
-  if (Buffer.byteLength(JSON.stringify(value) ?? '') > MAX_DOCUMENT_BYTES) {
-    return { path: '/', reason: 'the document is over 1 MB' }
+  let bytes: number
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(value) ?? '')
+  } catch {
+    // A YAML alias that contains itself parses to a cyclic object.
+    return { path: '/', reason: 'an alias refers to itself' }
   }
+  if (bytes > MAX_DOCUMENT_BYTES) return { path: '/', reason: 'the document is over 1 MB' }
   const schema = schemaIssue(value)
   if (schema) return schema
   const file = value as ConventionsFile
   const targets = new Set<string>()
+  // Case-insensitive: on Windows `AGENTS.md` and `agents.md` are one file, which would get two generated blocks.
+  const folded = new Set<string>()
   for (const [i, { path }] of file.targets.entries()) {
-    const reason = repoPathIssue(path) ?? (targets.has(path) ? 'duplicate target' : null)
+    const reason = repoPathIssue(path) ?? (folded.has(path.toLowerCase()) ? 'duplicate target' : null)
     if (reason) return { path: `/targets/${i}/path`, reason }
     targets.add(path)
+    folded.add(path.toLowerCase())
   }
   const keys = new Map<string, string>()
   const items = [
@@ -203,8 +215,25 @@ export function findConventionsShapeIssue(value: unknown): Issue | null {
     if (evidence) return evidence
   }
   for (const [i, rule] of file.rules.entries()) {
-    const issue = rule.check.kind === 'pattern' ? patternShapeIssue(`/rules/${i}`, rule, rule.check) : null
+    const issue =
+      globsIssue(`/rules/${i}`, rule) ??
+      (rule.check.kind === 'pattern' ? patternShapeIssue(`/rules/${i}`, rule, rule.check) : null)
     if (issue) return issue
+  }
+  return null
+}
+
+// Globs match repo-relative POSIX diff paths, so one written like a Windows or absolute path would never match.
+function globsIssue(at: string, rule: RuleFile): Issue | null {
+  for (const field of ['paths', 'exclude'] as const) {
+    for (const [i, glob] of (rule[field] ?? []).entries()) {
+      const reason = repoPathIssue(glob)
+      if (reason) return { path: `${at}/${field}/${i}`, reason }
+    }
+  }
+  if (rule.check.kind === 'path') {
+    const reason = repoPathIssue(rule.check.forbid_new)
+    if (reason) return { path: `${at}/check/forbid_new`, reason }
   }
   return null
 }

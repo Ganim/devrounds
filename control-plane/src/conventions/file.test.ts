@@ -55,6 +55,14 @@ test('a target outside targets is refused', () => {
   refusedAt(FILE.replace('target: README.md', 'target: docs/README.md'), '/facts/0/target')
 })
 
+test('a multi-line example is refused: the checker matches one added line at a time', () => {
+  refusedAt(FILE.replace('bad: ["// devlanes default"]', 'bad: ["// devlanes\\ndefault"]'), '/rules/0/examples/bad/0')
+})
+
+test('an alias that contains itself is DR101 at /, not a crash', () => {
+  refusedAt('targets: &a [*a]\nrules: []\n', '/')
+})
+
 test('defaults fill severity warn and the first target', () => {
   const def = parseConventionsFile(FILE)
   assert.equal(def.rules[0].severity, 'warn')
