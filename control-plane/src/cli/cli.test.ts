@@ -978,3 +978,34 @@ test('conventions show --paths prints the rules of those paths, blocking first',
   ])
   assert.match(res.stdout, /^engine\.block block pattern title of engine\.block\n {2}why of engine\.block$/m)
 })
+
+test('conventions render writes the blocks; render --check exits 1 after a hand edit', async () => {
+  const { human, envFor } = await conventionsTenant()
+  await decide(human, 'alpha', 1, 'approve', undefined)
+  const repo = await scratch('render-')
+  try {
+    const agents = join(repo, 'AGENTS.md')
+    await writeFile(agents, '# AGENTS.md\r\n\r\nHand-written.\r\n')
+    const opts = { env: await envFor('agent'), configPath: NO_CONFIG }
+    const written = await runCli(['conventions', 'render', '--cwd', repo], opts)
+    assert.equal(written.exitCode, 0, written.stdout + written.stderr)
+    assert.match(written.stdout, /^rendered version 1 into AGENTS\.md$/m)
+    const text = await readFile(agents, 'utf8')
+    assert.ok(text.startsWith('# AGENTS.md\r\n\r\nHand-written.\r\n\r\n<!-- devrounds:conventions begin version=1 '))
+
+    const clean = await runCli(['conventions', 'render', '--cwd', repo, '--check'], opts)
+    assert.equal(clean.exitCode, 0, clean.stdout + clean.stderr)
+
+    await writeFile(agents, text.replace('why of engine.block', 'why not'))
+    const drift = await runCli(['conventions', 'render', '--cwd', repo, '--check'], opts)
+    assert.equal(drift.exitCode, 1, drift.stdout + drift.stderr)
+    assert.match(drift.stdout, /^docs_drift AGENTS\.md different\n/)
+    assert.equal(
+      await readFile(agents, 'utf8'),
+      text.replace('why of engine.block', 'why not'),
+      '--check writes nothing',
+    )
+  } finally {
+    await removeDir(repo)
+  }
+})

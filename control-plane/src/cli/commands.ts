@@ -7,7 +7,8 @@ import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
-import { ConventionsFile, findConventionsIssue } from '../conventions/file.ts'
+import { type ConventionsDef, ConventionsFile, findConventionsIssue, withDefaults } from '../conventions/file.ts'
+import { applyBlock, driftOf, readBlock, renderBlocks } from '../conventions/render.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseGateFile } from '../gates/file.ts'
@@ -1540,7 +1541,64 @@ export const COMMANDS: Spec[] = [
   },
   conventionsDecision('approve'),
   conventionsDecision('reject'),
+  {
+    path: ['conventions', 'render'],
+    usage:
+      'conventions render --cwd <repo> [--check]   write the active version into the generated blocks of its target ' +
+      'files; --check writes nothing, prints the drift and exits 1 when there is any',
+    args: 0,
+    options: { cwd: str, check: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const api = await connect()
+      const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
+      const def = withDefaults(view.document)
+      const files = await readTargets(cwd, def)
+      if (inv.values.check === true) {
+        const drift = driftOf(def, view.version, files)
+        return {
+          failures: drift.map((d) => fmt`docs_drift ${d.path} ${d.reason}`),
+          body: [fmt`conventions version ${view.version}: ${def.targets.length} targets, ${drift.length} drifted`],
+          next: drift.length > 0 ? `devrounds conventions render --cwd ${shellArg(cwd)}` : 'devrounds plan show',
+          exitCode: drift.length > 0 ? 1 : 0,
+        }
+      }
+      const blocks = renderBlocks(def, view.version)
+      // Every target is read and checked before the first write, so a malformed block leaves all files untouched.
+      for (const [target, current] of files) {
+        if (current !== null && readBlock(current) === 'malformed') {
+          fail('DR101', { path: target, reason: 'has a broken conventions block; fix or remove its marker lines' })
+        }
+      }
+      const body: string[] = []
+      for (const [target, current] of files) {
+        const next = applyBlock(current ?? '', blocks.get(target) ?? '')
+        if (next === current) {
+          body.push(fmt`unchanged ${target}`)
+          continue
+        }
+        const file = join(cwd, target)
+        await mkdir(dirname(file), { recursive: true })
+        await writeFile(file, next)
+        body.push(fmt`rendered version ${view.version} into ${target}`)
+      }
+      return { failures: [], body, next: `devrounds conventions render --cwd ${shellArg(cwd)} --check` }
+    },
+  },
 ]
+
+// Each target file of `def` under `cwd`, null when it does not exist.
+async function readTargets(cwd: string, def: ConventionsDef): Promise<Map<string, string | null>> {
+  const files = new Map<string, string | null>()
+  for (const { path: target } of def.targets) {
+    const content = await readFile(join(cwd, target), 'utf8').catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null
+      throw err
+    })
+    files.set(target, content)
+  }
+  return files
+}
 
 // GET /queues (queues/service.ts QueueView) and GET /batches/:id (jobs/enqueue.ts BatchView) as JSON.
 type QueueJson = {

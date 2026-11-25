@@ -350,3 +350,22 @@ it: blocking rules first, then warn, then judgment. `--paths` keeps the rules th
 `paths` and `exclude`; a rule without `paths` covers every file). `--json` prints the version as the control plane
 answers it (`GET /conventions/<n|active>`), with its `documentSha`. No active version is DR201 kind `conventions`.
 `export` prints the document as YAML, ready to edit and propose.
+
+### Generated blocks
+
+```
+devrounds conventions render --cwd <repo> [--check]
+```
+
+`render` writes the active version into each target file of its document, between the marker lines
+`<!-- devrounds:conventions begin version=<n> sha256=<16 hex> -->` and `<!-- devrounds:conventions end -->`. Each
+item goes to its `target` (default: the first target), grouped by `section` in first-seen order (`### <section>`), one
+line per item: a rule as `- <title>. <why>`, followed by `(checked)` for pattern and path rules or
+`(checked by <job type>)` for job type rules; a fact as `- <text>`. A file without a block gets one appended; a
+missing file is created. Text outside the block is kept byte for byte, and the file keeps its line ending.
+
+Never edit inside a block: change the rule, have a human approve the version, and render again. `render --check`
+writes nothing and prints one `docs_drift <path> <reason>` line per target that differs from the render of the active
+version (`missing_file`, `missing_block`, `malformed`, `different`), then exits 1. A hand edit, a render of a version
+that is not the active one, and a target without its block all drift; a CRLF checkout of an untouched render does not
+(compared after CRLF to LF). A marker counts only as a whole line, so quoting one inside a sentence, as here, is safe.
