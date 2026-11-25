@@ -18,12 +18,15 @@ const IMPERATIVE = /\b(Never|Always|MUST|NEVER|Do not)\b/
 const RULE_HEADING = /\b(never|always|must|mandatory|do not)\b/i
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/
 const BULLET = /^\s*([-*+]|\d+[.)])\s+\S/
-const FENCE = /^\s*(```|~~~)/
+const FENCE = /^\s*(`{3,}|~{3,})/
 
 // Repo-relative POSIX paths of the markdown files under `cwd`, without following links (a pnpm `node_modules` is
 // junctions) or entering SKIPPED_DIRS.
 async function markdownFiles(cwd: string, dir = ''): Promise<string[]> {
   const entries = await readdir(join(cwd, dir), { withFileTypes: true })
+  // A directory with its own `.git` is another checkout (a worktree copy, a submodule): its files are not this repo's,
+  // and evidence cited from one passes propose locally and goes stale on a clean checkout.
+  if (dir !== '' && entries.some((entry) => entry.name === '.git')) return []
   const found: string[] = []
   for (const entry of entries) {
     const rel = dir === '' ? entry.name : `${dir}/${entry.name}`
@@ -37,14 +40,17 @@ function candidatesOf(path: string, text: string): Candidate[] {
   const found: Candidate[] = []
   // The heading of each level in force; a bullet counts when any of them names rules.
   const headings: string[] = []
-  let fenced = false
+  // The open fence (e.g. "````"); CommonMark closes it only with the same character, at least as long.
+  let fence = ''
   for (const [i, raw] of text.replace(/\r\n/g, '\n').split('\n').entries()) {
-    if (FENCE.test(raw)) {
-      fenced = !fenced
+    const marker = FENCE.exec(raw)?.[1]
+    if (marker !== undefined) {
+      if (fence === '') fence = marker
+      else if (marker[0] === fence[0] && marker.length >= fence.length && raw.trim() === marker) fence = ''
       continue
     }
     // Code blocks hold commands and examples, not statements.
-    if (fenced) continue
+    if (fence !== '') continue
     const heading = HEADING.exec(raw)
     if (heading) {
       headings.length = heading[1].length

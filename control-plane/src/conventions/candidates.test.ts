@@ -31,6 +31,9 @@ before(async () => {
   await writeFile(join(repo, 'AGENTS.md'), agents.join('\r\n'))
   await mkdir(join(repo, 'node_modules', 'pkg'), { recursive: true })
   await writeFile(join(repo, 'node_modules', 'pkg', 'AGENTS.md'), 'Never vendor this.\n')
+  await mkdir(join(repo, 'WorkTree', 'copy'), { recursive: true })
+  await writeFile(join(repo, 'WorkTree', 'copy', '.git'), 'gitdir: elsewhere\n')
+  await writeFile(join(repo, 'WorkTree', 'copy', 'AGENTS.md'), 'Never cite a copy.\n')
   await mkdir(join(repo, 'docs'), { recursive: true })
   await writeFile(join(repo, 'docs', 'style.md'), '# Style\n\nYou MUST use LF.\n')
 })
@@ -45,9 +48,9 @@ test('bullets under a Never heading are candidates with their heading', async ()
   ])
 })
 
-test('node_modules is skipped', async () => {
+test('node_modules and nested checkouts are skipped', async () => {
   const found = await findCandidates(repo, ['**/*.md'])
-  assert.ok(!found.some((c) => c.path.startsWith('node_modules/')), JSON.stringify(found))
+  assert.ok(!found.some((c) => /^(node_modules|WorkTree)\//.test(c.path)), JSON.stringify(found))
 })
 
 test('a custom glob replaces the defaults', async () => {

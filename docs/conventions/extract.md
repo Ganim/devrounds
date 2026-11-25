@@ -23,7 +23,11 @@ One conventions file (YAML), whose every rule and fact carries evidence from the
 - `evidence` entries quote the repo: `{path, excerpt, line?, role}`, `excerpt` copied character for character (up to
   300), `role: source` for the line that states the rule, `role: example` for code that follows it. Only files in the
   repo count. Never cite private notes, agent memory, chat logs or anything outside the worktree: the next reader must
-  be able to open the file.
+  be able to open the file. Never cite a line inside a generated block (between `devrounds:conventions` markers):
+  `render` rewrites it from the record, so verify ignores those lines and the excerpt reads as stale. A rule that
+  only lives in a generated block cites what enforces it (the test, the lint config) or the code that follows it.
+- Candidate output shows a tab as `\t`; write the real character in `excerpt`. Quote a multi-line excerpt with a
+  double-quoted YAML string and `\n`; a `>` scalar folds the line breaks away and the excerpt stops matching.
 - Prefer a mechanical check over `judgment`, in this order:
   - `pattern` when an added line can show the violation (`forbid`, with `unless` for the allowed form on the same line;
     flags from `imsu`). It needs `paths` and at least one `examples.bad` line it matches; add `examples.good` lines it
@@ -31,13 +35,37 @@ One conventions file (YAML), whose every rule and fact carries evidence from the
   - `path` when a new file in the wrong place is the violation (`forbid_new: <glob>`).
   - `job_type` when an existing check already enforces it (a lint, a meta-test): `enforced_by: <job type key>`.
   - `judgment` only when none of these can say it; an agent reviewer reads it.
-- Every new rule starts `severity: warn`. Promoting one to `block` is its own change, after the indicators show it
-  fires only on real violations.
+- A new rule starts `severity: warn`, and promoting it to `block` is its own change after the indicators show it fires
+  only on real violations. The exception is a rule the repo already enforces by other means (a lint, a test): it can
+  start at `block`, since nothing new starts failing.
 - `key` names the rule (`area.short-name`), `section` is the heading it renders under (keep the repo's own, such as
   `Never` and `Always`), `title` is the rule in one sentence, `why` the reason it exists.
 - `target` names the file the rule renders into when it is not the first of `targets`. Name it explicitly; nothing is
   inferred from globs.
 - Facts (`facts:`) describe the project (layout, commands) and carry evidence like rules.
+
+The file's shape:
+
+```yaml
+targets:
+  - path: AGENTS.md
+rules:
+  - key: engine.no-sync-fs
+    section: Never
+    title: Never call the *Sync fs functions in server code
+    why: They block the event loop for every tenant.
+    paths: [control-plane/src/**/*.ts]
+    exclude: ["**/*.test.ts"]
+    check: { kind: pattern, forbid: 'Sync\(' }
+    examples: { bad: ["readFileSync(path)"], good: ["await readFile(path)"] }
+    evidence:
+      - { path: control-plane/src/db/pool.ts, excerpt: "await readFile(", role: example }
+facts:
+  - key: layout.control-plane
+    section: Layout
+    text: "control-plane/: the TypeScript control plane."
+    evidence: [{ path: control-plane/package.json, excerpt: '"name"', role: example }]
+```
 
 ## Proposing
 

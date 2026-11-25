@@ -53,3 +53,17 @@ test('an excerpt off its recorded line is moved, not an issue', async () => {
   assert.deepEqual(issues, [])
   assert.deepEqual(moved, [{ path: '/rules/0/evidence/0', key: 'a', file: 'AGENTS.md', line: 2, now: 4 }])
 })
+
+test('an excerpt found only inside a generated block is stale: render rewrites those lines', async () => {
+  const dir = await mkdtemp(join(SCRATCH, 'evidence-block-'))
+  try {
+    const block = '<!-- devrounds:conventions begin version=1 sha256=0123456789abcdef -->\n- Never block.\n'
+    await writeFile(join(dir, 'AGENTS.md'), `# Rules\n\n${block}<!-- devrounds:conventions end -->\n`)
+    const doc = { rules: [rule('a', [{ path: 'AGENTS.md', excerpt: 'Never block.', role: 'source' }])] }
+    assert.deepEqual(await verifyEvidence(dir, doc), [
+      { path: '/rules/0/evidence/0', reason: 'excerpt not found in AGENTS.md' },
+    ])
+  } finally {
+    await removeDir(dir)
+  }
+})
