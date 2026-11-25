@@ -33,6 +33,7 @@ import type { EventView, PlanView } from '../planning/view.ts'
 import type { ImprovementReport } from '../runs/improvement.ts'
 import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
+import type { Unplaced } from '../scheduler/placeable.ts'
 import { failYamlIssue, parseYamlFile } from '../yaml-file.ts'
 import {
   type AgentOutput,
@@ -231,7 +232,15 @@ function apiFor(config: CliConfig, timeoutMs: number, scope?: string): Api {
 
 type Values = Record<string, string | boolean | string[] | undefined>
 type Invocation = { args: string[]; values: Values; cursor: number }
-type Deps = { env: NodeJS.ProcessEnv; configPath: string; timeoutMs?: number }
+// `progress` gets the lines a wait prints while it lasts (the bin writes them to stderr, so stdout stays the agent
+// output); `now` is the clock that spaces them.
+type Deps = {
+  env: NodeJS.ProcessEnv
+  configPath: string
+  timeoutMs?: number
+  progress?: (line: string) => void
+  now?: () => number
+}
 // `nextFor` gets the index one past the last body line printed, for a next step that depends on what was shown.
 // `exitCode` is for a command that completes its output but failed part of its work (default 0).
 type Result = AgentOutput & { nextFor?: (shownEnd: number) => string; raw?: string; exitCode?: number }
@@ -376,6 +385,8 @@ type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
   timeline: Record<keyof RunView['timeline'], string | null>
   steps: { step: number; name: string; startedAt: string; finishedAt: string | null; outcome: string | null }[]
   delays: { at: string; reason: string; needBytes: number; availableBytes: number | null; position: number }[]
+  // From `GET /runs/:id` (api/run-routes.ts): why a queued run has no machine able to take it.
+  unplaced?: Unplaced | null
 }
 
 // GET /runs/:id/logs (runs/log-store.ts LogPage, with the cursor as a number).
@@ -415,9 +426,44 @@ const RUN_WAIT_S = 25
 const GATE_LOCK_WAIT_S = 900
 const GATE_WAIT_S = RUN_WAIT_S
 
-async function waitGate(api: Api, first: GateJson, wait: boolean): Promise<GateJson> {
+// A wait prints why its run is not placed at most this often: a run queued for an hour says so again, without a line
+// per answer.
+const UNPLACED_LINE_MS = 30_000
+
+function unplacedText(u: Unplaced): string {
+  switch (u.reason) {
+    case 'no_machine':
+      return 'no machine connected'
+    case 'machine_offline':
+      return fmt`machine ${u.machine} (pinned) is offline`
+    case 'memory':
+      return fmt`needs ${mib(u.needBytes)}, above the ${mib(Math.max(u.freeBytes, 0))} free on ${u.machine}`
+    default:
+      // A reason of a newer control plane.
+      return String((u as { reason: unknown }).reason)
+  }
+}
+
+// Called with each answer of a wait; prints `not placed: <why>` when there is a reason and the last line is at least
+// UNPLACED_LINE_MS old.
+function unplacedReporter(deps: Deps): (why: string | null) => void {
+  const now = deps.now ?? Date.now
+  let last: number | undefined
+  return (why) => {
+    if (why === null || deps.progress === undefined) return
+    const at = now()
+    if (last !== undefined && at - last < UNPLACED_LINE_MS) return
+    last = at
+    deps.progress(`not placed: ${why}`)
+  }
+}
+
+async function waitGate(api: Api, first: GateJson, wait: boolean, deps: Deps): Promise<GateJson> {
+  const report = unplacedReporter(deps)
   let gate = first
   while (wait && gate.state === 'running') {
+    const blocked = gate.checks.find((check) => check.unplaced)
+    report(blocked?.unplaced ? fmt`check ${blocked.ref}: ${unplacedText(blocked.unplaced)}` : null)
     gate = await api.get<GateJson>(path('gates', gate.id), { wait: String(GATE_WAIT_S) })
   }
   return gate
@@ -1175,15 +1221,20 @@ export const COMMANDS: Spec[] = [
   },
   {
     path: ['run', 'show'],
-    usage: 'run show <id> [--wait]   --wait returns once the run ended',
+    usage:
+      'run show <id> [--wait]   --wait returns once the run ended; while no machine can take it, stderr says why ' +
+      'at most every 30 s',
     args: 1,
     options: { wait: { type: 'boolean' } },
-    run: async (inv, connect) => {
+    run: async (inv, connect, deps) => {
       const api = await connect()
       const id = arg(inv, 0, '<id>')
       const wait = inv.values.wait === true
-      let r = await api.get<RunJson>(path('runs', id), wait ? { wait: String(RUN_WAIT_S) } : {})
+      const report = unplacedReporter(deps)
+      // The first look does not wait, so a run no machine can take says so at once.
+      let r = await api.get<RunJson>(path('runs', id))
       while (wait && !TERMINAL_RUN.includes(r.state)) {
+        report(r.unplaced ? unplacedText(r.unplaced) : null)
         r = await api.get<RunJson>(path('runs', id), { wait: String(RUN_WAIT_S) })
       }
       return runShow(r)
@@ -1427,7 +1478,8 @@ export const COMMANDS: Spec[] = [
       'gate run <file.yaml> --cwd <path> [--machine <name>] [--head-sha <sha>] [--dirty] [--wait] ' +
       '[--wait-lock <s>|--no-wait-lock] [--json]   run the repo checks of the file on one worktree; one gate runs per ' +
       `worktree, so a busy one is waited for up to ${GATE_LOCK_WAIT_S} s (--wait-lock) or refused with DR308 ` +
-      '(--no-wait-lock); --wait returns once the gate ended; --json prints the gate view',
+      '(--no-wait-lock); --wait returns once the gate ended (while no machine can take a check, stderr says why at ' +
+      'most every 30 s); --json prints the gate view',
     args: 1,
     options: {
       cwd: str,
@@ -1439,7 +1491,7 @@ export const COMMANDS: Spec[] = [
       'no-wait-lock': { type: 'boolean' },
       json: { type: 'boolean' },
     },
-    run: async (inv, connect) => {
+    run: async (inv, connect, deps) => {
       const api = await connect()
       const file = arg(inv, 0, '<file.yaml>')
       const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
@@ -1476,20 +1528,26 @@ export const COMMANDS: Spec[] = [
           await api.get(path('gates', holder), { wait: String(Math.min(GATE_WAIT_S, Math.ceil(left / 1000))) })
         }
       }
-      return gateResult(inv, await waitGate(api, gate, inv.values.wait === true))
+      const wait = inv.values.wait === true
+      // The submit's answer carries no placement reason; a first look that does not wait does.
+      if (wait && gate.state === 'running') gate = await api.get<GateJson>(path('gates', gate.id))
+      return gateResult(inv, await waitGate(api, gate, wait, deps))
     },
   },
   {
     path: ['gate', 'show'],
-    usage: 'gate show <id> [--wait] [--json]   failed, skipped and stopped checks first; --wait returns once it ended',
+    usage:
+      'gate show <id> [--wait] [--json]   failed, skipped and stopped checks first; --wait returns once it ended ' +
+      '(while no machine can take a check, stderr says why at most every 30 s)',
     args: 1,
     options: { wait: { type: 'boolean' }, json: { type: 'boolean' } },
-    run: async (inv, connect) => {
+    run: async (inv, connect, deps) => {
       const api = await connect()
       const id = arg(inv, 0, '<id>')
       const wait = inv.values.wait === true
-      const gate = await api.get<GateJson>(path('gates', id), wait ? { wait: String(GATE_WAIT_S) } : {})
-      return gateResult(inv, await waitGate(api, gate, wait))
+      // The first look does not wait, so a check no machine can take says so at once.
+      const gate = await api.get<GateJson>(path('gates', id))
+      return gateResult(inv, await waitGate(api, gate, wait, deps))
     },
   },
   {

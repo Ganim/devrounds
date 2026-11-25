@@ -124,7 +124,7 @@ export function buildServer(opts: ServerOptions) {
   const telemetry = opts.telemetry ?? null
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
-  app.register(gateRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(gateRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
   app.register(conventionRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(viewRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(reportRoutes, { prefix: '/api/projects/:key', db: opts.db })

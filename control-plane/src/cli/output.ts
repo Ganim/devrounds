@@ -8,6 +8,7 @@ import type { GateView } from '../gates/service.ts'
 import { isBlockerOpen, type TaskState } from '../planning/rules.ts'
 import type { CriterionView, PhaseView, PlanView, TaskView } from '../planning/view.ts'
 import type { ImprovementReport } from '../runs/improvement.ts'
+import type { Unplaced } from '../scheduler/placeable.ts'
 
 // Agent output mode (AGENTS.md): failures first, then the body cut to a byte budget on a whole line, then the
 // command to continue reading, and `next:` always last. Agents read the head and the tail of a long output, so
@@ -151,7 +152,12 @@ export function planShow(plan: PlanView, opts: { phase?: string }): { body: stri
 }
 
 // GET /gates/:id (gates/service.ts GateView) as JSON: its dates arrive as ISO strings.
-export type GateJson = Omit<GateView, 'createdAt' | 'finishedAt'> & { createdAt: string; finishedAt: string | null }
+// `unplaced` comes from `GET /gates/:id` only (api/gate-routes.ts), not from the submit's answer.
+export type GateJson = Omit<GateView, 'createdAt' | 'finishedAt' | 'checks'> & {
+  createdAt: string
+  finishedAt: string | null
+  checks: (GateView['checks'][number] & { unplaced?: Unplaced | null })[]
+}
 
 const seconds = (ms: number | null) => (ms === null ? null : `${(ms / 1000).toFixed(1)} s`)
 

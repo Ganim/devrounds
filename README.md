@@ -255,7 +255,11 @@ checks:
 gate per project, machine and cwd. When it is held, `gate run` waits on the holder with `GET /gates/<holder>?wait=25`
 and submits again with a new Idempotency-Key, for `--wait-lock <s>` seconds (default 900), then exits 1 with DR308.
 `--no-wait-lock` (or `--wait-lock 0`) exits 1 with DR308 and the holder's id at once. `--wait` then polls the gate
-until it ended. The checks hit the result cache by their `cache_key`, so a gate whose every check is a hit passes at
+until it ended. While a check stays queued with no live machine able to take it, `gate run|show --wait` and
+`run show --wait` print one line to stderr naming why, at most every 30 s: `not placed: no machine connected`,
+`not placed: check <ref>: machine <name> (pinned) is offline`, or `not placed: needs <n> MiB, above the <n> MiB free on
+<machine>` (free after the reserve and the runs already offered there, as the scheduler counts it). The reason is
+`unplaced` on each check of `GET /gates/<id>` and on `GET /runs/<id>`. The checks hit the result cache by their `cache_key`, so a gate whose every check is a hit passes at
 submit.
 
 The output lists failed, skipped and stopped checks first (`<ref> <runState> <class> <duration> <summary>`, then

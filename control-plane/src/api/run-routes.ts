@@ -9,6 +9,7 @@ import { getJobType, putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
 import { type PreparedStop, prepareStop, runEvents, waitForRun } from '../runs/dispatch.ts'
 import { readRunLog } from '../runs/log-store.ts'
+import { unplacedReasons } from '../scheduler/placeable.ts'
 import { mutateIdempotent } from './idempotency.ts'
 import { authenticateMembers, memberCtx } from './members.ts'
 
@@ -91,15 +92,19 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
         querystring: Type.Object({ wait: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })) }),
       },
     },
-    (request, reply) => {
+    async (request, reply) => {
       // The response closing before it was sent means the client went away: end the wait and drop its listener.
       const gone = new AbortController()
       if (request.raw.socket.destroyed) gone.abort()
       else reply.raw.once('close', () => gone.abort())
-      return waitForRun(memberCtx(db, request), request.params.id, request.query.wait ?? 0, {
+      const ctx = memberCtx(db, request)
+      const view = await waitForRun(ctx, request.params.id, request.query.wait ?? 0, {
         projectKey: request.params.key,
         signal: gone.signal,
       })
+      // Read after the wait, so it describes the run as answered; `run show --wait` prints it.
+      const unplaced = (await unplacedReasons(ctx, sessions, [view.id])).get(view.id) ?? null
+      return { ...view, unplaced }
     },
   )
 

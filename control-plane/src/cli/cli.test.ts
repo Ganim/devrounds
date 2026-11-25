@@ -11,8 +11,10 @@ import { pruneIdempotencyKeys } from '../api/idempotency.ts'
 import { buildServer } from '../api/server.ts'
 import { createToken } from '../auth/tokens.ts'
 import { decide, propose } from '../conventions/service.ts'
+import { submitGate } from '../gates/service.ts'
 import { putJobType } from '../job-types/service.ts'
 import { enqueueRun } from '../jobs/enqueue.ts'
+import { createPairingCode, PairingLimiter, redeemPairingCode } from '../machines/pairing.ts'
 import { addTask, createProject } from '../planning/service.ts'
 import { testDb } from '../test-support/db.ts'
 import { removeDir } from '../test-support/remove-dir.ts'
@@ -799,6 +801,104 @@ test('gate show --json prints the gate view only', async (t) => {
   const res = await runCli(['gate', 'show', 'gate-1', '--json'], { env: fake.env, configPath: NO_CONFIG })
   assert.equal(res.exitCode, 0)
   assert.equal(res.stdout, `${JSON.stringify(view)}\n`)
+})
+
+// A run as `GET /runs/:id` answers it, with the fields the formatter reads.
+const runJson = (over: Record<string, unknown> = {}) => ({
+  id: 'run-1',
+  state: 'queued',
+  outcome: {},
+  timeline: {},
+  durations: {},
+  resources: {},
+  steps: [],
+  delays: [],
+  unplaced: null,
+  ...over,
+})
+
+test('run show --wait prints why a queued run is not placed, at most once per 30 s, outside the output', async (t) => {
+  // Each answer moves the CLI's clock 10 s: lines may come at 0 s and 30 s only.
+  let clock = 0
+  const urls: string[] = []
+  const answers = [
+    runJson({ unplaced: { reason: 'no_machine' } }),
+    runJson({ unplaced: { reason: 'machine_offline', machine: 'build-01' } }),
+    runJson({ unplaced: null }),
+    runJson({ unplaced: { reason: 'memory', machine: 'build-01', needBytes: 20000 * 1048576, freeBytes: -5 } }),
+    runJson({ state: 'finished', unplaced: null }),
+  ]
+  const fake = await fakeServer((req, res) => {
+    urls.push(req.url ?? '')
+    clock = (urls.length - 1) * 10_000
+    json(res, answers[urls.length - 1])
+  })
+  t.after(fake.close)
+
+  const lines: string[] = []
+  const res = await runCli(['run', 'show', 'run-1', '--wait'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+    now: () => clock,
+    progress: (line) => lines.push(line),
+  })
+  assert.equal(res.exitCode, 0, res.stderr)
+  // The first look does not wait, so a run nobody can take says so at once.
+  assert.deepEqual(urls, ['/api/projects/alpha/runs/run-1', ...Array(4).fill('/api/projects/alpha/runs/run-1?wait=25')])
+  assert.deepEqual(lines, [
+    'not placed: no machine connected',
+    'not placed: needs 20000.0 MiB, above the 0.0 MiB free on build-01',
+  ])
+  assert.match(res.stdout, /^run run-1 finished/)
+  assert.doesNotMatch(res.stdout, /not placed/)
+})
+
+test('GET /runs/:id and /gates/:id carry why each queued run is not placed', async () => {
+  const t = await testDb()
+  const tenant = await t.newTenant()
+  const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(ctx, { key: 'alpha', name: 'Alpha' })
+  await putJobType(ctx, 'alpha', { key: 'check', command: { program: 'node' } })
+  const { code } = await createPairingCode(ctx, 'build-01')
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  const queued = await enqueueRun(ctx, { projectKey: 'alpha', jobTypeKey: 'check', cwd: 'C:\\work' })
+  const gate = await submitGate(ctx, 'alpha', {
+    file: { key: 'pre-pr', checks: [{ ref: 'lint', job_type: 'check' }] },
+    cwd: 'C:\\work',
+  })
+  const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
+  const get = async (path: string) =>
+    (await fetch(`${url}/api/projects/alpha${path}`, { headers: { authorization: `Bearer ${token}` } })).json()
+
+  // The test server has no executor session: nothing can take either run.
+  assert.deepEqual((await get(`/runs/${queued.id}`)).unplaced, { reason: 'no_machine' })
+  const view = await get(`/gates/${gate.id}`)
+  assert.deepEqual(view.checks[0].unplaced, { reason: 'machine_offline', machine: 'build-01' })
+})
+
+test('gate show --wait names the queued check that is not placed', async (t) => {
+  const answers = [
+    gateJson({
+      checks: [
+        check('build', { state: 'finished', runState: 'finished', durationMs: 1000 }),
+        check('lint', { unplaced: null }),
+        check('test', { unplaced: { reason: 'machine_offline', machine: 'build-01' } }),
+      ],
+    }),
+    gateJson({ state: 'passed', checks: [] }),
+  ]
+  let requests = 0
+  const fake = await fakeServer((_req, res) => json(res, answers[requests++]))
+  t.after(fake.close)
+
+  const lines: string[] = []
+  const res = await runCli(['gate', 'show', 'gate-1', '--wait'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+    progress: (line) => lines.push(line),
+  })
+  assert.equal(res.exitCode, 0, res.stderr)
+  assert.deepEqual(lines, ['not placed: check test: machine build-01 (pinned) is offline'])
 })
 
 test('report improvement --open-tasks opens each finding once across two runs', async () => {

@@ -1,17 +1,16 @@
 import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
-import type { MachineMemory, Sessions } from '../executor/gateway.ts'
+import type { Sessions } from '../executor/gateway.ts'
 import { claimedOffer } from '../runs/dispatch.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { withTenant } from '../tenancy/scope.ts'
-import { claimRun, defaultReserve } from './claim.ts'
+import { claimRun } from './claim.ts'
 import { expireOffers } from './expiry.ts'
 import { SCHEDULER_CHANNEL } from './notify.ts'
+import { placeable } from './placeable.ts'
 import { fireDueSchedules } from './schedules.ts'
 import { type Listener, listen } from './wake.ts'
 
-// A machine whose last MachineReport is older than this may be gone or wedged; its free memory is not trusted.
-const REPORT_FRESH_MS = 30_000
 // Bounds one machine's share of a tick, so a deep queue cannot hold the tick (and the other tenants) for long; the
 // next wake goes on where this one stopped.
 const MAX_CLAIMS_PER_MACHINE = 64
@@ -31,8 +30,6 @@ export type SchedulerOptions = {
   // Tests move it to age the machines' reports.
   now?: () => number
 }
-
-type Placeable = { machineId: string; available: bigint; reserve: bigint; room: bigint }
 
 /**
  * Places queued runs on connected machines. It wakes on a NOTIFY of `devrounds_scheduler` (enqueue, run end; the
@@ -146,51 +143,10 @@ export class Scheduler {
     }
   }
 
-  // Machines of the tenant with a recent report, most room first: free minus reserve minus the needs already offered.
-  // An executor without job-env would drop the Offer's env_set and run the job without its values, so it gets none.
-  async #placeable(tenantId: string): Promise<Placeable[]> {
-    const now = this.#now()
-    const live = this.#o.sessions
-      .list()
-      .filter(
-        (s) =>
-          s.tenantId === tenantId &&
-          s.features.includes('job-env') &&
-          s.report !== undefined &&
-          now - s.report.at <= REPORT_FRESH_MS,
-      )
-    if (live.length === 0) return []
-    const inFlight = await withTenant(this.#o.db, tenantId, (trx) =>
-      trx
-        .selectFrom('runs')
-        .select(['machine_id', (eb) => eb.fn.sum<string | null>('memory_need').as('need')])
-        .where(
-          'machine_id',
-          'in',
-          live.map((s) => s.machineId),
-        )
-        .where('state', 'in', ['offered', 'admitted'])
-        .groupBy('machine_id')
-        .execute(),
-    )
-    const placeable = live.map((s) => {
-      const report = s.report as MachineMemory
-      const reserve = defaultReserve(report.totalMemory)
-      // Null for runs offered before claims stored their need; those count as nothing here.
-      const need = BigInt(inFlight.find((row) => row.machine_id === s.machineId)?.need ?? 0)
-      return {
-        machineId: s.machineId,
-        available: report.availableMemory,
-        reserve,
-        room: report.availableMemory - reserve - need,
-      }
-    })
-    return placeable.sort((a, b) => (a.room > b.room ? -1 : a.room < b.room ? 1 : 0))
-  }
-
   async #placeTenant(tenantId: string): Promise<void> {
     const { db, sessions, offerTimeoutS, telemetry } = this.#o
-    for (const machine of await this.#placeable(tenantId)) {
+    const machines = await withTenant(db, tenantId, (trx) => placeable(trx, sessions, tenantId, this.#now()))
+    for (const machine of machines) {
       for (let i = 0; i < MAX_CLAIMS_PER_MACHINE && !this.#stopped; i++) {
         const offer = await withTenant(db, tenantId, async (trx) => {
           const claim = await claimRun(trx, machine.machineId, {
