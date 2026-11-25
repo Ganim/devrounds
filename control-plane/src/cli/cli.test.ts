@@ -1009,3 +1009,104 @@ test('conventions render writes the blocks; render --check exits 1 after a hand 
     await removeDir(repo)
   }
 })
+
+test('conventions propose with a stale excerpt exits 2 and sends nothing', async (t) => {
+  const repo = await scratch('propose-')
+  t.after(() => removeDir(repo))
+  await writeFile(join(repo, 'AGENTS.md'), '# Rules\n\nNever call sync fs.\n')
+  const file = join(repo, 'conventions.yaml')
+  await writeFile(
+    file,
+    [
+      'targets: [{ path: AGENTS.md }]',
+      'rules:',
+      '  - key: engine.no-sync',
+      '    section: Never',
+      '    title: Never call sync fs',
+      '    why: It blocks the event loop.',
+      '    check: { kind: judgment }',
+      '    evidence: [{ path: AGENTS.md, excerpt: Never call sync child-process, role: source }]',
+      '',
+    ].join('\n'),
+  )
+  let requests = 0
+  const fake = await fakeServer((_req, res) => {
+    requests += 1
+    json(res, {})
+  })
+  t.after(fake.close)
+
+  const res = await runCli(['conventions', 'propose', file, '--cwd', repo, '--task', 'P3-T01'], {
+    env: fake.env,
+    configPath: NO_CONFIG,
+  })
+
+  assert.equal(res.exitCode, 2, res.stderr)
+  assert.match(res.stderr, /^DR101 .*\/rules\/0\/evidence\/0.*excerpt not found in AGENTS\.md \(line 8,/)
+  assert.equal(requests, 0)
+})
+
+test('conventions verify --open-tasks opens one F- task per stale rule and none the second time', async (t) => {
+  const repo = await scratch('verify-')
+  t.after(() => removeDir(repo))
+  await writeFile(join(repo, 'AGENTS.md'), '# Rules\n\nNever call sync fs.\n')
+  const tdb = await testDb()
+  const tenant = await tdb.newTenant()
+  const human = { db: tdb.db, tenantId: tenant.tenantId, actor: tenant.human }
+  await createProject(human, { key: 'alpha', name: 'Alpha' })
+  await addTask(human, { projectKey: 'alpha', key: 'P3-T01', title: 'Conventions' })
+  const rule = (key: string, excerpt: string, path = 'AGENTS.md', check: object = { kind: 'judgment' }) => ({
+    key,
+    section: 'Never',
+    title: `title of ${key}`,
+    why: 'why',
+    check,
+    evidence: [{ path, excerpt, role: 'source' as const }],
+  })
+  await propose(human, 'alpha', {
+    document: {
+      targets: [{ path: 'AGENTS.md' }],
+      rules: [
+        rule('fresh', 'Never call sync fs.'),
+        rule('gone-excerpt', 'Never rerun a flaky test'),
+        rule('gone-file', 'x', 'docs/none.md'),
+        rule('no-job-type', 'Never call', 'AGENTS.md', { kind: 'job_type', enforced_by: 'devrounds-test' }),
+      ],
+    },
+    basedOn: null,
+    headSha: null,
+    task: 'P3-T01',
+  })
+  await decide(human, 'alpha', 1, 'approve', undefined)
+  const env = {
+    DEVROUNDS_URL: url,
+    DEVROUNDS_TOKEN: await createToken(tdb.admin, tenant.tenantId, 'agent', 'agent'),
+    DEVROUNDS_PROJECT: 'alpha',
+  }
+  const argv = ['conventions', 'verify', '--cwd', repo, '--open-tasks']
+
+  const first = await runCli(argv, { env, configPath: NO_CONFIG })
+  const second = await runCli(argv, { env, configPath: NO_CONFIG })
+
+  assert.equal(first.exitCode, 0, first.stderr)
+  assert.equal(second.exitCode, 0, second.stderr)
+  assert.match(first.stdout, /^gone-excerpt \/rules\/1\/evidence\/0 excerpt not found in AGENTS\.md$/m)
+  assert.match(first.stdout, /^no-job-type enforced_by devrounds-test: no such job type$/m)
+  assert.match(second.stdout, /^already open F-0001 conventions:evidence:gone-excerpt$/m)
+  assert.doesNotMatch(second.stdout, /^opened /m)
+  const tasks = await tdb.admin
+    .selectFrom('tasks')
+    .select(['key', 'source_key'])
+    .where('tenant_id', '=', tenant.tenantId)
+    .where('source_key', 'is not', null)
+    .orderBy('key')
+    .execute()
+  assert.deepEqual(
+    tasks.map((task) => [task.key, task.source_key]),
+    [
+      ['F-0001', 'conventions:evidence:gone-excerpt'],
+      ['F-0002', 'conventions:evidence:gone-file'],
+      ['F-0003', 'conventions:evidence:no-job-type'],
+    ],
+  )
+})

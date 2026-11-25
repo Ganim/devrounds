@@ -1,0 +1,37 @@
+# DevRounds's daily conventions verify as a job (run it with --cwd <repo root> on the default branch): the active
+# version's evidence against the worktree, and its enforced_by job types; one F- task per stale rule
+# (conventions:evidence:<rule key>), never a second one while it is open. DEVROUNDS_URL, DEVROUNDS_TOKEN (an agent
+# token) and DEVROUNDS_PROJECT are user variables on the machine. Schedule it with
+#   devrounds schedule set conventions-verify --job-type conventions-verify --cwd <repo> --daily 06:30
+key: conventions-verify
+command:
+  program: node
+  args: [control-plane/src/cli/main.ts, conventions, verify, --cwd, ., --open-tasks]
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    DEVROUNDS_URL,
+    DEVROUNDS_TOKEN,
+    DEVROUNDS_PROJECT,
+  ]
+timeout_s: 300
+# CLI exit codes (AGENTS.md), classified as improvement-report's. Stale evidence exits 0 (its findings are the
+# output); a refused finding exits with the code of its error after every other one was tried.
+#   4 control plane unreachable, 6 internal: infra
+#   3 project or active version not found, 5 auth or permission: environment
+#   1 state conflict, 2 input (e.g. --cwd is not a directory): check_red
+classify:
+  - class: infra
+    exit_codes: [4, 6]
+  - class: environment
+    exit_codes: [3, 5]
+  - class: check_red
+    exit_codes: [1, 2]

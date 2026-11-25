@@ -7,6 +7,7 @@ import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
+import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
 import { type ConventionsDef, ConventionsFile, findConventionsIssue, withDefaults } from '../conventions/file.ts'
 import { applyBlock, driftOf, readBlock, renderBlocks } from '../conventions/render.ts'
 import { exitCodeFor } from '../errors/codes.ts'
@@ -21,7 +22,7 @@ import type { EventView, PlanView } from '../planning/view.ts'
 import type { ImprovementReport } from '../runs/improvement.ts'
 import type { IndicatorRow } from '../runs/indicators.ts'
 import type { RunView } from '../runs/view.ts'
-import { parseYamlFile } from '../yaml-file.ts'
+import { failYamlIssue, parseYamlFile } from '../yaml-file.ts'
 import {
   type AgentOutput,
   BODY_BUDGET,
@@ -332,6 +333,21 @@ function dependency(scope: 'phase' | 'task', verb: 'add' | 'rm'): Spec {
 
 // The criterion of every task the improvement report opens: the agent working it says why it happened or fixes it.
 const FINDING_CRITERION = 'explained or fixed, with evidence'
+
+// The criterion of a task `conventions verify --open-tasks` opens: the repo holds the evidence again, or a new version
+// says what the rule rests on now.
+const EVIDENCE_CRITERION = 'evidence restored or rule changed, with evidence'
+
+// --cwd of the commands that read a worktree (conventions propose, verify): required, and a directory.
+async function repoDir(inv: Invocation): Promise<string> {
+  const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+  const isDir = await stat(cwd).then(
+    (s) => s.isDirectory(),
+    () => false,
+  )
+  if (!isDir) fail('DR101', { path: '--cwd', reason: `${cwd} is not a directory` })
+  return cwd
+}
 
 const IMPORT_SAMPLE = 20
 
@@ -1495,14 +1511,16 @@ export const COMMANDS: Spec[] = [
     options: { cwd: str, task: str, 'head-sha': str, replace: { type: 'boolean' } },
     run: async (inv, connect) => {
       const file = arg(inv, 0, '<file.yaml>')
-      // Required now so callers keep working once propose verifies the evidence in the worktree.
-      text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const cwd = await repoDir(inv)
       const task = text(inv, 'task') ?? fail('DR101', { path: '--task', reason: 'is required' })
       const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
         fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
       )
       // Checked here so a problem points at its line in the file; the server checks the document again.
       const document = parseYamlFile<ConventionsFile>(yaml, findConventionsIssue)
+      // Every excerpt must be in its file at --cwd before anything is sent (design call 13).
+      const [issue] = await verifyEvidence(cwd, document)
+      if (issue) failYamlIssue(yaml, issue)
       const api = await connect()
       const { active } = await api.get<{ active: { version: number } | null }>('/conventions')
       const basedOn = active?.version ?? null
@@ -1518,6 +1536,73 @@ export const COMMANDS: Spec[] = [
         body: [`proposed conventions version ${version} based on ${basedOn ?? 'none'}`],
         next: `devrounds conventions diff ${version}`,
       }
+    },
+  },
+  {
+    path: ['conventions', 'verify'],
+    usage:
+      'conventions verify --cwd <repo> [--open-tasks]   the active version against the worktree: stale evidence and ' +
+      'enforced_by job types that do not exist, first; --open-tasks opens an F- task per stale rule, once while open',
+    args: 0,
+    options: { cwd: str, 'open-tasks': { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const cwd = await repoDir(inv)
+      const api = await connect()
+      const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
+      const def = withDefaults(view.document)
+      const { issues, moved } = await inspectEvidence(cwd, def)
+      // Problems per item key, in document order: one finding per stale rule (or fact) holds all of them.
+      const stale = new Map<string, string[]>()
+      const note = (key: string, line: string) => stale.set(key, [...(stale.get(key) ?? []), line])
+      for (const i of issues) note(i.key, `${i.key} ${i.path} ${i.reason}`)
+      const enforcers = [
+        ...new Set(def.rules.flatMap((r) => (r.check.kind === 'job_type' ? [r.check.enforced_by] : []))),
+      ]
+      const missing = new Set<string>()
+      for (const key of enforcers) {
+        await api.get(path('job-types', key)).catch((err: unknown) => {
+          if (!(err instanceof ApiError) || err.code !== 'DR201') throw err
+          missing.add(key)
+        })
+      }
+      for (const r of def.rules) {
+        if (r.check.kind === 'job_type' && missing.has(r.check.enforced_by)) {
+          note(r.key, `${r.key} enforced_by ${r.check.enforced_by}: no such job type`)
+        }
+      }
+      const failures = [...stale.values()].flat()
+      const body = [
+        ...moved.map((m) => fmt`moved ${m.key} ${m.file}:${m.line} now at line ${m.now}`),
+        fmt`verified version ${view.version} against ${cwd}: ${stale.size} stale of ${def.rules.length + def.facts.length} items`,
+      ]
+      const again = `devrounds conventions verify --cwd ${shellArg(cwd)} --open-tasks`
+      if (inv.values['open-tasks'] !== true) {
+        return { failures, body, next: stale.size > 0 ? again : 'devrounds conventions show' }
+      }
+      // As `report improvement --open-tasks`: one at a time, each tried, the first refusal's exit code.
+      const refused: string[] = []
+      let exitCode: number | undefined
+      for (const [key, problems] of stale) {
+        const sourceKey = `conventions:evidence:${key}`
+        try {
+          const lines = [`Version ${view.version}, checked against ${cwd}:`, ...problems.map((p) => `- ${p}`)]
+          const opened = await api.send<{ key: string; created: boolean }>('POST', '/findings', {
+            sourceKey,
+            title: `Conventions ${key}: evidence no longer holds`,
+            description: lines.join('\n'),
+            criteria: [EVIDENCE_CRITERION],
+          })
+          body.push(
+            opened.created ? fmt`opened ${opened.key} ${sourceKey}` : fmt`already open ${opened.key} ${sourceKey}`,
+          )
+        } catch (err) {
+          const { output, exitCode: code } = failureOutput(err)
+          refused.push(fmt`not opened ${sourceKey}: ${output.failures[0]}`)
+          exitCode ??= code
+        }
+      }
+      if (refused.length > 0) return { failures: [...refused, ...failures], body, next: again, exitCode }
+      return { failures, body, next: stale.size > 0 ? 'devrounds plan show' : 'devrounds conventions show' }
     },
   },
   {

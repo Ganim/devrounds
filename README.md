@@ -328,8 +328,8 @@ devrounds conventions reject <version> --reason <text>
 `propose` checks the file locally (a problem is DR101 with its line) and sends it as the next version, based on the
 active one, for the task that asked for it. The control plane checks it again and runs each pattern rule against its
 examples in a worker under a 1 s budget for the whole document: a pattern still running then is DR101 at its
-`check/forbid`. A second proposal while one is open is DR311; `--replace` withdraws the open one. `--cwd` names the
-worktree the evidence comes from.
+`check/forbid`. A second proposal while one is open is DR311; `--replace` withdraws the open one. `--cwd` is the
+worktree the evidence comes from (see Evidence below).
 
 `diff` lists what a version changes from the active one (or `--against <n>`), by key: removed and changed blocking
 rules first, then the other removed and changed items with the fields that differ, then the added ones and the
@@ -373,3 +373,30 @@ writes nothing and prints one `docs_drift <path> <reason>` line per target that 
 version (`missing_file`, `missing_block`, `malformed`, `different`), then exits 1. A hand edit, a render of a version
 that is not the active one, and a target without its block all drift; a CRLF checkout of an untouched render does not
 (compared after CRLF to LF). A marker counts only as a whole line, so quoting one inside a sentence, as here, is safe.
+
+### Evidence
+
+Every rule and fact carries 1-20 evidence entries `{path, excerpt, line?, role: source | example}`: an excerpt of a
+file in the repo (never private notes), up to 300 characters. `propose --cwd <repo>` reads each file once and
+refuses the first excerpt that is not in its file (CRLF read as LF) with DR101 at its entry and line, before anything
+is sent; a missing file is `no such file`. The excerpt is the anchor: a `line` that no longer holds it is not an
+error. `--head-sha` records the commit the evidence was read at (`git rev-parse HEAD`); DevRounds never reads the
+repo itself.
+
+```
+devrounds conventions verify --cwd <repo> [--open-tasks]
+```
+
+`verify` checks the active version against a worktree: failures first, one line per excerpt not found, missing file,
+and `job_type` rule whose `enforced_by` job type does not exist in the project; then each excerpt that moved off its
+`line`. `--open-tasks` opens one F- task per stale rule or fact (source key `conventions:evidence:<key>`, the
+problems as description, criterion `evidence restored or rule changed, with evidence`), so a rule still stale the
+next day opens nothing new. Stale evidence exits 0; a refused finding does not stop the others, and the command exits
+with the code of the first refusal. Run it daily on the default branch with
+`roadmap/fixtures/job-types/conventions-verify.yaml`, on a machine whose user variables hold `DEVROUNDS_URL`,
+`DEVROUNDS_TOKEN` (an agent token) and `DEVROUNDS_PROJECT`:
+
+```
+devrounds jobtype set roadmap/fixtures/job-types/conventions-verify.yaml
+devrounds schedule set conventions-verify --job-type conventions-verify --cwd <repo> --daily 06:30
+```

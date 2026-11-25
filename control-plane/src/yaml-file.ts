@@ -22,6 +22,13 @@ function failAt(path: string, reason: string, lineCounter: LineCounter, offset: 
   return fail('DR101', { path, reason: `${reason} (line ${line}, column ${col})`, line, column: col })
 }
 
+/** DR101 for an issue found after parseYamlFile (by a check it cannot run, e.g. one that reads files), at its position. */
+export function failYamlIssue(text: string, issue: Issue): never {
+  const lineCounter = new LineCounter()
+  const doc = parseDocument(text, { lineCounter, prettyErrors: false })
+  return failAt(issue.path, issue.reason, lineCounter, nodeAt(doc.contents, issue.path)?.range?.[0] ?? 0)
+}
+
 /** Parses a YAML file and checks it with `findIssue`; the first problem is DR101 with its JSON path and position. */
 export function parseYamlFile<T>(text: string, findIssue: (value: unknown) => Issue | null): T {
   const lineCounter = new LineCounter()
