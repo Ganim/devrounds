@@ -1,0 +1,44 @@
+# DevRounds's conventions check in its own gate (roadmap/fixtures/gates/devrounds.yaml, ref `conventions`, base `main`):
+# conventions-check.yaml with this repo's CLI path, under the key the devrounds gate names. The comments there say why
+# each flag and exit code is what it is; change both together. DEVROUNDS_URL, DEVROUNDS_TOKEN (an agent token) and
+# DEVROUNDS_PROJECT are user variables on the machine. The gate gives it no cache_key, so an approval reruns it.
+key: devrounds-conventions
+command:
+  program: sh
+  args:
+    - -c
+    - >-
+      [ -n "$1" ] || { echo 'devrounds-conventions: the base is its job arg' >&2; exit 2; };
+      diff=$(git diff --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ -U0 --end-of-options
+      "$1"...HEAD) || exit 2;
+      printf '%s\n' "$diff" | node control-plane/src/cli/main.ts conventions check --cwd . --diff -
+    - sh
+args_from_job: true
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    DEVROUNDS_URL,
+    DEVROUNDS_TOKEN,
+    DEVROUNDS_PROJECT,
+  ]
+timeout_s: 300
+# CLI exit codes (AGENTS.md):
+#   1 a blocking violation or docs drift: check_red
+#   2 no base, a base the diff cannot use, or input the CLI refuses: environment (the gate file's args)
+#   3 project or active version not found, 5 auth or permission: environment
+#   4 control plane unreachable, 6 internal: infra
+classify:
+  - class: check_red
+    exit_codes: [1]
+  - class: environment
+    exit_codes: [2, 3, 5]
+  - class: infra
+    exit_codes: [4, 6]

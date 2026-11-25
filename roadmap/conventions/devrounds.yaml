@@ -1,0 +1,437 @@
+# DevRounds's conventions record, version 1 seed (P3-T08). The control plane is the source once proposed: change a rule
+# with `devrounds conventions export`, edit, propose. Every "Never" and "Always" line of AGENTS.md is a rule here, and
+# renders back into AGENTS.md's generated block after approval. Evidence cites files outside that block (MANIFESTO.md,
+# code, tests, README), since the block is rewritten from this record.
+targets:
+  - path: AGENTS.md
+rules:
+  # Never
+  - key: engine.no-sync
+    section: Never
+    title: Never call synchronous child-process or `*Sync` fs functions in `control-plane/src` outside tests
+    why: >-
+      One blocked call stalls every tenant sharing the event loop. `no-sync.test.ts` checks every file; this rule points
+      at the added line.
+    paths: [control-plane/src/**/*.ts, control-plane/src/**/*.tsx]
+    exclude: ["**/*.test.ts"]
+    check: { kind: pattern, forbid: '\b\w+Sync\s*\(' }
+    severity: block
+    examples:
+      bad: ["const text = readFileSync(path, 'utf8')", "execFileSync('node', args)"]
+      good: ["const text = await readFile(path, 'utf8')", "await execFile('node', args)"]
+    evidence:
+      - {
+          path: MANIFESTO.md,
+          excerpt: "No synchronous child process or `*Sync` fs calls in request paths.",
+          role: source,
+        }
+      - {
+          path: control-plane/src/no-sync.test.ts,
+          excerpt: 'const SYNC_CALL = /\b(spawnSync|execSync|execFileSync|\w+Sync)\s*\(/',
+          role: source,
+        }
+  - key: tenancy.with-tenant
+    section: Never
+    title: >-
+      Never read or write tenant data outside `withTenant()`, except owner-side `devrounds-admin` commands, which read as
+      the owner
+    why: RLS reads `app.tenant_id`, which only `withTenant()` sets, for one transaction; outside it a query has no tenant.
+    check: { kind: judgment }
+    evidence:
+      - { path: MANIFESTO.md, excerpt: "There is no data access path without a tenant.", role: source }
+      - {
+          path: control-plane/src/tenancy/scope.ts,
+          excerpt: "The only door to tenant data: RLS policies read app.tenant_id",
+          role: example,
+        }
+  - key: tenancy.app-role
+    section: Never
+    title: Never connect the server as the owner role; it uses `devrounds_app` (NOSUPERUSER, NOBYPASSRLS)
+    why: The owner bypasses RLS. Migrations and admin commands use the owner URL.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: control-plane/src/tenancy/scope.test.ts,
+          excerpt: "test('the app role cannot bypass RLS'",
+          role: source,
+        }
+      - { path: control-plane/src/admin.ts, excerpt: "const APP_ROLE = 'devrounds_app'", role: example }
+  - key: tenancy.table-rls
+    section: Never
+    title: >-
+      Never create a table without `tenant_id uuid not null` (`tenants` uses `id`), RLS enabled and forced, and the
+      tenant policy
+    why: >-
+      The policy `tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid` in USING and WITH CHECK is what
+      isolates tenants; `isolate()` writes it and the catalog guard fails a table without it.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: control-plane/src/tenancy/scope.test.ts,
+          excerpt: "test('every public table has forced RLS and the tenant policy'",
+          role: source,
+        }
+      - {
+          path: control-plane/src/db/migrations/0001_core.ts,
+          excerpt: "export function isolate(table: string, column: string): string[] {",
+          role: example,
+        }
+  - key: tenancy.composite-fk
+    section: Never
+    title: Never reference another tenant table with a single-column FK
+    why: >-
+      Use `(tenant_id, x_id) -> (tenant_id, id)` and `unique (tenant_id, id)` on the parent, so a row can only point at a
+      row of its own tenant.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: MANIFESTO.md,
+          excerpt: "Isolation is enforced by the database (row level security, composite",
+          role: source,
+        }
+      - {
+          path: control-plane/src/db/migrations/0001_core.ts,
+          excerpt: "Every child FK is composite with tenant_id, so each parent also carries unique (tenant_id, id).",
+          role: example,
+        }
+  - key: tenancy.cross-tenant-not-found
+    section: Never
+    title: Never answer a cross-tenant access with a permission error; answer DR201 (not found)
+    why: A permission error tells the caller the row exists in another tenant; a cross-tenant lookup looks like a missing row.
+    check: { kind: judgment }
+    evidence:
+      - { path: MANIFESTO.md, excerpt: "A cross-tenant lookup looks exactly like a missing row.", role: source }
+      - { path: README.md, excerpt: "a key outside the token's tenant answers DR201.", role: example }
+  - key: errors.words-only
+    section: Never
+    title: Never put error text, hint or HTTP status outside `errors/words.ts`
+    why: One words layer documents every code in `docs/errors.md`; `errors.test.ts` fails a code without words.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: MANIFESTO.md,
+          excerpt: "Text, hint and HTTP status live in one words layer, and every code is",
+          role: source,
+        }
+      - {
+          path: control-plane/src/errors/errors.test.ts,
+          excerpt: "test('every code emitted in source has words'",
+          role: source,
+        }
+  - key: errors.never-renumber
+    section: Never
+    title: Never renumber a code
+    why: Agents and scripts depend on codes; a new meaning gets a new code.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: MANIFESTO.md,
+          excerpt: "Codes are never renumbered, so agents and scripts can depend on them",
+          role: source,
+        }
+      - {
+          path: control-plane/src/errors/codes.ts,
+          excerpt: "Codes are `DR` + 3 digits by range and never renumbered.",
+          role: source,
+        }
+  - key: engine.no-tool-names
+    section: Never
+    title: Never put a vendor, customer or tool name in engine code
+    why: Providers are adapters; the moment the core names one, a second customer needs a fork.
+    paths: [control-plane/src/**/*.ts, control-plane/src/**/*.tsx]
+    exclude: ["**/*.test.ts", control-plane/src/test-support/**]
+    check:
+      kind: pattern
+      forbid: '\b(?:[Cc]lickmax|CLICKMAX|devlanes|pnpm|cargo|Linear|Claude|Slack|WhatsApp|GitHub)\b|(?<![.\w])git\b'
+    examples:
+      bad: ["// devlanes default memory need", "const program = 'git'", "// the Linear issue id"]
+      good: ["// default memory need", "if (entry.name === '.git') return []", "// a linear scan"]
+    evidence:
+      - {
+          path: MANIFESTO.md,
+          excerpt: "Clickmax, pnpm, Linear, Claude and Slack are providers or job types.",
+          role: source,
+        }
+      - { path: MANIFESTO.md, excerpt: "a provider adapts one external system to", role: source }
+  - key: tests.no-rerun-flaky
+    section: Never
+    title: Never rerun a flaky test; fix it
+    why: A rerun hides a race or a leak that fails again later; open a finding for it.
+    check: { kind: judgment }
+    evidence:
+      - { path: MANIFESTO.md, excerpt: "A flaky test is fixed, never rerun", role: source }
+  - key: lint.no-inline-suppression
+    section: Never
+    title: Never suppress a lint rule inline
+    why: >-
+      A false positive is fixed in the code or the rule. `no-suppressions.test.ts` fails an inline biome suppression and
+      `executor-guards.test.ts` a Rust allow outside the FFI modules.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: control-plane/src/no-suppressions.test.ts,
+          excerpt: "test('no inline lint suppressions anywhere in the repo'",
+          role: source,
+        }
+      - {
+          path: control-plane/src/executor-guards.test.ts,
+          excerpt: "test('rust code allows lints only in the accepted list'",
+          role: source,
+        }
+  - key: executor.spawn-only
+    section: Never
+    title: Never start a process in the executor outside `devrounds_sys_windows::spawn`
+    why: It is the one place that starts processes, hidden and inside a job; `executor-guards.test.ts` fails any other.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: control-plane/src/executor-guards.test.ts,
+          excerpt: "test('executor starts processes only through sys-windows spawn'",
+          role: source,
+        }
+      - {
+          path: executor/crates/sys-windows/src/spawn.rs,
+          excerpt: "pub fn spawn(spec: &Spawn<'_>) -> io::Result<Child> {",
+          role: example,
+        }
+  - key: tests.location
+    section: Never
+    title: Never add a `*.test.ts` file outside `control-plane/src`, `web/src` and `scripts`
+    why: "`pnpm test` runs only the tests under those three directories, so a test elsewhere never runs."
+    exclude: [control-plane/src/**, web/src/**, scripts/**]
+    check: { kind: path, forbid_new: "**/*.test.ts" }
+    evidence:
+      - {
+          path: package.json,
+          excerpt: '"test": "node --test \"control-plane/src/**/*.test.ts\" \"web/src/**/*.test.ts\" \"scripts/**/*.test.ts\""',
+          role: source,
+        }
+  # Always
+  - key: errors.devrounds-error
+    section: Always
+    title: Throw `DevRoundsError{code, data}`
+    why: >-
+      Codes are `DR` plus 3 digits: 1xx input, 2xx not found, 3xx state conflict, 4xx auth/permission, 5xx internal.
+      `errors.test.ts` checks that every emitted code has words.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - { path: MANIFESTO.md, excerpt: "An error is a `DevRoundsError{code, data}`.", role: source }
+      - {
+          path: control-plane/src/errors/codes.ts,
+          excerpt: "Codes are `DR` + 3 digits by range and never renumbered.",
+          role: source,
+        }
+  - key: cli.exit-codes
+    section: Always
+    title: >-
+      CLI exit codes: 0 ok, 1 state conflict, 2 input/usage, 3 not found, 4 control plane unreachable, 5 auth/permission,
+      6 internal
+    why: Scripts and job types classify by exit code; `errors.test.ts` checks the range table.
+    check: { kind: job_type, enforced_by: devrounds-test }
+    severity: block
+    evidence:
+      - {
+          path: control-plane/src/errors/codes.ts,
+          excerpt: "const EXIT_BY_RANGE: Record<string, number> = { '1': 2, '2': 3, '3': 1, '4': 5, '5': 6 }",
+          role: source,
+        }
+      - {
+          path: control-plane/src/errors/errors.test.ts,
+          excerpt: "test('exit code follows the range table'",
+          role: source,
+        }
+  - key: cli.agent-output
+    section: Always
+    title: >-
+      Agent output mode: failures first; body cut at 16384 bytes on a whole line, then `truncated; more: <exact command
+      with --cursor N>`; last line `next: <command>`
+    why: An agent reads the first lines and runs the last, so what failed comes first and every cut output says how to go on.
+    check: { kind: judgment }
+    evidence:
+      - { path: control-plane/src/cli/output.ts, excerpt: "export const BODY_BUDGET = 16384", role: example }
+      - {
+          path: control-plane/src/cli/output.ts,
+          excerpt: "lines.push(`truncated; more: ${oneLine(opts.moreCommand(end))}`)",
+          role: example,
+        }
+  - key: keys.format
+    section: Always
+    title: >-
+      Keys: project `devrounds`; phases `P0`..`P7`; tasks `P<phase>-T<two digits>`, unique per project; finding tasks
+      (unphased, `task open-finding`) `F-<4 digits>`
+    why: Agents, commits and evidence name tasks by key, so a key reads the same everywhere.
+    check: { kind: judgment }
+    evidence:
+      - { path: control-plane/src/planning/findings.ts, excerpt: 'const FINDING_KEY = /^F-\d{4}$/', role: example }
+      - { path: roadmap/seed-2026-11-16.yaml, excerpt: "key: P0-T01", role: example }
+  - key: api.idempotency
+    section: Always
+    title: Accept `Idempotency-Key` on mutating API routes
+    why: The same key and tenant within 24 h returns the stored response, so a retried request never applies twice.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: control-plane/src/api/idempotency.ts,
+          excerpt: "export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000",
+          role: example,
+        }
+      - {
+          path: control-plane/src/api/convention-routes.ts,
+          excerpt: "const Headers = Type.Object({ 'idempotency-key': Type.Optional(Key) })",
+          role: example,
+        }
+  - key: executor.pairing
+    section: Always
+    title: >-
+      Pair an executor with `devrounds machine pair-code --name <machine>` (human members only), then run the printed
+      `devrounds-executor pair` on that machine
+    why: Only a human admits a machine to the tenant. Machine tokens and pairing codes are stored only as SHA-256.
+    check: { kind: judgment }
+    evidence:
+      - { path: README.md, excerpt: "devrounds machine pair-code --name <machine>", role: source }
+      - {
+          path: control-plane/src/machines/pairing.ts,
+          excerpt: "if (ctx.actor.kind !== 'human') fail('DR453', { action })",
+          role: example,
+        }
+      - { path: control-plane/src/machines/pairing.ts, excerpt: "code_hash: sha256(code),", role: example }
+  - key: executor.service
+    section: Always
+    title: Run the executor as the `DevRoundsExecutor` scheduled task (`devrounds-executor service install`, after pairing)
+    why: >-
+      It starts hidden at logon, so runs never depend on an open shell. Check the idle budgets with `pnpm footprint` and
+      the executor end to end through the scheduler with `pnpm e2e`.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: executor/crates/executor/src/service.rs,
+          excerpt: 'pub const TASK_NAME: &str = "DevRoundsExecutor";',
+          role: example,
+        }
+      - { path: package.json, excerpt: '"footprint": "node scripts/footprint.ts",', role: example }
+      - { path: package.json, excerpt: '"e2e": "node scripts/e2e/executor.e2e.ts",', role: example }
+  - key: runs.run-start
+    section: Always
+    title: >-
+      Run a job with `devrounds run start <jobType> --cwd <path> [--machine <name>]`, then read its outcome with
+      `devrounds run show <id> --wait`
+    why: >-
+      The run is queued and the scheduler offers it to a machine with room (`--machine` pins it); `run show` prints
+      failures first: state, class, summary. List runs newest first with `devrounds run list [--state <s>] [--job-type
+      <k>]` (failed, stopped and orphaned first; a cut output prints the `--cursor` that continues it).
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: README.md,
+          excerpt: "`devrounds run start <jobType> --cwd <path>` queues a run (`--machine <name>` pins it",
+          role: source,
+        }
+  - key: runs.batches-schedules-queues
+    section: Always
+    title: >-
+      Queue several dependent jobs with `devrounds batch submit <file.yaml>`, recurring ones with `devrounds schedule set
+      <key> --job-type <jt> --cwd <path> --every <s>`
+    why: >-
+      `depends_on` is by ref, and a failed or stopped job skips its dependents; `--daily HH:MM` instead of `--every`.
+      Shape queues with `devrounds queue set <key>`. Automatic retries come from the job type's `retry` (`max_attempts`,
+      `backoff_s`, `on`). Read trends with `devrounds indicators`.
+    check: { kind: judgment }
+    evidence:
+      - { path: README.md, excerpt: "devrounds batch submit <file.yaml>", role: source }
+      - {
+          path: README.md,
+          excerpt: "devrounds schedule set <key> --job-type <jt> --cwd <path> (--every <seconds> | --daily HH:MM)",
+          role: source,
+        }
+      - { path: README.md, excerpt: "devrounds queue set <key> [--priority <n>]", role: source }
+  - key: gates.gate-run
+    section: Always
+    title: >-
+      Run a repo gate (its checks for one worktree, from a YAML file) with `devrounds gate run <file> --cwd <path>
+      --wait`
+    why: >-
+      Failures come first, each with its `devrounds run logs` command. Read one later with `devrounds gate show <id>`.
+    check: { kind: judgment }
+    evidence:
+      - { path: README.md, excerpt: "devrounds gate run <file.yaml> --cwd <path> [--machine <name>]", role: source }
+      - {
+          path: roadmap/fixtures/gates/devrounds.yaml,
+          excerpt: "devrounds gate run roadmap/fixtures/gates/devrounds.yaml --cwd <repo> --wait",
+          role: example,
+        }
+  - key: findings.open-finding
+    section: Always
+    title: Record a finding with `devrounds task open-finding --source-key <key> --title <text>`
+    why: >-
+      While a task of that key is open it answers that task instead of a new one, so a tool that finds the same thing
+      twice opens one task.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: control-plane/src/planning/findings.ts,
+          excerpt: "A finding task is an unphased task keyed `F-` plus 4 digits",
+          role: source,
+        }
+      - {
+          path: README.md,
+          excerpt: "Finding tasks track something a tool found (a lint rule, a flaky test, a failing check).",
+          role: source,
+        }
+  - key: planning.timezone
+    section: Always
+    title: Balance uses the tenant `timezone` (default `America/Sao_Paulo`), weeks start Monday, calendar days
+    why: A day is the team's local day, not UTC, so the balance and the indicators match what people saw.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: control-plane/src/db/migrations/0001_core.ts,
+          excerpt: "timezone text not null default 'America/Sao_Paulo'",
+          role: example,
+        }
+      - {
+          path: control-plane/src/planning/balance.ts,
+          excerpt: "const sinceMonday = (new Date(midnight).getUTCDay() + 6) % 7",
+          role: example,
+        }
+  - key: docs.english
+    section: Always
+    title: Write identifiers, errors, docs and commit messages in English
+    why: One language for every reader, human or agent, and for searching the code.
+    check: { kind: judgment }
+    evidence:
+      - { path: control-plane/src/errors/words.ts, excerpt: "text: 'No {kind} {key} found.',", role: example }
+  - key: ops.ports
+    section: Always
+    title: Control plane listens on `127.0.0.1:4992`; Postgres is `devrounds-postgres` on host port 15433
+    why: Fixed local ports, so the CLI, the executor and the tests find them without configuration.
+    check: { kind: judgment }
+    evidence:
+      - { path: control-plane/src/config.ts, excerpt: "const DEFAULT_PORT = 4992", role: example }
+      - { path: docker-compose.yml, excerpt: "container_name: devrounds-postgres", role: example }
+      - { path: docker-compose.yml, excerpt: '"127.0.0.1:15433:5432"', role: example }
+  - key: errors.x5x-block
+    section: Always
+    title: >-
+      Use the `x5x` block of each range for executor, protocol and run errors: DR150, DR151, DR152, DR153, DR350, DR351,
+      DR352, DR450, DR451, DR452, DR453, DR550, DR551, DR552, DR553
+    why: >-
+      The executor emits `DrError::new("DR###", data)` and prints `DR### <data json>` plus `see docs/errors.md`; text and
+      hints stay in `errors/words.ts`.
+    check: { kind: judgment }
+    evidence:
+      - {
+          path: control-plane/src/errors/errors.test.ts,
+          excerpt: 'const RUST_EMIT = /DrError::new\(\s*"(DR\d{3})"/g',
+          role: source,
+        }
+      - {
+          path: executor/bins/devrounds-executor/src/main.rs,
+          excerpt: 'eprintln!("{error}\nsee docs/errors.md");',
+          role: example,
+        }
