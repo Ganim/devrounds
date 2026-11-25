@@ -64,7 +64,7 @@ No {kind} {key} found.
 
 ### Fix
 
-Check the {kind} key with `devrounds plan show`; keys are case-sensitive.
+Check the {kind} key with the `devrounds` command that lists it (`plan show` for tasks); keys are case-sensitive. A project has no active conventions until a proposal is approved (`devrounds conventions propose`).
 
 ## DR202
 
