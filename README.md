@@ -400,3 +400,18 @@ with the code of the first refusal. Run it daily on the default branch with
 devrounds jobtype set roadmap/fixtures/job-types/conventions-verify.yaml
 devrounds schedule set conventions-verify --job-type conventions-verify --cwd <repo> --daily 06:30
 ```
+
+### Extraction
+
+A project's first version (and any later rewrite) is written by an agent following
+[docs/conventions/extract.md](docs/conventions/extract.md): candidates, layout and sample code in, a conventions file
+with evidence from the repo out, proposed with its task key. It starts from
+
+```
+devrounds conventions candidates --cwd <repo> [--glob <g>]...
+```
+
+which reads only the worktree and prints `path:line text` for each imperative line (`Never`, `Always`, `MUST`,
+`NEVER`, `Do not`, and bullets under headings named like those) of the markdown files the globs match (default
+`**/AGENTS.md`, `**/CLAUDE.md`, `README.md`; `--glob` replaces them), sorted by path and line. Fenced code is
+skipped, and so are `node_modules`, `.git`, `dist`, `target` and `.superpowers`.

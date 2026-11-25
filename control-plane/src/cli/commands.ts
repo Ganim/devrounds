@@ -6,6 +6,7 @@ import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
+import { DEFAULT_CANDIDATE_GLOBS, findCandidates } from '../conventions/candidates.ts'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
 import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
 import { type ConventionsDef, ConventionsFile, findConventionsIssue, withDefaults } from '../conventions/file.ts'
@@ -1603,6 +1604,28 @@ export const COMMANDS: Spec[] = [
       }
       if (refused.length > 0) return { failures: [...refused, ...failures], body, next: again, exitCode }
       return { failures, body, next: stale.size > 0 ? 'devrounds plan show' : 'devrounds conventions show' }
+    },
+  },
+  {
+    path: ['conventions', 'candidates'],
+    usage:
+      'conventions candidates --cwd <repo> [--glob <g>]... [--cursor <n>]   imperative lines of the markdown files ' +
+      `matched by the globs (default ${DEFAULT_CANDIDATE_GLOBS.join(', ')}), as path:line text; reads only the worktree`,
+    args: 0,
+    pages: true,
+    options: { cwd: str, glob: many },
+    run: async (inv) => {
+      const cwd = await repoDir(inv)
+      const found = await findCandidates(cwd, list(inv, 'glob'))
+      const files = new Set(found.map((c) => c.path)).size
+      return {
+        failures: [],
+        body: [
+          fmt`${found.length} candidates in ${files} files (extraction: docs/conventions/extract.md)`,
+          ...found.map((c) => fmt`${c.path}:${c.line} ${c.text}`),
+        ],
+        next: `devrounds conventions propose <file.yaml> --cwd ${shellArg(cwd)} --task <key>`,
+      }
     },
   },
   {
