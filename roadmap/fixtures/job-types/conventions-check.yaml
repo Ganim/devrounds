@@ -3,8 +3,9 @@
 # generated blocks compared to its render. Uncommitted changes are not read; the gate's `dirty` flag says when there
 # were some. A repo whose DevRounds CLI lives elsewhere writes its own job type. Without a base, or when the diff
 # fails, it exits 2 before the check: an empty diff would pass. DEVROUNDS_URL, DEVROUNDS_TOKEN (an agent token) and
-# DEVROUNDS_PROJECT are user variables on the machine. No cache_key unless it includes the active documentSha
-# (`devrounds conventions show --json`), so an approval reruns it. The diff flags override what the user's global git
+# DEVROUNDS_PROJECT are user variables on the machine. No cache_key unless it names the change (head and base
+# commits, or the tree) and the active documentSha (`devrounds conventions show --json`): the cache matches on the key
+# alone, so a key without either passes a change that was never checked (README "The check"). The diff flags override what the user's global git
 # config may set (an external diff driver, textconv, no prefixes), which would hand the check something else than the
 # files' own unified diff; --end-of-options keeps a base starting with `-` from being read as an option.
 key: conventions-check
