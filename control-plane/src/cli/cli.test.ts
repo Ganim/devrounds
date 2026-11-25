@@ -1204,6 +1204,20 @@ test('conventions check inside a run whose result is refused exits 6, never a pa
   assert.match(res.stdout, /\nchecked 2 files against version 1: 1 blocking, 2 warnings\n/)
 })
 
+test('conventions check refuses text that is not a unified diff instead of passing on zero files', async (t) => {
+  const repo = await scratch('check-text-')
+  t.after(() => removeDir(repo))
+  const notDiff = join(repo, 'external.txt')
+  // What `git diff` prints through an external driver such as `diff.external=echo`.
+  await writeFile(notDiff, 'src/a.ts /dev/null . . C:\\Temp\\git-blob-1 0123456 100644\n')
+  const res = await runCli(['conventions', 'check', '--cwd', repo, '--diff', notDiff], {
+    env: { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: 'unused', DEVROUNDS_PROJECT: 'alpha' },
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 2, res.stdout + res.stderr)
+  assert.match(res.stderr, /^DR101 .*--diff.*is not a unified diff/)
+})
+
 test('conventions check with no active version exits 3', async () => {
   const { envFor } = await conventionsTenant()
   const res = await runCli(['conventions', 'check', '--cwd', '.', '--diff', CHECK_DIFF], {

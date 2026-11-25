@@ -394,11 +394,11 @@ devrounds conventions verify --cwd <repo> [--open-tasks]
 ```
 
 `verify` checks the active version against a worktree: failures first, one line per excerpt not found, missing file,
-and `job_type` rule whose `enforced_by` job type does not exist in the project; then each excerpt that moved off its
-`line`. `--open-tasks` opens one F- task per stale rule or fact (source key `conventions:evidence:<key>`, the
-problems as description, criterion `evidence restored or rule changed, with evidence`), so a rule still stale the
-next day opens nothing new. Stale evidence exits 0; a refused finding does not stop the others, and the command exits
-with the code of the first refusal. Run it daily on the default branch with
+and `job_type` rule whose `enforced_by` job type does not exist in the project; then up to 20 excerpts that moved off
+their `line`. Stale evidence exits 1, so it can stop a gate or a proposal. `--open-tasks` opens one F- task per stale
+rule or fact instead (source key `conventions:evidence:<key>`, the problems as description, criterion `evidence
+restored or rule changed, with evidence`), so a rule still stale the next day opens nothing new, and exits 0; a
+refused finding does not stop the others, and the command exits with the code of the first refusal. Run it daily on the default branch with
 `roadmap/fixtures/job-types/conventions-verify.yaml`, on a machine whose user variables hold `DEVROUNDS_URL`,
 `DEVROUNDS_TOKEN` (an agent token) and `DEVROUNDS_PROJECT`:
 
@@ -433,7 +433,14 @@ fails it. A `pattern` rule fires on each added line of a file its `paths` cover 
 `forbid` and not `unless`; deleted and binary files are skipped. A `path` rule fires on each new file (or a rename from
 outside into it) that matches `forbid_new` and the rule's `paths`/`exclude`. `job_type` and `judgment` rules are not
 run here. The target files under `--cwd` are compared with the active version's render, each drifted one a blocking
-`docs_drift` violation (see Generated blocks).
+`docs_drift` violation (see Generated blocks). Input with text but no file header (an external diff driver's output,
+another format) is DR101 rather than an empty change that passes.
+
+Globs in `paths`, `exclude` and `forbid_new` take `*` and `?` within a segment, `**` as a whole segment, `[...]`
+(`[!...]` negated) and `{a,b}`; they match the same on every OS: case-sensitive, and `*`/`**` enter dot directories
+(`**/*.ts` covers `.github/x.ts`; exclude `.github/**` to skip it). A rename counts as a new path only when it comes
+from outside the rule's glob. Git pairs a deleted and an added file as a rename from 50 % similarity, so a new file
+that replaces a deleted refused one (a new test outside `test/` in place of a removed legacy one) can pass the rule.
 
 Output: blocking violations first (`<path>:<line> <rule> <title>` with the trimmed line under it, up to 200
 characters; `<path> <rule> <title>` for a new path; `<path> docs_drift <reason>`), then warnings, then

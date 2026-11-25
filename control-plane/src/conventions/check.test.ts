@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { checkChange } from './check.ts'
 import { type RuleFile, withDefaults } from './file.ts'
+import { matchesGlob } from './select.ts'
 import type { DiffFile } from './unified-diff.ts'
 
 const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
@@ -108,6 +109,36 @@ test('warn violations do not count as blocking', () => {
     violations.map((v) => v.severity),
     ['warn'],
   )
+})
+
+test('globs enter dot directories and match case-sensitively on every OS', () => {
+  const anyTs = rule('repo.no-todo', {
+    paths: ['**/*.ts'],
+    check: { kind: 'pattern', forbid: 'TODO' },
+    severity: 'block',
+    examples: { bad: ['TODO'] },
+  })
+  const files = [
+    file('.github/scripts/x.ts', ['TODO']),
+    file('src/.hidden/y.ts', ['TODO']),
+    file('src/A.TS', ['TODO']),
+    file('.agents/a.test.ts', [], { status: 'added' }),
+  ]
+  assert.deepEqual(
+    checkChange(defOf(anyTs, testsInTestDir), files).map((v) => `${v.rule} ${v.path}`),
+    ['repo.no-todo .github/scripts/x.ts', 'repo.no-todo src/.hidden/y.ts', 'tests.in-test-dir .agents/a.test.ts'],
+  )
+  const cases: [string, string, boolean][] = [
+    ['src/a.ts', 'src/**', true],
+    ['src/a/b.ts', 'src/*.ts', false],
+    ['web/a.tsx', '{web,api}/*.{ts,tsx}', true],
+    ['lib/a.ts', '{web,api}/*.{ts,tsx}', false],
+    ['a1.ts', 'a[0-9].ts', true],
+    ['ab.ts', 'a[!b].ts', false],
+    ['a+b(1).ts', 'a+b(1).ts', true],
+    ['a.ts', 'a?ts', true],
+  ]
+  for (const [path, glob, want] of cases) assert.equal(matchesGlob(path, glob), want, `${path} ${glob}`)
 })
 
 test('job_type and judgment rules are not evaluated', () => {

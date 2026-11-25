@@ -235,8 +235,8 @@ export function findConventionsShapeIssue(value: unknown): Issue | null {
   return null
 }
 
-// A `{1..2000000}` range expands in the matcher (posix.matchesGlob took 43 s on one), and the checker and `show
-// --paths` run globs in the agent's process; a few literal alternatives cover real rules.
+// The rule matcher (select.ts matchesGlob) has no `{n..m}` ranges, and node's matcher, which others may run on the
+// same globs, expands them (43 s on `{1..2000000}`); a few literal alternatives cover real rules.
 function globIssue(glob: string): string | null {
   if (/\{[^}]*\.\.[^}]*\}/.test(glob)) return 'no {n..m} ranges'
   if ((glob.match(/\{/g)?.length ?? 0) > 4) return 'at most 4 brace groups'

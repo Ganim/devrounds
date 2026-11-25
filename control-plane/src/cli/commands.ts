@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { type ParseArgsOptionsConfig, parseArgs } from 'node:util'
 import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
@@ -361,10 +361,14 @@ async function repoDir(inv: Invocation, absolute = false): Promise<string> {
     () => false,
   )
   if (!isDir) fail('DR101', { path: '--cwd', reason: `${cwd} is not a directory` })
-  return cwd
+  // Resolved, so what it prints (a finding's description, the next command) names the worktree and not `.`.
+  return resolve(cwd)
 }
 
 const IMPORT_SAMPLE = 20
+
+// `moved` lines `conventions verify` prints at most.
+const MOVED_SHOWN = 20
 
 // A run as JSON: its dates arrive as ISO strings.
 type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
@@ -1593,13 +1597,23 @@ export const COMMANDS: Spec[] = [
         }
       }
       const failures = [...stale.values()].flat()
+      // verify does not page (--open-tasks mutates), so the informational moved lines are capped to keep the body
+      // bounded: one inserted line at the top of a cited file moves every recorded line.
       const body = [
-        ...moved.map((m) => fmt`moved ${m.key} ${m.file}:${m.line} now at line ${m.now}`),
+        ...moved.slice(0, MOVED_SHOWN).map((m) => fmt`moved ${m.key} ${m.file}:${m.line} now at line ${m.now}`),
+        ...(moved.length > MOVED_SHOWN ? [`${moved.length - MOVED_SHOWN} more moved excerpts not shown`] : []),
         fmt`verified version ${view.version} against ${cwd}: ${stale.size} stale of ${def.rules.length + def.facts.length} items`,
       ]
       const again = `devrounds conventions verify --cwd ${shellArg(cwd)} --open-tasks`
       if (inv.values['open-tasks'] !== true) {
-        return { failures, body, next: stale.size > 0 ? again : 'devrounds conventions show' }
+        // Exit 1 on stale evidence, so a gate or a caller about to propose can stop on it; --open-tasks hands it over
+        // as findings instead and exits 0.
+        return {
+          failures,
+          body,
+          next: stale.size > 0 ? again : 'devrounds conventions show',
+          exitCode: stale.size > 0 ? 1 : 0,
+        }
       }
       // As `report improvement --open-tasks`: one at a time, each tried, the first refusal's exit code.
       const refused: string[] = []
@@ -1743,9 +1757,14 @@ export const COMMANDS: Spec[] = [
           : await readFile(source, 'utf8').catch((err: NodeJS.ErrnoException) =>
               fail('DR101', { path: source, reason: `cannot be read (${err.code ?? err.message})` }),
             )
+      const parsed = parseUnifiedDiff(diff)
+      // Text that is no diff (an external diff driver's output, another format) would read as an empty change and pass.
+      if (parsed.length === 0 && diff.trim() !== '') {
+        fail('DR101', { path: '--diff', reason: 'is not a unified diff (no file header found)' })
+      }
+      const files = parsed.filter((file) => file.status !== 'deleted')
       const api = await connect()
       const { view, def, files: targets } = await conventionsWorktree(api, cwd)
-      const files = parseUnifiedDiff(diff).filter((file) => file.status !== 'deleted')
       const violations = [...driftViolations(driftOf(def, view.version, targets)), ...checkChange(def, files)]
       // filesChecked is the count the output prints: the diff's files that are not deleted.
       const shown = conventionsCheckShow(view.version, def, files.length, violations, cwd)

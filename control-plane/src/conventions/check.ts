@@ -1,7 +1,6 @@
-import { posix } from 'node:path'
 import type { ConventionRule, ConventionsDef } from './file.ts'
 import type { Drift } from './render.ts'
-import { ruleCovers } from './select.ts'
+import { matchesGlob, ruleCovers } from './select.ts'
 import type { DiffFile } from './unified-diff.ts'
 
 /** One hit of a rule on a change: the added line (pattern) or the new path (path, `line` null). */
@@ -19,7 +18,7 @@ const excerptOf = (text: string) => [...text.trim()].slice(0, EXCERPT_CHARS).joi
 
 // A new path the rule refuses: matched by forbid_new and covered by the rule's paths/exclude.
 function refused(rule: ConventionRule, glob: string, path: string): boolean {
-  return posix.matchesGlob(path, glob) && ruleCovers(rule, path)
+  return matchesGlob(path, glob) && ruleCovers(rule, path)
 }
 
 /**
