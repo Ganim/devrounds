@@ -1,0 +1,8 @@
+# The conventions case of pnpm e2e: the check of one diff fixture (its arg) against the active version, with the
+# directory's AGENTS.md compared to its render. pnpm e2e submits copies with each diff's absolute path and, for the
+# green ones, a cache key that holds the active documentSha (README "The check").
+key: conventions-e2e
+checks:
+  - ref: conventions
+    job_type: conventions-e2e
+    args: [green.diff]

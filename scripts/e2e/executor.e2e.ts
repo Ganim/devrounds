@@ -15,7 +15,11 @@
 //   gate       roadmap/fixtures/gates/e2e.yaml three times in one directory: a second gate refused with DR308 while the
 //              first runs; a waiting one (--wait-lock) created after the first ended; a third with the first's cache
 //              keys passes at submit, every check cachedFrom the first's runs; the mark in a log; gate indicators
-//   re-pair    the machine revoked, the same home paired again as a new machine: synthetic finishes on it
+//   conventions roadmap/fixtures/conventions/e2e.yaml proposed and approved in this tenant, rendered into a directory
+//              of its own, then gates of roadmap/fixtures/gates/conventions-e2e.yaml: red.diff fails check_red with
+//              its convention_checks row; a hand edit of the block fails with docs_drift; green.diff passes, and
+//              again from the cache; after version 2 is approved the green check runs again, against version 2
+//   re-pair   the machine revoked, the same home paired again as a new machine: synthetic finishes on it
 // then measures both sides with scripts/footprint.ts after 60 s idle, plus `serve` alone against an early warning,
 // and checks that `run` exits once its supervisor is gone. Nothing is installed; everything it started, and nothing
 // else, is stopped at the end, so it can run beside an installed executor service.
@@ -32,6 +36,7 @@ import { runCli } from '../../control-plane/src/cli/commands.ts'
 import { createDb } from '../../control-plane/src/db/connection.ts'
 import { migrateToLatest } from '../../control-plane/src/db/migrate.ts'
 import { parseGateFile } from '../../control-plane/src/gates/file.ts'
+import { parseJobTypeFile } from '../../control-plane/src/job-types/file.ts'
 import { parseBatchFile } from '../../control-plane/src/jobs/batch-file.ts'
 import {
   TEST_ADMIN_URL,
@@ -52,6 +57,8 @@ const FIXTURE = join(RELEASE, 'tree-fixture.exe')
 const JOB_TYPES = join(ROOT, 'roadmap', 'fixtures', 'job-types')
 const DAG_BATCH = join(ROOT, 'roadmap', 'fixtures', 'batches', 'dag.yaml')
 const GATE_FILE = join(ROOT, 'roadmap', 'fixtures', 'gates', 'e2e.yaml')
+const CONVENTIONS = join(ROOT, 'roadmap', 'fixtures', 'conventions')
+const CONVENTIONS_GATE = join(ROOT, 'roadmap', 'fixtures', 'gates', 'conventions-e2e.yaml')
 const PORT = 4993
 const BASE = `http://127.0.0.1:${PORT}`
 const PROJECT = 'devrounds'
@@ -260,7 +267,9 @@ async function main(): Promise<void> {
     const machine = `e2e-${randomBytes(4).toString('hex')}`
     const pairing = await cli('machine', 'pair-code', '--name', machine)
     const code = /pairing code for machine \S+: (\S+)/.exec(pairing)?.[1] ?? assert.fail(pairing)
-    const executorEnv = { ...pathEnv(bin), DEVROUNDS_EXECUTOR_HOME: home }
+    // The conventions job calls the CLI with these from the machine env: this tenant's, never the user variables of
+    // a live control plane.
+    const executorEnv = { ...pathEnv(bin), ...cliEnv, DEVROUNDS_EXECUTOR_HOME: home }
     log(`pairing ${machine}; executor home ${home}`)
     await run(EXE, ['pair', '--url', BASE, '--code', code], { env: executorEnv, windowsHide: true })
 
@@ -539,6 +548,101 @@ async function main(): Promise<void> {
     const gateCheckRuns = runRows.filter((r) => r.jobType === 'gate-check').reduce((sum, r) => sum + r.runs, 0)
     assert.equal(gateCheckRuns, 4, `cached runs are counted: ${JSON.stringify(runRows)}`)
     log(`gate: DR308 named ${first.id}; gate 2 waited and passed; gate 3 hit gate 1's runs; indicators 3 passed`)
+
+    // conventions: everything through this tenant's CLI and executor env (cliEnv), so a live tenant is never touched.
+    log('conventions: version 1 approved and rendered; red, drift and green gates; version 2 reruns the cached green')
+    const convDir = join(tmp, 'conventions')
+    await mkdir(convDir)
+    const agentsMd = join(convDir, 'AGENTS.md')
+    // The hand-written part, which the e2e.yaml rule cites as its evidence.
+    await writeFile(agentsMd, '# E2E\n\nCode under `src/` never calls eval.\n')
+    const convJobType = parseJobTypeFile(await readFile(join(JOB_TYPES, 'conventions-e2e.yaml'), 'utf8'))
+    convJobType.command.args[0] = join(ROOT, 'control-plane', 'src', 'cli', 'main.ts')
+    const convJobTypeFile = join(tmp, 'conventions-e2e-job-type.yaml')
+    await writeFile(convJobTypeFile, JSON.stringify(convJobType))
+    await cli('jobtype', 'set', convJobTypeFile)
+    const finding = await cli('task', 'open-finding', '--source-key', 'e2e:conventions', '--title', 'E2E conventions')
+    const taskKey = /opened (F-\d{4})/.exec(finding)?.[1] ?? assert.fail(finding)
+    const approve = async (file: string, version: number) => {
+      const proposed = await cli('conventions', 'propose', file, '--cwd', convDir, '--task', taskKey)
+      assert.match(proposed, new RegExp(`proposed conventions version ${version} `), proposed)
+      await cli('conventions', 'approve', String(version), '--reason', 'e2e')
+      await cli('conventions', 'render', '--cwd', convDir)
+      const shown = JSON.parse(await cli('conventions', 'show', '--json')) as { version: number; documentSha: string }
+      assert.equal(shown.version, version, JSON.stringify(shown))
+      return shown.documentSha
+    }
+    const v1Sha = await approve(join(CONVENTIONS, 'e2e.yaml'), 1)
+    // A copy of the fixture gate per diff; the green ones carry the cache key README asks for (the documentSha).
+    const convGate = async (name: string, diff: string, cacheKey?: string): Promise<GateJson> => {
+      const file = parseGateFile(await readFile(CONVENTIONS_GATE, 'utf8'))
+      for (const check of file.checks) {
+        check.args = [join(CONVENTIONS, diff)]
+        if (cacheKey) check.cache_key = cacheKey
+      }
+      const path = join(tmp, `conventions-gate-${name}.yaml`)
+      await writeFile(path, JSON.stringify(file))
+      const r = await runCli(['gate', 'run', path, '--cwd', convDir, '--wait', '--json'], {
+        env: cliEnv,
+        configPath: join(tmp, 'cli.json'),
+      })
+      try {
+        return JSON.parse(r.stdout) as GateJson
+      } catch {
+        return assert.fail(`gate run ${name} exited ${r.exitCode}\n${r.stdout}${r.stderr}`)
+      }
+    }
+    type CheckRow = { version: number; blocking: number; violations: unknown }
+    const checkRow = (runId: string): Promise<CheckRow | undefined> =>
+      admin
+        .selectFrom('convention_checks as c')
+        .innerJoin('convention_sets as s', 's.id', 'c.set_id')
+        .select(['s.version', 'c.blocking', 'c.violations'])
+        .where('c.run_id', '=', runId)
+        .executeTakeFirst()
+    const onlyCheck = (gate: GateJson) => gate.checks[0] ?? assert.fail(JSON.stringify(gate))
+    const redCheck = async (gate: GateJson, rule: string) => {
+      assert.equal(gate.state, 'failed', JSON.stringify(gate))
+      const ran = await view(onlyCheck(gate).runId)
+      assert.equal(ran.outcome.failureClass, 'check_red', JSON.stringify(ran))
+      const row =
+        (await checkRow(ran.id)) ??
+        assert.fail(`no convention_checks row for run ${ran.id}:\n${await cli('run', 'logs', ran.id)}`)
+      assert.equal(row.blocking, 1, JSON.stringify(row))
+      assert.deepEqual(
+        (row.violations as { rule: string }[]).map((v) => v.rule),
+        [rule],
+        JSON.stringify(row),
+      )
+    }
+
+    await redCheck(await convGate('red', 'red.diff'), 'e2e.no-eval')
+    const rendered = await readFile(agentsMd, 'utf8')
+    const edited = rendered.replace("The e2e's one blocking rule.", 'Edited by hand.')
+    assert.notEqual(edited, rendered, `the rule's line is not in the block:\n${rendered}`)
+    await writeFile(agentsMd, edited)
+    await redCheck(await convGate('drift', 'drift.diff'), 'docs_drift')
+    await cli('conventions', 'render', '--cwd', convDir)
+    assert.equal(await readFile(agentsMd, 'utf8'), rendered, 'render did not restore the block')
+
+    const greenRan = await convGate('green-1', 'green.diff', `conventions-${v1Sha}`)
+    assert.equal(greenRan.state, 'passed', JSON.stringify(greenRan))
+    assert.equal(onlyCheck(greenRan).cachedFrom, null, JSON.stringify(greenRan))
+    assert.equal((await checkRow(onlyCheck(greenRan).runId))?.version, 1)
+    const greenCached = await convGate('green-2', 'green.diff', `conventions-${v1Sha}`)
+    assert.equal(greenCached.state, 'passed', JSON.stringify(greenCached))
+    assert.equal(onlyCheck(greenCached).cachedFrom, onlyCheck(greenRan).runId, JSON.stringify(greenCached))
+
+    const v2File = join(tmp, 'conventions-v2.yaml')
+    const v1Text = await readFile(join(CONVENTIONS, 'e2e.yaml'), 'utf8')
+    await writeFile(v2File, v1Text.replace("The e2e's one blocking rule.", "The e2e's one blocking rule, version 2."))
+    const v2Sha = await approve(v2File, 2)
+    assert.notEqual(v2Sha, v1Sha)
+    const greenAgain = await convGate('green-3', 'green.diff', `conventions-${v2Sha}`)
+    assert.equal(greenAgain.state, 'passed', JSON.stringify(greenAgain))
+    assert.equal(onlyCheck(greenAgain).cachedFrom, null, `version 2 read a cached green: ${JSON.stringify(greenAgain)}`)
+    assert.equal((await checkRow(onlyCheck(greenAgain).runId))?.version, 2)
+    log('conventions: red check_red and docs_drift recorded; green ran, then cached; version 2 ran it again')
 
     // re-pair: the home keeps its event history while the control plane makes a new machine at last_seq 0, so the
     // executor's next seq used to read as a gap and then as a duplicate forever, and the run stayed offered.

@@ -1,0 +1,18 @@
+# The conventions case of pnpm e2e (scripts/e2e/executor.e2e.ts): `conventions check` of a diff file (the job's one
+# arg) in the run's cwd, with no repository. pnpm e2e sets it with the CLI's absolute path in place of the relative
+# one, and starts its executor with DEVROUNDS_URL, DEVROUNDS_TOKEN and DEVROUNDS_PROJECT of its own tenant, so the
+# check reads and records there. Exit codes are classified as conventions-check.yaml's.
+key: conventions-e2e
+command:
+  program: node
+  args: [control-plane/src/cli/main.ts, conventions, check, --cwd, ., --diff]
+args_from_job: true
+env: [PATH, PATHEXT, SystemRoot, TEMP, TMP, DEVROUNDS_URL, DEVROUNDS_TOKEN, DEVROUNDS_PROJECT]
+timeout_s: 120
+classify:
+  - class: check_red
+    exit_codes: [1]
+  - class: environment
+    exit_codes: [2, 3, 5]
+  - class: infra
+    exit_codes: [4, 6]

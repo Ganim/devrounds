@@ -1,0 +1,7 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 1111111..3333333 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -8 +8 @@
+-- Never call eval in src. The e2e's one blocking rule. (checked)
++- Never call eval in src. Edited by hand. (checked)

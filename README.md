@@ -120,7 +120,12 @@ port 4993 (offers expire after 5 s, the scheduler polls every 2 s) and its own e
 and a `tree-fixture` copy in `.superpowers/tmp`, pairs it into a fresh tenant and runs the job types of
 `roadmap/fixtures/job-types`, every run placed by the scheduler: synthetic, `pnpm lint`, a schedule every 60 s, the dag
 batch red then green, a retry, an offer that expires on a suspended `run` and is requeued, an orphan, a gate (the lock
-refusing a second one with DR308, a waiting one, a full cache hit, gate indicators) and a re-pair.
+refusing a second one with DR308, a waiting one, a full cache hit, gate indicators), conventions and a re-pair. The
+conventions case proposes and approves `roadmap/fixtures/conventions/e2e.yaml` in its own tenant, renders it into a
+directory of its own and runs `roadmap/fixtures/gates/conventions-e2e.yaml` there with each diff fixture: `red.diff`
+fails `check_red` with its recorded check, a hand edit of the block fails with `docs_drift`, `green.diff` passes and
+then passes from the cache (a key holding the `documentSha`), and after version 2 is approved the green check runs
+again. Its executor gets the e2e tenant's `DEVROUNDS_URL`, `DEVROUNDS_TOKEN` and `DEVROUNDS_PROJECT`, never the user's.
 It then measures the footprint of its own processes (and `serve` alone against a 230 MB early warning) and stops
 those, and only those, so an installed executor service is left alone. It needs Postgres (`pnpm db:up`) and takes
 about 4 minutes, most of it the schedule's first fire and the 60 s idle window.

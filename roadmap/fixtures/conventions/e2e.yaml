@@ -1,0 +1,16 @@
+# The conventions case of pnpm e2e (scripts/e2e/executor.e2e.ts): one blocking pattern rule and one target, proposed
+# against a directory whose AGENTS.md the e2e writes. red.diff breaks the rule, drift.diff is a hand edit of the
+# rendered block, green.diff follows the rule.
+targets:
+  - path: AGENTS.md
+rules:
+  - key: e2e.no-eval
+    section: Never
+    title: Never call eval in src
+    why: The e2e's one blocking rule.
+    paths: [src/**/*.ts]
+    check: { kind: pattern, forbid: '\beval\(' }
+    severity: block
+    examples: { bad: ["eval(input)"], good: ["evaluate(input)"] }
+    evidence:
+      - { path: AGENTS.md, excerpt: "Code under `src/` never calls eval.", role: source }
