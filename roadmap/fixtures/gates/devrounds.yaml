@@ -12,3 +12,8 @@ checks:
   # Same cargo target directory as test-executor, so it runs after it.
   - ref: lint-executor
     job_type: devrounds-lint-executor
+  # The committed changes since main against the active conventions version, with AGENTS.md's generated block compared
+  # to its render. No cache_key: a green cached before a new version was approved would pass without checking it.
+  - ref: conventions
+    job_type: devrounds-conventions
+    args: [main]

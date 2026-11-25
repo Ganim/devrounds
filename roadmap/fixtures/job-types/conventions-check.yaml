@@ -9,7 +9,8 @@
 # files' own unified diff; --end-of-options keeps a base starting with `-` from being read as an option.
 key: conventions-check
 command:
-  program: sh
+  # Bare `bash` is Git Bash on the executor (runner-windows `resolve_bash`); `sh` is not on a service's PATH.
+  program: bash
   args:
     - -c
     - >-
@@ -17,7 +18,7 @@ command:
       diff=$(git diff --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ -U0 --end-of-options
       "$1"...HEAD) || exit 2;
       printf '%s\n' "$diff" | node control-plane/src/cli/main.ts conventions check --cwd . --diff -
-    - sh
+    - bash
 args_from_job: true
 env:
   [

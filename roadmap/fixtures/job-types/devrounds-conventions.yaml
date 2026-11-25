@@ -4,7 +4,8 @@
 # DEVROUNDS_PROJECT are user variables on the machine. The gate gives it no cache_key, so an approval reruns it.
 key: devrounds-conventions
 command:
-  program: sh
+  # Bare `bash` is Git Bash on the executor (runner-windows `resolve_bash`); `sh` is not on a service's PATH.
+  program: bash
   args:
     - -c
     - >-
@@ -12,7 +13,7 @@ command:
       diff=$(git diff --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ -U0 --end-of-options
       "$1"...HEAD) || exit 2;
       printf '%s\n' "$diff" | node control-plane/src/cli/main.ts conventions check --cwd . --diff -
-    - sh
+    - bash
 args_from_job: true
 env:
   [
