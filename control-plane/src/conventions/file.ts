@@ -3,6 +3,7 @@ import { type Static, type TSchema, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 import { patternExamplesIssue } from './examples.ts'
+import { expandBraces, MAX_GLOB_ALTERNATIVES } from './select.ts'
 
 // A project's conventions document (design §3): YAML for `devrounds conventions propose`, JSON in the API. A version
 // stores it as given; readers use parseConventionsFile's def, with every default filled.
@@ -138,6 +139,8 @@ function schemaIssue(value: unknown): Issue | null {
 function repoPathIssue(path: string): string | null {
   if (path.includes('\\')) return 'use / as the separator'
   if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return 'a path relative to the repo root'
+  // On Windows `x::$INDEX_ALLOCATION` names the directory x, so a `:` past the drive reaches what the name hides.
+  if (path.includes(':')) return 'no :'
   if (path.split('/').some((part) => part === '' || part === '.' || part === '..')) {
     return 'no empty, . or .. segment'
   }
@@ -146,12 +149,16 @@ function repoPathIssue(path: string): string | null {
 
 /**
  * Why `path` cannot be a target, or null. `render` writes there, so on top of a repo path it may not enter `.git`
- * (a hook is run by the shell); case-insensitive, as on Windows. The CLI checks the targets it receives again.
+ * (a hook is run by the shell); case-insensitive, as on Windows. Windows also reaches `.git` by its 8.3 name (`GIT~1`)
+ * and drops a trailing dot or space (`.git.`), so those segments are refused too, as git does on NTFS. The CLI checks
+ * the targets it receives again.
  */
 export function targetPathIssue(path: string): string | null {
   const issue = repoPathIssue(path)
   if (issue) return issue
-  return path.split('/').some((part) => part.toLowerCase() === '.git') ? 'no .git segment' : null
+  const parts = path.split('/')
+  if (parts.some((part) => /[. ]$/.test(part))) return 'no segment ending in . or a space'
+  return parts.some((part) => part.toLowerCase() === '.git' || /^git~\d+$/i.test(part)) ? 'no .git segment' : null
 }
 
 function evidenceIssue(at: string, evidence: Evidence[]): Issue | null {
@@ -236,10 +243,18 @@ export function findConventionsShapeIssue(value: unknown): Issue | null {
 }
 
 // The rule matcher (select.ts matchesGlob) has no `{n..m}` ranges, and node's matcher, which others may run on the
-// same globs, expands them (43 s on `{1..2000000}`); a few literal alternatives cover real rules.
-function globIssue(glob: string): string | null {
+// same globs, expands them (43 s on `{1..2000000}`); a few literal alternatives cover real rules. The matcher expands
+// braces and tries each alternative, so their number is capped too. More than 3 `*` in one segment backtracks
+// polynomially on a long path segment (`*a*a*a*a*b` took 13 s on 200 characters); real globs use one or two.
+export function globIssue(glob: string): string | null {
   if (/\{[^}]*\.\.[^}]*\}/.test(glob)) return 'no {n..m} ranges'
   if ((glob.match(/\{/g)?.length ?? 0) > 4) return 'at most 4 brace groups'
+  const alternatives = expandBraces(glob)
+  if (alternatives === null) return `at most ${MAX_GLOB_ALTERNATIVES} alternatives once braces are expanded`
+  const stars = (segment: string) => segment.match(/\*/g)?.length ?? 0
+  if (alternatives.some((alt) => alt.split('/').some((segment) => stars(segment) > 3))) {
+    return 'at most 3 * in one segment'
+  }
   return repoPathIssue(glob)
 }
 

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { checkChange } from './check.ts'
 import { type RuleFile, withDefaults } from './file.ts'
 import { matchesGlob } from './select.ts'
-import type { DiffFile } from './unified-diff.ts'
+import { type DiffFile, parseUnifiedDiff } from './unified-diff.ts'
 
 const evidence = [{ path: 'AGENTS.md', excerpt: 'Never', role: 'source' as const }]
 
@@ -55,8 +55,18 @@ test('exclude wins over paths', () => {
 })
 
 test('a match on a removed line only is no violation', () => {
-  // A parsed diff keeps only added lines: the file that only lost `readFileSync(` has none.
-  assert.deepEqual(checkChange(defOf(noSync), [file('src/a.ts', [])]), [])
+  const diff = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,1 +1,1 @@',
+    '-const x = readFileSync(p)',
+    '+const x = await readFile(p)',
+    '',
+  ].join('\n')
+  const files = parseUnifiedDiff(diff)
+  assert.deepEqual(files[0].added, [{ line: 1, text: 'const x = await readFile(p)' }])
+  assert.deepEqual(checkChange(defOf(noSync), files), [])
 })
 
 test('deleted and binary files are not read; files outside paths are not either', () => {
@@ -137,6 +147,11 @@ test('globs enter dot directories and match case-sensitively on every OS', () =>
     ['ab.ts', 'a[!b].ts', false],
     ['a+b(1).ts', 'a+b(1).ts', true],
     ['a.ts', 'a?ts', true],
+    // `**` inside braces is still a whole segment of each alternative.
+    ['web/x/y.ts', '{web/**,api/**}', true],
+    ['web/x/y.ts', '{web,api}/**', true],
+    ['a/b/test/c.ts', '{**/test/**,x}', true],
+    ['a/b/c.ts', '{**/test/**,x}', false],
   ]
   for (const [path, glob, want] of cases) assert.equal(matchesGlob(path, glob), want, `${path} ${glob}`)
 })

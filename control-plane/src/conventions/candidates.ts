@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { join, posix } from 'node:path'
+import { join } from 'node:path'
+import { matchesGlob } from './select.ts'
 
 // `devrounds conventions candidates`: the lines a repo's instruction files already state as rules, with path:line, so
 // an agent following docs/conventions/extract.md starts from what the repo says (design call 14). A heuristic for
@@ -68,9 +69,11 @@ function candidatesOf(path: string, text: string): Candidate[] {
 /**
  * The imperative lines of the markdown files under `cwd` matched by `globs` (repo-relative): lines with Never, Always,
  * MUST, NEVER or Do not, and bullets under a heading named like those. Sorted by path, then line; fenced code skipped.
+ * Globs match as rule globs do (select.ts): case-sensitive and into dot directories, so a `**` glob reaches
+ * `.agents/skills/` and `.claude/commands/`, where instruction files often live.
  */
 export async function findCandidates(cwd: string, globs = DEFAULT_CANDIDATE_GLOBS): Promise<Candidate[]> {
-  const files = (await markdownFiles(cwd)).filter((file) => globs.some((glob) => posix.matchesGlob(file, glob)))
+  const files = (await markdownFiles(cwd)).filter((file) => globs.some((glob) => matchesGlob(file, glob)))
   files.sort()
   const found: Candidate[] = []
   for (const file of files) found.push(...candidatesOf(file, await readFile(join(cwd, file), 'utf8')))

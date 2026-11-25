@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DevRoundsError } from '../errors/error.ts'
-import { documentSha, findConventionsIssue, parseConventionsFile } from './file.ts'
+import { documentSha, findConventionsIssue, parseConventionsFile, targetPathIssue } from './file.ts'
 
 const FILE = `targets:
   - path: AGENTS.md
@@ -102,4 +102,15 @@ test('documentSha ignores key order', () => {
   assert.equal(documentSha(reordered), documentSha(def))
   assert.notEqual(documentSha({ ...def, targets: [{ path: 'README.md' }] }), documentSha(def))
   assert.equal(findConventionsIssue(def), null)
+})
+
+test('a target that reaches .git by a Windows name is refused', () => {
+  for (const path of ['.git::$INDEX_ALLOCATION/hooks/pre-commit', 'GIT~1/hooks/pre-commit', '.git./hooks/x', 'a.md ']) {
+    assert.notEqual(targetPathIssue(path), null, path)
+  }
+  assert.equal(targetPathIssue('docs/AGENTS.md'), null)
+})
+
+test('a glob with more than 3 * in one segment is refused: the matcher backtracks on it', () => {
+  refusedAt(FILE.replace('control-plane/src/**/*.ts', '"src/*a*a*a*b.ts"'), '/rules/0/paths/0')
 })

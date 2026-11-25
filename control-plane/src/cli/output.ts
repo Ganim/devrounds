@@ -324,6 +324,19 @@ export function conventionsCheckShow(
   }
 }
 
+// Silent rule keys printed on their line; up to 500 keys of 100 characters would make it one 50 KB line.
+const SILENT_SHOWN = 20
+
+// `lines` cut on a whole line to the body budget, with how many were left out (`<n> more <label>`).
+function withinBudget(lines: string[], label: string): string[] {
+  let used = 0
+  for (const [i, line] of lines.entries()) {
+    used += Buffer.byteLength(oneLine(line)) + 1
+    if (used > BODY_BUDGET && i > 0) return [...lines.slice(0, i), `${lines.length - i} more ${label}`]
+  }
+  return lines
+}
+
 /**
  * `indicators --conventions`: each rule that blocked in a period first, then per period the checks, the other rule
  * hits, the active version's rules by kind with the mechanical share, and the checked rules that never fired.
@@ -332,12 +345,17 @@ export function conventionsIndicatorsShow(i: ConventionIndicators): AgentOutput 
   const blocked = i.rows.filter((r) => r.blocking > 0)
   const kinds = i.rules.map((r) => fmt`${r.kind} ${r.count}`).join(' · ')
   const share = i.mechanicalShare === null ? '-' : `${Math.round(i.mechanicalShare * 100)} %`
+  const silentMore = i.silentRules.length - SILENT_SHOWN
+  const silent = i.silentRules.slice(0, SILENT_SHOWN).join(', ') + (silentMore > 0 ? ` and ${silentMore} more` : '')
+  const failures = blocked.map(
+    (r) =>
+      fmt`${r.period} ${r.rule} blocking ${r.blocking} in ${r.checks} checks · warnings ${r.warnings} · ` +
+      fmt`gates failed ${r.gatesFailed}`,
+  )
   return {
-    failures: blocked.map(
-      (r) =>
-        fmt`${r.period} ${r.rule} blocking ${r.blocking} in ${r.checks} checks · warnings ${r.warnings} · ` +
-        fmt`gates failed ${r.gatesFailed}`,
-    ),
+    // Failures print outside the paged body, so they get the body's budget of their own (one row per blocking rule
+    // per period can be thousands over a long window).
+    failures: withinBudget(failures, 'blocking rows not shown; narrow --from/--to'),
     body: [
       ...i.periods.map(
         (p) => fmt`${p.period} conventions  checks ${p.checks} · blocked ${p.blocked} · files ${p.filesChecked}`,
@@ -347,7 +365,7 @@ export function conventionsIndicatorsShow(i: ConventionIndicators): AgentOutput 
         .map((r) => fmt`${r.period} ${r.rule} (${r.kind})  warnings ${r.warnings} in ${r.checks} checks`),
       ...(i.periods.length === 0 ? ['no conventions check in this window'] : []),
       i.rules.length === 0 ? 'no active conventions version' : `rules ${kinds} · mechanical share ${share}`,
-      ...(i.silentRules.length > 0 ? [fmt`silent ${i.silentRules.join(', ')}`] : []),
+      ...(i.silentRules.length > 0 ? [fmt`silent ${silent}`] : []),
     ],
     next: blocked.length > 0 ? 'devrounds conventions show' : 'devrounds indicators --conventions --period week',
   }

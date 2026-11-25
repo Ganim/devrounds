@@ -1,22 +1,66 @@
 import type { ConventionRule, ConventionsDef } from './file.ts'
 
-const SPECIAL = /[.+^$()|\\]/
+const SPECIAL = /[.+^$()|\\{}]/
 
-// A rule glob as a RegExp: `*` and `?` within a segment, `**` as a whole segment for any number of them, `[...]`
-// (`[!...]` negated) and `{a,b}`; anything else is literal. Unlike node's path.matchesGlob, `*` and `**` enter dot
-// segments (`**/*.ts` covers `.github/x.ts`: a rule that skipped `.github` or `.agents` would let their files pass
-// silently) and matching is case-sensitive on every OS (Windows matched `src/A.TS` against `**/*.ts`), so a change
-// gets the same answer on every machine. A `{` without its `}` is literal.
-function globRegExp(glob: string): RegExp {
+/** Alternatives one rule glob may expand to (file.ts refuses more): each is compiled and tried, so this bounds the cost. */
+export const MAX_GLOB_ALTERNATIVES = 32
+
+// The index of the `]` closing the class that opens at `glob[i]`, or -1 for a literal `[`. A `]` right after `[` (or
+// `[!`) is part of the class.
+function classEnd(glob: string, i: number): number {
+  const start = glob[i + 1] === '!' ? i + 2 : i + 1
+  return glob.indexOf(']', start + 1)
+}
+
+// The `}` that closes the `{` at `glob[open]` and the top-level commas between them, or null when nothing closes it.
+function braceGroup(glob: string, open: number): { close: number; commas: number[] } | null {
   let depth = 0
-  let balanced = true
-  for (const ch of glob) {
-    depth += ch === '{' ? 1 : ch === '}' ? -1 : 0
-    if (depth < 0) balanced = false
+  const commas: number[] = []
+  for (let i = open; i < glob.length; i++) {
+    const ch = glob[i]
+    if (ch === '[') {
+      const close = classEnd(glob, i)
+      if (close > 0) i = close
+    } else if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return { close: i, commas }
+    } else if (ch === ',' && depth === 1) commas.push(i)
   }
-  balanced &&= depth === 0
+  return null
+}
+
+/**
+ * The brace-free globs `glob` stands for (`{web/**,api/**}` is `web/**` and `api/**`), or null past `limit` of them. A
+ * `{` without its `}` is literal. Expanding before compiling keeps one code path for `**`: inside braces it is still a
+ * whole segment of each alternative, so `{web/**,api/**}` reaches `web/a/b.ts`.
+ */
+export function expandBraces(glob: string, limit = MAX_GLOB_ALTERNATIVES): string[] | null {
+  for (let i = 0; i < glob.length; i++) {
+    if (glob[i] === '[') {
+      const close = classEnd(glob, i)
+      if (close > 0) i = close
+      continue
+    }
+    const group = glob[i] === '{' ? braceGroup(glob, i) : null
+    if (!group) continue
+    const bounds = [i, ...group.commas, group.close]
+    const out: string[] = []
+    for (let k = 0; k + 1 < bounds.length; k++) {
+      const alternative = glob.slice(0, i) + glob.slice(bounds[k] + 1, bounds[k + 1]) + glob.slice(group.close + 1)
+      const expanded = expandBraces(alternative, limit - out.length)
+      if (expanded === null) return null
+      out.push(...expanded)
+    }
+    return out
+  }
+  return limit < 1 ? null : [glob]
+}
+
+// One brace-free glob as a regex source: `*` and `?` within a segment, `**` as a whole segment for any number of them,
+// `[...]` (`[!...]` negated); anything else is literal.
+function alternativeSource(glob: string): string {
   let out = ''
-  depth = 0
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i]
     if (ch === '*' && glob[i + 1] === '*' && (i === 0 || glob[i - 1] === '/')) {
@@ -35,25 +79,28 @@ function globRegExp(glob: string): RegExp {
     if (ch === '*') out += '[^/]*'
     else if (ch === '?') out += '[^/]'
     else if (ch === '[') {
-      // `]` right after `[` (or `[!`) is part of the class.
-      const start = glob[i + 1] === '!' ? i + 2 : i + 1
-      const close = glob.indexOf(']', start + 1)
+      const close = classEnd(glob, i)
       if (close < 0) out += '\\['
       else {
+        const start = glob[i + 1] === '!' ? i + 2 : i + 1
         const body = glob.slice(start, close).replace(/[\\^\]]/g, '\\$&')
         out += `[${glob[i + 1] === '!' ? '^' : ''}${body}]`
         i = close
       }
-    } else if (balanced && ch === '{') {
-      out += '(?:'
-      depth += 1
-    } else if (balanced && ch === '}') {
-      out += ')'
-      depth -= 1
-    } else if (balanced && ch === ',' && depth > 0) out += '|'
-    else out += SPECIAL.test(ch) || ch === '{' || ch === '}' ? `\\${ch}` : ch
+    } else out += SPECIAL.test(ch) ? `\\${ch}` : ch
   }
-  return new RegExp(`^${out}$`)
+  return out
+}
+
+// A rule glob as a RegExp: one alternative per brace expansion (expandBraces). Unlike node's path.matchesGlob, `*` and
+// `**` enter dot segments (`**/*.ts` covers `.github/x.ts`: a rule that skipped `.github` or `.agents` would let their
+// files pass silently) and matching is case-sensitive on every OS (Windows matched `src/A.TS` against `**/*.ts`), so a
+// change gets the same answer on every machine. A glob past MAX_GLOB_ALTERNATIVES, which file.ts refuses in a document
+// and the CLI in `--glob`, matches nothing rather than expanding without bound.
+function globRegExp(glob: string): RegExp {
+  const alternatives = expandBraces(glob)
+  if (alternatives === null) return /(?!)/
+  return new RegExp(`^(?:${alternatives.map(alternativeSource).join('|')})$`)
 }
 
 const compiled = new Map<string, RegExp>()

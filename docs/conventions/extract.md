@@ -9,7 +9,8 @@ session today and as an agent-run job type later (P4); the steps and the output 
 1. The candidates: `devrounds conventions candidates --cwd <repo>` lists the lines the repo's instruction files already
    state as rules (`Never`, `Always`, `MUST`, `NEVER`, `Do not`, bullets under such headings), as `path:line text`.
    Add `--glob <g>` (repeatable, replaces the defaults) for other instruction files, such as scoped docs or skill files
-   checked into the repo.
+   checked into the repo. Globs match like rule globs, case-sensitive, and `**` reaches dot directories, so
+   `**/*.md` covers `.agents/skills/` and `.claude/commands/`.
 2. The layout: the top-level directories and what each holds (package manifests, entry points).
 3. Sample code per directory: a few recent files of each kind (route, service, test, migration, component), read to
    see which rules the code actually follows and which it breaks.

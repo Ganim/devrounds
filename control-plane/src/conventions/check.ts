@@ -14,7 +14,9 @@ export type Violation = {
 
 const EXCERPT_CHARS = 200
 
-const excerptOf = (text: string) => [...text.trim()].slice(0, EXCERPT_CHARS).join('')
+// Git reads a file as text when its first 8000 bytes hold no NUL, so a later one reaches an added line; jsonb refuses
+// `\u0000` (22P05), and the record would then fail as infra on every rerun of that change.
+const excerptOf = (text: string) => [...text.trim().replaceAll('\0', '\uFFFD')].slice(0, EXCERPT_CHARS).join('')
 
 // A new path the rule refuses: matched by forbid_new and covered by the rule's paths/exclude.
 function refused(rule: ConventionRule, glob: string, path: string): boolean {
@@ -84,6 +86,20 @@ export const MAX_KEPT_VIOLATIONS = 500
 export function keptViolations(violations: Violation[]): Violation[] {
   const blocking = violations.filter((v) => v.severity === 'block')
   return [...blocking, ...violations.filter((v) => v.severity !== 'block')].slice(0, MAX_KEPT_VIOLATIONS)
+}
+
+/** Hits per rule and severity; `docs_drift` is one more key. */
+export type RuleCounts = Record<string, { warn: number; block: number }>
+
+/** The exact hits per rule of `violations`, sent with a result so per-rule indicators never depend on the 500 kept. */
+export function ruleCounts(violations: Violation[]): RuleCounts {
+  const counts = new Map<string, { warn: number; block: number }>()
+  for (const v of violations) {
+    const count = counts.get(v.rule) ?? { warn: 0, block: 0 }
+    count[v.severity] += 1
+    counts.set(v.rule, count)
+  }
+  return Object.fromEntries(counts)
 }
 
 /** Drift (render.ts) as blocking violations, the reason as excerpt, so the check reports and counts it with the rest. */

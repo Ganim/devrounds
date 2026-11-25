@@ -420,7 +420,8 @@ devrounds conventions candidates --cwd <repo> [--glob <g>]...
 which reads only the worktree and prints `path:line text` for each imperative line (`Never`, `Always`, `MUST`,
 `NEVER`, `Do not`, and bullets under headings named like those) of the markdown files the globs match (default
 `**/AGENTS.md`, `**/CLAUDE.md`, `README.md`; `--glob` replaces them), sorted by path and line. Fenced code is
-skipped, and so are `node_modules`, `.git`, `dist`, `target` and `.superpowers`.
+skipped, and so are `node_modules`, `.git`, `dist`, `target` and `.superpowers`. The globs match like rule globs
+(below), so `**` enters dot directories such as `.agents` and `.claude`.
 
 ### The check
 
@@ -438,9 +439,12 @@ another format) is DR101 rather than an empty change that passes.
 
 Globs in `paths`, `exclude` and `forbid_new` take `*` and `?` within a segment, `**` as a whole segment, `[...]`
 (`[!...]` negated) and `{a,b}`; they match the same on every OS: case-sensitive, and `*`/`**` enter dot directories
-(`**/*.ts` covers `.github/x.ts`; exclude `.github/**` to skip it). A rename counts as a new path only when it comes
-from outside the rule's glob. Git pairs a deleted and an added file as a rename from 50 % similarity, so a new file
-that replaces a deleted refused one (a new test outside `test/` in place of a removed legacy one) can pass the rule.
+(`**/*.ts` covers `.github/x.ts`; exclude `.github/**` to skip it). Braces expand first, so `{web/**,api/**}` reaches
+`web/a/b.ts`. A glob takes at most 4 brace groups, 32 alternatives once expanded and 3 `*` per segment, and no
+`{n..m}` ranges. Unlike node's matcher, `[^a]` is a literal `^` (negate with `[!a]`), a class can match `/`, and
+`?` matches one UTF-16 unit, not one code point. A rename counts as a new path only when it comes from outside the
+rule's glob. Git pairs a deleted and an added file as a rename from 50 % similarity, so a new file that replaces a
+deleted refused one (a new test outside `test/` in place of a removed legacy one) can pass the rule.
 
 Output: blocking violations first (`<path>:<line> <rule> <title>` with the trimmed line under it, up to 200
 characters; `<path> <rule> <title>` for a new path; `<path> docs_drift <reason>`), then warnings, then
@@ -463,10 +467,11 @@ Give the check no `cache_key`, or one that includes the active `documentSha` (`d
 a green cached before a new version was approved would otherwise pass without checking against it.
 
 Inside a run (the executor sets `DEVROUNDS_RUN_ID`), `check` records its result before printing: the version, the
-files checked, the exact blocking and warning counts and up to 500 violations, blocking first. A run holds one result,
-and only while it is running (DR312 otherwise; DR201 for a run of another project). A refused record prints
-`not recorded for run <id>: <error>` first and exits 6, so the gate never reads it as a pass. A cached check posts
-nothing.
+files checked, the exact blocking and warning counts, the exact hits per rule and up to 500 violations, blocking first.
+A run holds one result, and only while it is running (DR312 otherwise; DR201 for a run of another project, or for a
+version that is neither active nor superseded). Any member of the tenant may record the result of a running run of
+the project: runs carry no member identity. A refused record prints `not recorded for run <id>: <error>` first and
+exits 6, so the gate never reads it as a pass. A cached check posts nothing.
 
 ```
 devrounds indicators --conventions [--period day|week] [--from <date>] [--to <date>]
@@ -476,5 +481,5 @@ reads the recorded checks by the tenant's local day (or week) they were posted: 
 checks it fired in, failed gates it blocked), then per period the checks, how many blocked and the files read, the
 rules that only warned (`docs_drift` counts as kind `drift`), the active version's rules by kind with the mechanical
 share (`pattern`, `path` and `job_type` over all rules), and the `pattern` and `path` rules that never fired in the
-window (`silent`), candidates to drop or rewrite. A check with more than 500 violations counts per rule only the 500
-it kept.
+window (`silent`, the first 20 of them), candidates to drop or rewrite. Per-rule hits come from each check's exact
+counts, so a rule whose violations were cut past the 500 kept still counts.

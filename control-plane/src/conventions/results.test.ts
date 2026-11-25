@@ -226,3 +226,43 @@ test('mechanicalShare is pattern+path+job_type over all rules', async () => {
     { kind: 'pattern', count: 3 },
   ])
 })
+
+test('a check against a version never approved is DR201 conventions', async () => {
+  const { ctx, running } = await setup()
+  await propose(ctx, projectKey, {
+    document: { targets: [{ path: 'AGENTS.md' }], rules: [pattern('a')] },
+    basedOn: 1,
+    headSha: null,
+    task: 'P3-T07',
+  })
+  const runId = await running()
+  assert.deepEqual(await refusal(recordCheck(ctx, projectKey, { ...input(runId), version: 2 })), {
+    code: 'DR201',
+    data: { kind: 'conventions', key: '2' },
+  })
+})
+
+test('per-rule rows come from the exact counts, so a rule whose hits were all cut is not silent', async () => {
+  const { ctx, running, at } = await setup()
+  const runId = await running()
+  // What the CLI sends for 500 blocking hits of `a` and 3 warnings of `b`: only the 500 kept, all of them `a`.
+  const kept = Array.from({ length: 500 }, (_, i) => hit('a', 'block', i + 1))
+  const counts = { a: { warn: 0, block: 500 }, b: { warn: 3, block: 0 } }
+  assert.deepEqual(
+    await refusal(
+      recordCheck(ctx, projectKey, { ...input(runId, kept), counts: { ...counts, a: { warn: 0, block: 1 } } }),
+    ),
+    { code: 'DR101', data: { path: '/counts/a/block', reason: 'is below the 500 violations sent' } },
+  )
+  await recordCheck(ctx, projectKey, { ...input(runId, kept), blocking: 500, warnings: 3, counts })
+  await at(runId, '2026-11-10T12:00:00Z')
+  const day10 = await conventionIndicators(ctx, projectKey, DAY_10)
+  assert.deepEqual(
+    day10.rows.map((r) => [r.rule, r.warnings, r.blocking]),
+    [
+      ['a', 0, 500],
+      ['b', 3, 0],
+    ],
+  )
+  assert.deepEqual(day10.silentRules, ['c', 'new-test'])
+})

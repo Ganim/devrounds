@@ -1179,6 +1179,13 @@ test('conventions check --diff <fixture> prints blocking first and exits 1', asy
     ].join('\n'),
   )
 
+  // Only the web file: its warn rule prints and passes.
+  const warnOnly = join(repo, 'warn.diff')
+  await writeFile(warnOnly, (await readFile(CHECK_DIFF, 'utf8')).split('diff --git a/control-plane')[0])
+  const warned = await runCli(['conventions', 'check', '--cwd', repo, '--diff', warnOnly], opts)
+  assert.equal(warned.exitCode, 0, warned.stdout + warned.stderr)
+  assert.match(warned.stdout, /\nchecked 1 files against version 1: 0 blocking, 1 warnings\n/)
+
   await writeFile(join(repo, 'AGENTS.md'), 'hand-written only\n')
   const drift = await runCli(['conventions', 'check', '--cwd', repo, '--diff', CHECK_DIFF], opts)
   assert.equal(drift.exitCode, 1)

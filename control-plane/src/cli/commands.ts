@@ -7,13 +7,14 @@ import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
 import { DEFAULT_CANDIDATE_GLOBS, findCandidates } from '../conventions/candidates.ts'
-import { checkChange, driftViolations, keptViolations } from '../conventions/check.ts'
+import { checkChange, driftViolations, keptViolations, ruleCounts } from '../conventions/check.ts'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
 import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
 import {
   type ConventionsDef,
   ConventionsFile,
   findConventionsIssue,
+  globIssue,
   targetPathIssue,
   withDefaults,
 } from '../conventions/file.ts'
@@ -1651,7 +1652,13 @@ export const COMMANDS: Spec[] = [
     options: { cwd: str, glob: many },
     run: async (inv) => {
       const cwd = await repoDir(inv)
-      const found = await findCandidates(cwd, list(inv, 'glob'))
+      const globs = list(inv, 'glob')
+      // The limits of a rule glob: past them the matcher matches nothing, which would read as a repo without rules.
+      for (const glob of globs ?? []) {
+        const reason = globIssue(glob)
+        if (reason) fail('DR101', { path: '--glob', reason: `${glob}: ${reason}` })
+      }
+      const found = await findCandidates(cwd, globs)
       const files = new Set(found.map((c) => c.path)).size
       return {
         failures: [],
@@ -1780,6 +1787,7 @@ export const COMMANDS: Spec[] = [
           violations: keptViolations(violations),
           blocking: violations.filter((v) => v.severity === 'block').length,
           warnings: violations.filter((v) => v.severity === 'warn').length,
+          counts: ruleCounts(violations),
         })
       } catch (err) {
         const { output } = failureOutput(err)
