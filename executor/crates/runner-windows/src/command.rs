@@ -101,7 +101,11 @@ fn build_with(
             return Err(CommandError::ContainsNul(text.to_owned()));
         }
     }
-    let application = resolve(program, env, cwd, exists)?;
+    let application = if bare_bash(program) {
+        resolve_bash(program, env, cwd, system, exists)?
+    } else {
+        resolve(program, env, cwd, exists)?
+    };
     let batch = is_batch_file(&application);
     let msys = !batch && links_msys(&application);
     let (application, argv0, arguments) = if batch {
@@ -165,6 +169,62 @@ fn resolve(
             program: program.into(),
             searched: dirs,
         })
+}
+
+/// Whether `program` is `bash` (or `bash.exe`) by bare name.
+fn bare_bash(program: &str) -> bool {
+    !devrounds_core::paths::names_a_path(program)
+        && (program.eq_ignore_ascii_case("bash") || program.eq_ignore_ascii_case("bash.exe"))
+}
+
+/// Bare `bash` means Git Bash, the shell job scripts are written for. The WSL
+/// launchers (`<System32>\bash.exe` and the `Microsoft\WindowsApps` alias)
+/// come first on a service's PATH, as System32 leads the machine PATH, and run
+/// the script in Linux, where Windows `node` and `pnpm` are not found (seen
+/// 25/11/2026 under the scheduled task). So they are skipped, and with no
+/// other bash on PATH the bash of the Git that `git.exe` on PATH belongs to
+/// is used (`<git>\cmd` or `<git>\bin` → `<git>\bin\bash.exe`). WSL stays
+/// reachable by explicit path.
+fn resolve_bash(
+    program: &str,
+    env: &BTreeMap<String, String>,
+    cwd: &Path,
+    system: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<PathBuf, CommandError> {
+    let not_wsl = |path: &Path| exists(path) && !wsl_launcher(path, system);
+    resolve(program, env, cwd, &not_wsl).or_else(|missing| {
+        resolve("git", env, cwd, exists)
+            .ok()
+            .and_then(|git| {
+                let dir = git.parent()?;
+                let name = dir.file_name()?.to_string_lossy().to_ascii_lowercase();
+                if name != "cmd" && name != "bin" {
+                    return None;
+                }
+                Some(dir.parent()?.join("bin").join("bash.exe"))
+            })
+            .filter(|bash| exists(bash))
+            .ok_or(missing)
+    })
+}
+
+/// Whether `path` is one of the WSL `bash.exe` launchers: in the System32
+/// directory `system`, or in a `Microsoft\WindowsApps` alias directory.
+fn wsl_launcher(path: &Path, system: &Path) -> bool {
+    let Some(dir) = path.parent() else {
+        return false;
+    };
+    let dir = dir
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    let dir = dir.trim_end_matches('\\');
+    let system = system
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    dir == system.trim_end_matches('\\') || dir.ends_with(r"\microsoft\windowsapps")
 }
 
 /// Whether `name` already ends in an extension `CreateProcessW` can start, after
@@ -479,6 +539,58 @@ mod tests {
         // non-runnable PATHEXT entries are skipped.
         assert_eq!(found("tool", &[file(r"C:\a", "tool")]), None);
         assert_eq!(found("tool", &[file(r"C:\a", "tool.js")]), None);
+    }
+
+    #[test]
+    /// Bare `bash` skips the WSL launchers (System32 and the WindowsApps
+    /// alias), keeps PATH order among the others, and falls back to the bash
+    /// of the Git that `git.exe` on PATH belongs to. An explicit path still
+    /// reaches WSL, and a machine with only WSL gets a miss, not WSL.
+    fn bare_bash_means_git_bash() {
+        let apps = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps";
+        let wsl = file(SYSTEM, "bash.exe");
+        let alias = file(apps, "bash.exe");
+        let git_bash = file(r"C:\Git\bin", "bash.exe");
+        let usr_bash = file(r"C:\Git\usr\bin", "bash.exe");
+        let git_cmd = file(r"C:\Git\cmd", "git.exe");
+        let path = |dirs: &[&str]| env(&[("PATH", &dirs.join(";"))]);
+        let resolved = |program: &str, env: &BTreeMap<String, String>, files: &[PathBuf]| {
+            build_in(program, &[], env, files).map(|command| command.application)
+        };
+        let service_path = path(&[r"C:\WINDOWS\system32", apps, r"C:\Git\cmd"]);
+        let installed = [
+            wsl.clone(),
+            alias.clone(),
+            git_cmd.clone(),
+            git_bash.clone(),
+        ];
+        assert_eq!(
+            resolved("bash", &service_path, &installed).ok(),
+            Some(git_bash.clone())
+        );
+        assert_eq!(
+            resolved("BASH.exe", &service_path, &installed).ok(),
+            Some(git_bash.clone())
+        );
+        // Another bash on PATH wins over the Git fallback, in PATH order.
+        let shell_path = path(&[SYSTEM, r"C:\Git\usr\bin", r"C:\Git\cmd"]);
+        let with_usr = [wsl.clone(), usr_bash.clone(), git_cmd.clone(), git_bash];
+        assert_eq!(
+            resolved("bash", &shell_path, &with_usr).ok(),
+            Some(usr_bash)
+        );
+        // Asked for by path, WSL is still reachable.
+        assert_eq!(
+            resolved(&wsl.to_string_lossy(), &service_path, &installed).ok(),
+            Some(wsl.clone())
+        );
+        // Only WSL on the machine: a miss naming bash.
+        match resolved("bash", &service_path, &[wsl, alias]) {
+            Err(CommandError::NotFound { program, .. }) => {
+                assert_eq!(program, PathBuf::from("bash"))
+            }
+            other => panic!("expected a miss, got {other:?}"),
+        }
     }
 
     #[test]
