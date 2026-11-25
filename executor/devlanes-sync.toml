@@ -84,3 +84,63 @@ commit = "a4bd1153c60e084029f1c01cd7123141193825e3"
 crate = "workspace/cargo-toml"
 decision = "ported"
 reason = "zstd 0.13 -> 0.14 in [workspace.dependencies]; encode_all, copy_encode and read::Decoder are unchanged, so it builds with no code change."
+
+[[reviewed]]
+commit = "fcaca8ebf152d083f6196ae2dffd56310d47e840"
+crate = "devrounds-core"
+decision = "not_applicable"
+reason = "Release PR: only the upstream package version and CHANGELOG.md change; DevRounds crates carry their own version and no changelog."
+
+[[reviewed]]
+commit = "fcaca8ebf152d083f6196ae2dffd56310d47e840"
+crate = "devrounds-start-gate"
+decision = "not_applicable"
+reason = "Release PR: only the upstream package version and CHANGELOG.md change; DevRounds crates carry their own version and no changelog."
+
+[[reviewed]]
+commit = "fcaca8ebf152d083f6196ae2dffd56310d47e840"
+crate = "devrounds-metrics"
+decision = "not_applicable"
+reason = "Release PR: only the upstream package version and CHANGELOG.md change; DevRounds crates carry their own version and no changelog."
+
+[[reviewed]]
+commit = "7cd831d172b11c471bbeba1c4816178a97bfbf37"
+crate = "devrounds-core"
+decision = "not_applicable"
+reason = "The fix lives in env assembly (Environment, assemble, lookup, overlay) and ContribCx, which the trimmed copy dropped; core::env keeps only fold_name, nothing calls it, and its body is unchanged upstream."
+
+[[reviewed]]
+commit = "c0b66df88bb8c548af535ef6acfe791c661f179f"
+crate = "devrounds-logs"
+decision = "not_applicable"
+reason = "The executor's logs crate does not depend on jiff."
+
+[[reviewed]]
+commit = "3bf676301c035ddf78b9f37c5ef6c083bdde4add"
+crate = "devrounds-logs/log-line"
+decision = "not_applicable"
+reason = "Adds daemon feature flags (quiet_subscribe, hosts_all) to proto's features module; the copy took only the LogLine type."
+
+[[reviewed]]
+commit = "9beb6359f61b0728ba605cb83bacc2600b7b988a"
+crate = "workspace/cargo-toml"
+decision = "not_applicable"
+reason = "Adds [workspace.metadata.ci] for upstream's affected-jobs CI script, which DevRounds does not have."
+
+[[reviewed]]
+commit = "468d4d6be4520f1506c3929e0ada9a8ffe9ac9b6"
+crate = "workspace/cargo-toml"
+decision = "not_applicable"
+reason = "The executor does not depend on getrandom directly; it only arrives transitively."
+
+[[reviewed]]
+commit = "ca0623daf9711642b5d40a01b25923f96eb742bf"
+crate = "workspace/cargo-toml"
+decision = "not_applicable"
+reason = "The executor does not depend on sha2."
+
+[[reviewed]]
+commit = "a9c98390c101c5924737116d400ca674ec2e5a65"
+crate = "workspace/cargo-toml"
+decision = "ported"
+reason = "Already present: the workspace pins base64 0.23 (0.23.1 in Cargo.lock), so nothing to change."
