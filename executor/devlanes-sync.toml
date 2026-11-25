@@ -78,3 +78,9 @@ commit = "c1572f4035bdf2597639fd6f3e7f3066ec650753"
 crate = "workspace/cargo-toml"
 decision = "not_applicable"
 reason = "Upstream release CI now ships debug archives; the only Cargo.toml change is a comment above strip = true in [profile.release], and DevRounds has no matching CI."
+
+[[reviewed]]
+commit = "a4bd1153c60e084029f1c01cd7123141193825e3"
+crate = "workspace/cargo-toml"
+decision = "ported"
+reason = "zstd 0.13 -> 0.14 in [workspace.dependencies]; encode_all, copy_encode and read::Decoder are unchanged, so it builds with no code change."

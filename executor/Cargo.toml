@@ -20,7 +20,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tempfile = "3"
 windows-sys = { version = "0.61", default-features = false }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 # TLS is rustls with ring (aws-lc-rs needs cmake and NASM on every build machine); roots come from Windows: the
 # platform verifier for pairing over HTTPS, the system store for the WebSocket.
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
