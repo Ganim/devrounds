@@ -1,4 +1,10 @@
-import { type ConventionsDiffJson, type ConventionsSummaryJson, type ConventionsVersionJson, useRemote } from './api.ts'
+import {
+  type ConventionsDiffJson,
+  type ConventionsSummaryJson,
+  type ConventionsVersionJson,
+  getProject,
+  useRemote,
+} from './api.ts'
 import { bySection, diffEntries } from './conventions.ts'
 import { Loading, when } from './ui.tsx'
 
@@ -23,7 +29,7 @@ function ActiveVersion() {
           </p>
           {bySection(v.document.rules).map(([section, rules]) => (
             <div key={section}>
-              <h2>{section}</h2>
+              <h3>{section}</h3>
               <table>
                 <thead>
                   <tr>
@@ -62,7 +68,7 @@ function ActiveVersion() {
           {v.document.rules.length === 0 ? <p className="muted">No rules.</p> : null}
           {bySection(v.document.facts ?? []).map(([section, facts]) => (
             <div key={`fact ${section}`}>
-              <h2>{section}</h2>
+              <h3>{section} · facts</h3>
               <table>
                 <thead>
                   <tr>
@@ -122,10 +128,13 @@ function Proposal({
       <div className="card">
         Approve with a human token (the web view only reads):
         <pre className="command">
-          DEVROUNDS_TOKEN=&lt;human token&gt; devrounds conventions approve {proposal.version}
+          DEVROUNDS_TOKEN=&lt;human token&gt; devrounds conventions approve {proposal.version} --project {getProject()}
         </pre>
         or reject with{' '}
-        <span className="mono">devrounds conventions reject {proposal.version} --reason &lt;text&gt;</span>.
+        <span className="mono">
+          devrounds conventions reject {proposal.version} --project {getProject()} --reason &lt;text&gt;
+        </span>
+        .
       </div>
       <Loading data={d} error={diff.error}>
         {d ? (
