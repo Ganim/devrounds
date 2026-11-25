@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 // Types only: erased by esbuild, so the web bundle never pulls in server code. Keys are a contract (see view.ts).
+import type { VersionDiff } from '../../control-plane/src/conventions/diff-versions.ts'
+import type { ConventionsSummary, VersionView } from '../../control-plane/src/conventions/service.ts'
 import type { JobSummary } from '../../control-plane/src/jobs/enqueue.ts'
 import type { MachineView } from '../../control-plane/src/machines/service.ts'
 import type { BalanceRow } from '../../control-plane/src/planning/balance.ts'
@@ -46,6 +48,10 @@ export type MachineJson = Wire<MachineView> & { connected: boolean }
 export type RunJson = Wire<RunView>
 // GET /runs/:id/logs: the cursor is a line seq.
 export type LogPageJson = { lines: LogLine[]; nextCursor: number | null }
+// GET /conventions, /conventions/:version and /conventions/:version/diff (conventions/service.ts).
+export type ConventionsSummaryJson = Wire<ConventionsSummary>
+export type ConventionsVersionJson = Wire<VersionView>
+export type ConventionsDiffJson = VersionDiff & { version: number; against: number | null }
 
 const PROJECT_KEY = 'devrounds.project'
 const POLL_MS = 10_000

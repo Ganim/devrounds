@@ -281,3 +281,26 @@ pre.summary {
   background: #fdecea;
   padding: 8px 10px;
 }
+/* Conventions versions and rule severities. */
+.pill.active {
+  background: var(--done);
+}
+.pill.proposed {
+  background: var(--in_progress);
+}
+.pill.warn {
+  background: #b7791f;
+}
+.pill.block {
+  background: var(--blocked);
+}
+pre.command {
+  font:
+    13px / 1.4 ui-monospace,
+    Consolas,
+    monospace;
+  background: #eef0f3;
+  padding: 8px 10px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { getSession, type PlanView, signOut, useRemote } from './api.ts'
 import { BalancePage } from './BalancePage.tsx'
+import { ConventionsPage } from './ConventionsPage.tsx'
 import { HistoryPage } from './HistoryPage.tsx'
 import { JobsPage } from './JobsPage.tsx'
 import { Login } from './Login.tsx'
@@ -66,6 +67,7 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
   if (phaseKey !== undefined) page = <PhasePage phaseKey={phaseKey} plan={plan} />
   else if (route === '/balance') page = <BalancePage />
   else if (route === '/history') page = <HistoryPage />
+  else if (route === '/conventions') page = <ConventionsPage />
   else if (route === '/machines') page = <MachinesPage />
   else if (route === '/queues') page = <QueuesPage />
   else if (route === '/jobs') page = <JobsPage />
@@ -79,6 +81,7 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
           {link('/', 'Roadmap', route === '/' || phaseKey !== undefined)}
           {link('/balance', 'Balance', route === '/balance')}
           {link('/history', 'History', route === '/history')}
+          {link('/conventions', 'Conventions', route === '/conventions')}
           {OPS.map(([href, label]) => link(href, label, route === href || (href === '/runs' && runId !== undefined)))}
         </nav>
         <span className="totals">

@@ -351,6 +351,10 @@ it: blocking rules first, then warn, then judgment. `--paths` keeps the rules th
 answers it (`GET /conventions/<n|active>`), with its `documentSha`. No active version is DR201 kind `conventions`.
 `export` prints the document as YAML, ready to edit and propose.
 
+The web view shows the same at `#/conventions`, read-only: the open proposal's diff against the active version
+(removed and changed blocking rules first) with the approve command to run under a human token, then the active
+version's rules and facts by section, with each rule's kind, severity and evidence paths.
+
 ### Generated blocks
 
 ```
