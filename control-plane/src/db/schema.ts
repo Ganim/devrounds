@@ -3,7 +3,7 @@ import type { ColumnType, Generated, Selectable } from 'kysely'
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
 // 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts, 0018_job_env.ts, 0019_placement.ts,
 // 0020_result_cache.ts, 0021_gates.ts, 0022_task_source_key.ts, 0024_convention_sets.ts, 0025_convention_checks.ts
-// and 0026_convention_check_counts.ts (0002, 0003, 0007 and 0023 add no columns). pg returns int8 and numeric as
+// and 0026_convention_check_counts.ts (0002, 0003, 0007, 0023 and 0027 add no columns). pg returns int8 and numeric as
 // strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>

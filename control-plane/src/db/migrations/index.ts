@@ -25,6 +25,7 @@ import { learnedNeedP90 } from './0023_learned_need_p90.ts'
 import { conventionSets } from './0024_convention_sets.ts'
 import { conventionChecks } from './0025_convention_checks.ts'
 import { conventionCheckCounts } from './0026_convention_check_counts.ts'
+import { claimRunningNeed } from './0027_claim_running_need.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -58,5 +59,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0024_convention_sets': conventionSets,
     '0025_convention_checks': conventionChecks,
     '0026_convention_check_counts': conventionCheckCounts,
+    '0027_claim_running_need': claimRunningNeed(options),
   }
 }

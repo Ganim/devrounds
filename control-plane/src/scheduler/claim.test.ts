@@ -327,7 +327,7 @@ test('two concurrent claims never take the same run', async () => {
 
 test('public cannot execute claim_run; the app role can', async () => {
   const { admin } = await testDb()
-  const fn = 'claim_run(uuid, bigint, bigint, integer)'
+  const fn = 'claim_run(uuid, bigint, bigint, integer, bigint)'
   const { rows } = await sql<{ pub: boolean; app: boolean; definer: boolean; config: string[] }>`
     select has_function_privilege('public', ${fn}, 'execute') as pub,
       has_function_privilege(${TEST_APP_ROLE}, ${fn}, 'execute') as app,

@@ -45,8 +45,9 @@ export const MAX_PAYLOAD = 4 * 1024 * 1024
 const MAX_REASON_BYTES = 123
 
 // The machine's latest MachineReport in this session, stamped with this process's clock: the scheduler places only
-// on a machine whose report is recent (scheduler/scheduler.ts).
-export type MachineMemory = { at: number; availableMemory: bigint; totalMemory: bigint }
+// on a machine whose report is recent (scheduler/scheduler.ts). `idleAvailable`: the available memory of the latest
+// report with no run (`running` 0) in this session, the base scheduler/placeable.ts runningUsed measures runs against.
+export type MachineMemory = { at: number; availableMemory: bigint; totalMemory: bigint; idleAvailable?: bigint }
 // `features`: negotiated at Hello; the scheduler offers only to a session that speaks job-env.
 type Session = { tenantId: string; socket: WebSocket; features: string[]; report?: MachineMemory }
 
@@ -309,10 +310,12 @@ function serveSession(
       return
     }
     if (message.type === 'MachineReport') {
+      const availableMemory = BigInt(message.available_memory)
       session.report = {
         at: Date.now(),
-        availableMemory: BigInt(message.available_memory),
+        availableMemory,
         totalMemory: BigInt(message.total_memory),
+        idleAvailable: message.running === 0 ? availableMemory : session.report?.idleAvailable,
       }
       await recordReport(ctx, machine.machineId, message)
       // Freed memory may fit a queued run, and the first report is what makes the machine placeable at all.

@@ -11,7 +11,7 @@ import { createProject } from '../planning/service.ts'
 import { withTenant } from '../tenancy/scope.ts'
 import { type TestDb, testDb } from '../test-support/db.ts'
 import { claimRun } from './claim.ts'
-import { unplacedReasons } from './placeable.ts'
+import { placeable, unplacedReasons } from './placeable.ts'
 
 const projectKey = 'devrounds'
 const MIB = 1024 * 1024
@@ -48,13 +48,18 @@ function connect(
   sessions: Sessions,
   tenantId: string,
   machineId: string,
-  o: { available?: number; at?: number; features?: readonly string[] } = {},
+  o: { available?: number; idleAvailable?: number; at?: number; features?: readonly string[] } = {},
 ) {
   sessions.open(machineId, {
     tenantId,
     socket: { close() {} } as unknown as WebSocket,
     features: [...(o.features ?? FEATURES)],
-    report: { at: o.at ?? Date.now(), availableMemory: BigInt(o.available ?? 16 * GIB), totalMemory: BigInt(32 * GIB) },
+    report: {
+      at: o.at ?? Date.now(),
+      availableMemory: BigInt(o.available ?? 16 * GIB),
+      totalMemory: BigInt(32 * GIB),
+      idleAvailable: o.idleAvailable === undefined ? undefined : BigInt(o.idleAvailable),
+    },
   })
 }
 
@@ -133,5 +138,49 @@ test('a need above free memory names the roomiest machine, its need and free aft
     new Map([
       [second, { reason: 'memory', machine: 'build-01', needBytes: 8000 * MIB, freeBytes: 14 * GIB - 8000 * MIB }],
     ]),
+  )
+})
+
+test('a running run counts its need minus what the machine used since it was idle, in placement and in claim', async () => {
+  const sessions = new Sessions()
+  const { tenant, ctx, machines, enqueue } = await setup(['build-01', 'build-02'])
+  const [busy, spare] = machines.map((m) => m.machineId)
+  // build-01 runs a `mid` (8000 MiB) that has used 1 GiB so far: idle it had 27 GiB free, now 26 GiB.
+  const running = await enqueue('mid', 'build-01')
+  const offered = await withTenant(t.db, tenant.tenantId, (trx) =>
+    claimRun(trx, busy, { freeBytes: BigInt(27 * GIB), reserveBytes: 0n, offerTimeoutS: 60 }),
+  )
+  assert.equal(offered?.runId, running)
+  await t.admin
+    .updateTable('runs')
+    .set({ state: 'running', started_at: new Date() })
+    .where('id', '=', running)
+    .execute()
+  connect(sessions, tenant.tenantId, busy, { available: 26 * GIB, idleAvailable: 27 * GIB })
+  connect(sessions, tenant.tenantId, spare, { available: 24 * GIB })
+
+  // build-01 has 26 - 2 - (8000 MiB - 1 GiB) left, under `heavy`'s 20000 MiB; build-02 has 22 GiB and comes first.
+  const busyRoom = 24 * GIB - (8000 * MIB - GIB)
+  const order = await withTenant(t.db, tenant.tenantId, (trx) => placeable(trx, sessions, tenant.tenantId, Date.now()))
+  assert.deepEqual(
+    order.map((m) => [m.machineId, m.room]),
+    [
+      [spare, BigInt(22 * GIB)],
+      [busy, BigInt(busyRoom)],
+    ],
+  )
+  const heavy = await enqueue('heavy', 'build-01')
+  const claimed = await withTenant(t.db, tenant.tenantId, (trx) =>
+    claimRun(trx, busy, {
+      freeBytes: order[1].available,
+      reserveBytes: order[1].reserve,
+      runningUsedBytes: order[1].runningUsed,
+      offerTimeoutS: 60,
+    }),
+  )
+  assert.equal(claimed, null)
+  assert.deepEqual(
+    await unplacedReasons(ctx, sessions, [heavy]),
+    new Map([[heavy, { reason: 'memory', machine: 'build-01', needBytes: 20000 * MIB, freeBytes: busyRoom }]]),
   )
 })

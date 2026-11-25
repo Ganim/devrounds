@@ -90,7 +90,8 @@ copy, and keeps the home; run it from the build, not from the installed copy, wh
 it never fails because no executor is connected. The control plane's scheduler offers queued runs to connected machines
 that sent a `MachineReport` in the last 30 s, the one with the most free memory first, as long as the run's learned
 memory need fits in free memory minus the reserve (a tenth of the total, at most 2 GiB) minus the needs already
-offered there. It wakes on a Postgres NOTIFY (`devrounds_scheduler`) when a run is queued or ends, when an executor
+offered there and what its running runs may still claim (their needs minus the memory the machine used since
+it last reported no run). It wakes on a Postgres NOTIFY (`devrounds_scheduler`) when a run is queued or ends, when an executor
 connects or reports, and on a poll every `schedulerPollS` seconds (default 15, `DEVROUNDS_SCHEDULER_POLL_S`), which
 keeps placing runs if its LISTEN connection is down. `offerTimeoutS` (default 120, at least 5,
 `DEVROUNDS_OFFER_TIMEOUT_S`) is how long an executor has to answer an Offer. Both go in `server.json` or the
@@ -258,7 +259,7 @@ and submits again with a new Idempotency-Key, for `--wait-lock <s>` seconds (def
 until it ended. While a check stays queued with no live machine able to take it, `gate run|show --wait` and
 `run show --wait` print one line to stderr naming why, at most every 30 s: `not placed: no machine connected`,
 `not placed: check <ref>: machine <name> (pinned) is offline`, or `not placed: needs <n> MiB, above the <n> MiB free on
-<machine>` (free after the reserve and the runs already offered there, as the scheduler counts it). The reason is
+<machine>` (free after the reserve and the runs already offered or running there, as the scheduler counts it). The reason is
 `unplaced` on each check of `GET /gates/<id>` and on `GET /runs/<id>`. The checks hit the result cache by their `cache_key`, so a gate whose every check is a hit passes at
 submit.
 

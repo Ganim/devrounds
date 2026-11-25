@@ -1,3 +1,4 @@
+import { sql } from 'kysely'
 import type { MachineMemory, Sessions } from '../executor/gateway.ts'
 import { run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import { storedNeed } from '../runs/learned-need.ts'
@@ -6,13 +7,24 @@ import { defaultReserve } from './claim.ts'
 // A machine whose last MachineReport is older than this may be gone or wedged; its free memory is not trusted.
 const REPORT_FRESH_MS = 30_000
 
-export type Placeable = { machineId: string; available: bigint; reserve: bigint; room: bigint }
+export type Placeable = { machineId: string; available: bigint; reserve: bigint; runningUsed: bigint; room: bigint }
+
+/**
+ * Memory the machine's running runs already hold, so already missing from its free memory: what it used since its
+ * last report with no run, 0 before this session saw one. The report has no per-run figure; this one also counts any
+ * other program's growth since (running runs then count less, as before F-0012) and nothing that started before the
+ * idle report (they count whole). claim_run subtracts it from the running runs' needs, never below 0.
+ */
+export function runningUsed(report: MachineMemory): bigint {
+  const used = report.idleAvailable === undefined ? 0n : report.idleAvailable - report.availableMemory
+  return used > 0n ? used : 0n
+}
 
 /**
  * Machines of the tenant the scheduler offers to, most room first: a session with a recent report, room = free minus
- * reserve minus the needs already offered or admitted there (claim_run's in-flight sum, which leaves running runs out:
- * F-0012). An executor without job-env would drop the Offer's env_set and run the job without its values, so it is
- * not placeable.
+ * reserve minus claim_run's in-flight sum: the needs offered or admitted there plus what its running runs may still
+ * claim (their needs minus runningUsed, at least 0). An executor without job-env would drop the Offer's env_set and
+ * run the job without its values, so it is not placeable.
  */
 export async function placeable(trx: Trx, sessions: Sessions, tenantId: string, now: number): Promise<Placeable[]> {
   const live = sessions
@@ -27,24 +39,32 @@ export async function placeable(trx: Trx, sessions: Sessions, tenantId: string, 
   if (live.length === 0) return []
   const inFlight = await trx
     .selectFrom('runs')
-    .select(['machine_id', (eb) => eb.fn.sum<string | null>('memory_need').as('need')])
+    .select([
+      'machine_id',
+      sql<string | null>`sum(memory_need) filter (where state <> 'running')`.as('need'),
+      sql<string | null>`sum(memory_need) filter (where state = 'running')`.as('running_need'),
+    ])
     .where(
       'machine_id',
       'in',
       live.map((s) => s.machineId),
     )
-    .where('state', 'in', ['offered', 'admitted'])
+    .where('state', 'in', ['offered', 'admitted', 'running'])
     .groupBy('machine_id')
     .execute()
   const machines = live.map((s) => {
     const report = s.report as MachineMemory
     const reserve = defaultReserve(report.totalMemory)
-    // Null for runs offered before claims stored their need; those count as nothing here.
-    const need = BigInt(inFlight.find((row) => row.machine_id === s.machineId)?.need ?? 0)
+    // Null for runs offered before claims stored their need; those count as nothing here, as in claim_run.
+    const row = inFlight.find((r) => r.machine_id === s.machineId)
+    const used = runningUsed(report)
+    const ahead = BigInt(row?.running_need ?? 0) - used
+    const need = BigInt(row?.need ?? 0) + (ahead > 0n ? ahead : 0n)
     return {
       machineId: s.machineId,
       available: report.availableMemory,
       reserve,
+      runningUsed: used,
       room: report.availableMemory - reserve - need,
     }
   })

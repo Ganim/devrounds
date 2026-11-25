@@ -152,6 +152,7 @@ export class Scheduler {
           const claim = await claimRun(trx, machine.machineId, {
             freeBytes: machine.available,
             reserveBytes: machine.reserve,
+            runningUsedBytes: machine.runningUsed,
             offerTimeoutS,
           })
           return claim && claimedOffer(trx, claim.runId, claim.memoryNeed, telemetry)
