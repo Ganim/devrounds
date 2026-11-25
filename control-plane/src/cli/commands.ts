@@ -2028,12 +2028,20 @@ function failureOutput(err: unknown): { output: AgentOutput; exitCode: number } 
   const exitCode = exitCodeFor(code)
   // The configured project itself not found (wrong key, or a key of another tenant) is a config problem too.
   const projectMissing = err instanceof ApiError && code === 'DR201' && err.data.kind === 'project'
+  // DR201 kind `conventions` keyed by the project (not a version number) means no version was ever approved; the
+  // generic hint stays kind-neutral, so the way out goes here.
+  const conventionsMissing = err instanceof ApiError && code === 'DR201' && err.data.kind === 'conventions'
+  const noActiveVersion = conventionsMissing && !/^\d+$/.test(String(err.data.key))
   const next =
     exitCode === 5 || projectMissing || err instanceof LoginNeeded
       ? LOGIN_NEXT
       : exitCode === 2
         ? 'devrounds --help'
-        : 'devrounds plan show'
+        : noActiveVersion
+          ? 'devrounds conventions propose <file.yaml> --cwd <repo> --task <key>'
+          : conventionsMissing
+            ? 'devrounds conventions show'
+            : 'devrounds plan show'
   return { output: { failures: [`${code} ${words.text}`, `hint: ${words.hint}`], body: [], next }, exitCode }
 }
 

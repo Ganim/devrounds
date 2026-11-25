@@ -48,7 +48,7 @@ export const WORDS: Record<ErrorCode, Words> = {
   },
   DR201: {
     text: 'No {kind} {key} found.',
-    hint: 'Check the {kind} key with the `devrounds` command that lists it (`plan show` for tasks); keys are case-sensitive. A project has no active conventions until a proposal is approved (`devrounds conventions propose`).',
+    hint: 'Check the {kind} key with the `devrounds` command that lists it (`plan show` for tasks); keys are case-sensitive.',
     httpStatus: 404,
     keys: ['kind', 'key'],
   },

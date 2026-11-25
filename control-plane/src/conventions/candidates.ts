@@ -21,8 +21,8 @@ const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/
 const BULLET = /^\s*([-*+]|\d+[.)])\s+\S/
 const FENCE = /^\s*(`{3,}|~{3,})/
 
-// Repo-relative POSIX paths of the markdown files under `cwd`, without following links (a pnpm `node_modules` is
-// junctions) or entering SKIPPED_DIRS.
+// Repo-relative POSIX paths of the markdown files under `cwd`, without following links (a package manager's
+// `node_modules` can be junctions) or entering SKIPPED_DIRS.
 async function markdownFiles(cwd: string, dir = ''): Promise<string[]> {
   const entries = await readdir(join(cwd, dir), { withFileTypes: true })
   // A directory with its own `.git` is another checkout (a worktree copy, a submodule): its files are not this repo's,

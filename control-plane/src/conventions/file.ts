@@ -150,7 +150,7 @@ function repoPathIssue(path: string): string | null {
 /**
  * Why `path` cannot be a target, or null. `render` writes there, so on top of a repo path it may not enter `.git`
  * (a hook is run by the shell); case-insensitive, as on Windows. Windows also reaches `.git` by its 8.3 name (`GIT~1`)
- * and drops a trailing dot or space (`.git.`), so those segments are refused too, as git does on NTFS. The CLI checks
+ * and drops a trailing dot or space (`.git.`), so those segments are refused too, as version control does on NTFS. The CLI checks
  * the targets it receives again.
  */
 export function targetPathIssue(path: string): string | null {

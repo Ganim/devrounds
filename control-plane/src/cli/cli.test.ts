@@ -1233,4 +1233,5 @@ test('conventions check with no active version exits 3', async () => {
   })
   assert.equal(res.exitCode, 3, res.stdout + res.stderr)
   assert.match(res.stderr, /^DR201 /)
+  assert.match(res.stderr, /\nnext: devrounds conventions propose /)
 })

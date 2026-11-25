@@ -25,7 +25,7 @@
 // else, is stopped at the end, so it can run beside an installed executor service.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -573,12 +573,17 @@ async function main(): Promise<void> {
       return shown.documentSha
     }
     const v1Sha = await approve(join(CONVENTIONS, 'e2e.yaml'), 1)
-    // A copy of the fixture gate per diff; the green ones carry the cache key README asks for (the documentSha).
-    const convGate = async (name: string, diff: string, cacheKey?: string): Promise<GateJson> => {
+    // A copy of the fixture gate per diff; the green ones carry the cache key README asks for: the change (here the diff
+    // file's content, in a repo its head and base commits) plus the active documentSha.
+    const convGate = async (name: string, diff: string, documentSha?: string): Promise<GateJson> => {
       const file = parseGateFile(await readFile(CONVENTIONS_GATE, 'utf8'))
+      const changeSha = createHash('sha256')
+        .update(await readFile(join(CONVENTIONS, diff)))
+        .digest('hex')
+        .slice(0, 16)
       for (const check of file.checks) {
         check.args = [join(CONVENTIONS, diff)]
-        if (cacheKey) check.cache_key = cacheKey
+        if (documentSha) check.cache_key = `conventions-${changeSha}-${documentSha}`
       }
       const path = join(tmp, `conventions-gate-${name}.yaml`)
       await writeFile(path, JSON.stringify(file))
@@ -625,11 +630,11 @@ async function main(): Promise<void> {
     await cli('conventions', 'render', '--cwd', convDir)
     assert.equal(await readFile(agentsMd, 'utf8'), rendered, 'render did not restore the block')
 
-    const greenRan = await convGate('green-1', 'green.diff', `conventions-${v1Sha}`)
+    const greenRan = await convGate('green-1', 'green.diff', v1Sha)
     assert.equal(greenRan.state, 'passed', JSON.stringify(greenRan))
     assert.equal(onlyCheck(greenRan).cachedFrom, null, JSON.stringify(greenRan))
     assert.equal((await checkRow(onlyCheck(greenRan).runId))?.version, 1)
-    const greenCached = await convGate('green-2', 'green.diff', `conventions-${v1Sha}`)
+    const greenCached = await convGate('green-2', 'green.diff', v1Sha)
     assert.equal(greenCached.state, 'passed', JSON.stringify(greenCached))
     assert.equal(onlyCheck(greenCached).cachedFrom, onlyCheck(greenRan).runId, JSON.stringify(greenCached))
 
@@ -638,7 +643,7 @@ async function main(): Promise<void> {
     await writeFile(v2File, v1Text.replace("The e2e's one blocking rule.", "The e2e's one blocking rule, version 2."))
     const v2Sha = await approve(v2File, 2)
     assert.notEqual(v2Sha, v1Sha)
-    const greenAgain = await convGate('green-3', 'green.diff', `conventions-${v2Sha}`)
+    const greenAgain = await convGate('green-3', 'green.diff', v2Sha)
     assert.equal(greenAgain.state, 'passed', JSON.stringify(greenAgain))
     assert.equal(onlyCheck(greenAgain).cachedFrom, null, `version 2 read a cached green: ${JSON.stringify(greenAgain)}`)
     assert.equal((await checkRow(onlyCheck(greenAgain).runId))?.version, 2)

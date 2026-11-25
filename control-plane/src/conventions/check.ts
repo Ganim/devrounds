@@ -14,7 +14,7 @@ export type Violation = {
 
 const EXCERPT_CHARS = 200
 
-// Git reads a file as text when its first 8000 bytes hold no NUL, so a later one reaches an added line; jsonb refuses
+// A diff tool reads a file as text when its first 8000 bytes hold no NUL, so a later one reaches an added line; jsonb refuses
 // `\u0000` (22P05), and the record would then fail as infra on every rerun of that change.
 const excerptOf = (text: string) => [...text.trim().replaceAll('\0', '\uFFFD')].slice(0, EXCERPT_CHARS).join('')
 

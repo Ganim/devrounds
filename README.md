@@ -468,8 +468,10 @@ an empty diff. Exit 1 is `check_red`, 2, 3 and 5 `environment`, 4 and 6 `infra`.
   args: [origin/main]
 ```
 
-Give the check no `cache_key`, or one that includes the active `documentSha` (`devrounds conventions show --json`):
-a green cached before a new version was approved would otherwise pass without checking against it.
+Give the check no `cache_key`, or one that names the change too: its head and base commits (or the tree) plus the
+active `documentSha` (`devrounds conventions show --json`). The cache matches on project, job type and key only, so a
+key without the change passes a later commit's blocking violation from an earlier green, and a key without the
+`documentSha` passes a change that was never checked against a newly approved version.
 
 Inside a run (the executor sets `DEVROUNDS_RUN_ID`), `check` records its result before printing: the version, the
 files checked, the exact blocking and warning counts, the exact hits per rule and up to 500 violations, blocking first.

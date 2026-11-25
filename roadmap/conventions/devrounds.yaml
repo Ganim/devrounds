@@ -107,9 +107,10 @@ rules:
   - key: errors.words-only
     section: Never
     title: Never put error text, hint or HTTP status outside `errors/words.ts`
-    why: One words layer documents every code in `docs/errors.md`; `errors.test.ts` fails a code without words.
-    check: { kind: job_type, enforced_by: devrounds-test }
-    severity: block
+    why: >-
+      One words layer documents every code in `docs/errors.md`. `errors.test.ts` fails a code without words, but not text
+      or a status written elsewhere, so a reviewer reads for it.
+    check: { kind: judgment }
     evidence:
       - {
           path: MANIFESTO.md,
@@ -145,9 +146,16 @@ rules:
     exclude: ["**/*.test.ts", control-plane/src/test-support/**]
     check:
       kind: pattern
-      forbid: '\b(?:[Cc]lickmax|CLICKMAX|devlanes|pnpm|cargo|Linear|Claude|Slack|WhatsApp|GitHub)\b|(?<![.\w])git\b'
+      forbid: '\b(?:[Cc]lickmax|CLICKMAX|[Dd]evlanes|[Pp]npm|[Cc]argo|Linear|Claude|Slack|WhatsApp|GitHub)\b|(?<![.\w])[Gg]it\b'
     examples:
-      bad: ["// devlanes default memory need", "const program = 'git'", "// the Linear issue id"]
+      bad:
+        [
+          "// devlanes default memory need",
+          "const program = 'git'",
+          "// Git reads it as text",
+          "// Pnpm links node_modules",
+          "// the Linear issue id",
+        ]
       good: ["// default memory need", "if (entry.name === '.git') return []", "// a linear scan"]
     evidence:
       - {
@@ -216,10 +224,20 @@ rules:
     section: Always
     title: Throw `DevRoundsError{code, data}`
     why: >-
-      Codes are `DR` plus 3 digits: 1xx input, 2xx not found, 3xx state conflict, 4xx auth/permission, 5xx internal.
-      `errors.test.ts` checks that every emitted code has words.
-    check: { kind: job_type, enforced_by: devrounds-test }
-    severity: block
+      Codes are `DR` plus 3 digits: 1xx input, 2xx not found, 3xx state conflict, 4xx auth/permission, 5xx internal. A
+      plain `Error` carries no code, so the caller gets an internal error with no hint; this rule points at the added
+      `throw`.
+    paths: [control-plane/src/**/*.ts, control-plane/src/**/*.tsx]
+    exclude: ["**/*.test.ts", control-plane/src/test-support/**]
+    check: { kind: pattern, forbid: '\bthrow\s+new\s+Error\s*\(' }
+    examples:
+      bad: ["throw new Error('malformed conventions block')", "  if (!row) throw new Error(`no run ${id}`)"]
+      good:
+        [
+          "fail('DR201', { kind: 'task', key })",
+          "throw new DevRoundsError(code, data)",
+          "throw new ApiError(status, body)",
+        ]
     evidence:
       - { path: MANIFESTO.md, excerpt: "An error is a `DevRoundsError{code, data}`.", role: source }
       - {

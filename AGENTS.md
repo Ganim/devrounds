@@ -65,3 +65,6 @@ Invariants derived from `MANIFESTO.md`. Change them only together with it, with 
 - The web view polls every 10 s instead of SSE. Removed in P5.
 - `#[allow(unsafe_code)]` on the FFI modules of `executor/crates/sys-windows/src/lib.rs`, each unsafe block with a
   SAFETY comment.
+- The directory names `.git`, `node_modules` and `.superpowers` in `conventions/candidates.ts` (`SKIPPED_DIRS`), and
+  `.git` with its 8.3 name `git~N` in `conventions/file.ts` (`targetPathIssue`): data the engine skips or refuses, not
+  an adapter naming a tool. Added in P3.
