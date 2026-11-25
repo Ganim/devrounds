@@ -1,0 +1,46 @@
+# DevRounds's conventions check as a gate check (run it with --cwd <worktree>): the committed changes since the merge
+# base with the job's one arg (the base, e.g. origin/main), checked against the active conventions version, with the
+# generated blocks compared to its render. Uncommitted changes are not read; the gate's `dirty` flag says when there
+# were some. A repo whose DevRounds CLI lives elsewhere writes its own job type. Without a base, or when the diff
+# fails, it exits 2 before the check: an empty diff would pass. DEVROUNDS_URL, DEVROUNDS_TOKEN (an agent token) and
+# DEVROUNDS_PROJECT are user variables on the machine. No cache_key unless it includes the active documentSha
+# (`devrounds conventions show --json`), so an approval reruns it.
+key: conventions-check
+command:
+  program: sh
+  args:
+    - -c
+    - >-
+      [ -n "$1" ] || { echo 'conventions-check: the base is its job arg' >&2; exit 2; };
+      diff=$(git diff --no-color -U0 "$1"...HEAD) || exit 2;
+      printf '%s\n' "$diff" | node control-plane/src/cli/main.ts conventions check --cwd . --diff -
+    - sh
+args_from_job: true
+env:
+  [
+    PATH,
+    PATHEXT,
+    SystemRoot,
+    ComSpec,
+    USERPROFILE,
+    APPDATA,
+    LOCALAPPDATA,
+    TEMP,
+    TMP,
+    DEVROUNDS_URL,
+    DEVROUNDS_TOKEN,
+    DEVROUNDS_PROJECT,
+  ]
+timeout_s: 300
+# CLI exit codes (AGENTS.md):
+#   1 a blocking violation or docs drift: check_red
+#   2 no base, a base the diff cannot use, or input the CLI refuses: environment (the gate file's args)
+#   3 project or active version not found, 5 auth or permission: environment
+#   4 control plane unreachable, 6 internal: infra
+classify:
+  - class: check_red
+    exit_codes: [1]
+  - class: environment
+    exit_codes: [2, 3, 5]
+  - class: infra
+    exit_codes: [4, 6]

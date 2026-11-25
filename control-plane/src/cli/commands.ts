@@ -7,10 +7,12 @@ import type { TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { stringify as stringifyYaml } from 'yaml'
 import { DEFAULT_CANDIDATE_GLOBS, findCandidates } from '../conventions/candidates.ts'
+import { checkChange, driftViolations } from '../conventions/check.ts'
 import type { VersionDiff } from '../conventions/diff-versions.ts'
 import { inspectEvidence, verifyEvidence } from '../conventions/evidence.ts'
 import { type ConventionsDef, ConventionsFile, findConventionsIssue, withDefaults } from '../conventions/file.ts'
 import { applyBlock, driftOf, readBlock, renderBlocks } from '../conventions/render.ts'
+import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseGateFile } from '../gates/file.ts'
@@ -28,6 +30,7 @@ import {
   type AgentOutput,
   BODY_BUDGET,
   type ConventionsVersionJson,
+  conventionsCheckShow,
   conventionsDiffShow,
   conventionsShow,
   fitBody,
@@ -1693,7 +1696,37 @@ export const COMMANDS: Spec[] = [
       return { failures: [], body, next: `devrounds conventions render --cwd ${shellArg(cwd)} --check` }
     },
   },
+  {
+    path: ['conventions', 'check'],
+    usage:
+      'conventions check --cwd <repo> --diff <-|path>   check the added lines and new paths of a unified diff (- reads ' +
+      'stdin) and the generated blocks against the active version; blocking first, exits 1 on any',
+    args: 0,
+    options: { cwd: str, diff: str },
+    run: async (inv, connect) => {
+      const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
+      const source = text(inv, 'diff') ?? fail('DR101', { path: '--diff', reason: 'is required' })
+      const diff =
+        source === '-'
+          ? await readStdin()
+          : await readFile(source, 'utf8').catch((err: NodeJS.ErrnoException) =>
+              fail('DR101', { path: source, reason: `cannot be read (${err.code ?? err.message})` }),
+            )
+      const api = await connect()
+      const view = await api.get<ConventionsVersionJson>(path('conventions', 'active'))
+      const def = withDefaults(view.document)
+      const files = parseUnifiedDiff(diff).filter((file) => file.status !== 'deleted')
+      const drift = driftViolations(driftOf(def, view.version, await readTargets(cwd, def)))
+      return conventionsCheckShow(view.version, def, files.length, [...drift, ...checkChange(def, files)], cwd)
+    },
+  },
 ]
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
+}
 
 // Each target file of `def` under `cwd`, null when it does not exist.
 async function readTargets(cwd: string, def: ConventionsDef): Promise<Map<string, string | null>> {

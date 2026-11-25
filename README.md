@@ -415,3 +415,36 @@ which reads only the worktree and prints `path:line text` for each imperative li
 `NEVER`, `Do not`, and bullets under headings named like those) of the markdown files the globs match (default
 `**/AGENTS.md`, `**/CLAUDE.md`, `README.md`; `--glob` replaces them), sorted by path and line. Fenced code is
 skipped, and so are `node_modules`, `.git`, `dist`, `target` and `.superpowers`.
+
+### The check
+
+```
+devrounds conventions check --cwd <repo> --diff <-|path>
+```
+
+`check` reads a unified diff (`-` for stdin, or a file) and checks only what the change adds, so legacy code never
+fails it. A `pattern` rule fires on each added line of a file its `paths` cover (and no `exclude`) that matches
+`forbid` and not `unless`; deleted and binary files are skipped. A `path` rule fires on each new file (or a rename from
+outside into it) that matches `forbid_new` and the rule's `paths`/`exclude`. `job_type` and `judgment` rules are not
+run here. The target files under `--cwd` are compared with the active version's render, each drifted one a blocking
+`docs_drift` violation (see Generated blocks).
+
+Output: blocking violations first (`<path>:<line> <rule> <title>` with the trimmed line under it, up to 200
+characters; `<path> <rule> <title>` for a new path; `<path> docs_drift <reason>`), then warnings, then
+`checked <n> files against version <v>: <b> blocking, <w> warnings`, where `<n>` counts the diff's files that are not
+deleted. It exits 1 when anything blocks; `warn` rules print and pass. No active version is DR201 (exit 3): add the
+check to a gate only after version 1 is approved.
+
+In a gate, `roadmap/fixtures/job-types/conventions-check.yaml` produces the diff of the committed changes since the
+merge base with the check's one arg, the base branch, and pipes it in (uncommitted changes are not read; the gate's
+`--dirty` says when there were some). Without a base, or when the diff cannot be made, it exits 2 instead of passing on
+an empty diff. Exit 1 is `check_red`, 2, 3 and 5 `environment`, 4 and 6 `infra`.
+
+```yaml
+- ref: conventions
+  job_type: conventions-check
+  args: [origin/main]
+```
+
+Give the check no `cache_key`, or one that includes the active `documentSha` (`devrounds conventions show --json`):
+a green cached before a new version was approved would otherwise pass without checking against it.

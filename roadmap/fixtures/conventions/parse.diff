@@ -1,0 +1,71 @@
+diff --git a/docs/gone.md b/docs/gone.md
+deleted file mode 100644
+index d3bc718..0000000
+--- a/docs/gone.md
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+-bye
+diff --git a/src/crlf.ts b/src/crlf.ts
+new file mode 100644
+index 0000000..4da6658
+--- /dev/null
++++ b/src/crlf.ts
+@@ -0,0 +1,2 @@
++first
++TODO crlf
+diff --git a/src/img.bin b/src/img.bin
+new file mode 100644
+index 0000000..8352675
+Binary files /dev/null and b/src/img.bin differ
+diff --git a/src/mod.ts b/src/mod.ts
+index 2fa992c..efe00fc 100644
+--- a/src/mod.ts
++++ b/src/mod.ts
+@@ -1,0 +2 @@ keep
++added TODO
+diff --git "a/src/my dir/caf\303\251 file.ts" "b/src/my dir/caf\303\251 file.ts"
+new file mode 100644
+index 0000000..5fcb9d2
+--- /dev/null
++++ "b/src/my dir/caf\303\251 file.ts"	
+@@ -0,0 +1 @@
++x TODO
+diff --git a/src/my dir/plain file.ts b/src/my dir/plain file.ts
+new file mode 100644
+index 0000000..975fbec
+--- /dev/null
++++ b/src/my dir/plain file.ts	
+@@ -0,0 +1 @@
++y
+diff --git a/src/old.ts b/src/new.ts
+similarity index 56%
+rename from src/old.ts
+rename to src/new.ts
+index 2019eda..e55d181 100644
+--- a/src/old.ts
++++ b/src/new.ts
+@@ -3 +3 @@ two
+-three
++THREE TODO
+@@ -7,0 +8 @@ seven
++eight TODO
+diff --git a/src/nonl.ts b/src/nonl.ts
+index 0a207c0..eb7b8af 100644
+--- a/src/nonl.ts
++++ b/src/nonl.ts
+@@ -2 +2 @@ a
+-b
+\ No newline at end of file
++b TODO
+\ No newline at end of file
+diff --git a/src/sql.ts b/src/sql.ts
+index 1111111..2222222 100644
+--- a/src/sql.ts
++++ b/src/sql.ts
+@@ -1 +1 @@
+--- removed comment TODO
++++ added line
+diff --git a/bin/run.sh b/bin/run.sh
+old mode 100644
+new mode 100755

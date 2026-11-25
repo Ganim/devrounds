@@ -1,5 +1,6 @@
+import { DOCS_DRIFT, type Violation } from '../conventions/check.ts'
 import type { DiffItem, VersionDiff } from '../conventions/diff-versions.ts'
-import { withDefaults } from '../conventions/file.ts'
+import { type ConventionsDef, withDefaults } from '../conventions/file.ts'
 import { rulesFor } from '../conventions/select.ts'
 import type { VersionView } from '../conventions/service.ts'
 import type { GateView } from '../gates/service.ts'
@@ -265,5 +266,59 @@ export function conventionsDiffShow(d: VersionDiff & { version: number; against:
       ...d.targets.removed.map((path) => fmt`removed target ${path}`),
     ],
     next: `devrounds conventions show --version ${d.version}`,
+  }
+}
+
+// Violations printed per severity, each list cut to the body budget on a whole violation: a change that trips a rule
+// thousands of times must still end with its summary and `next:`.
+function violationLines(violations: Violation[], titles: Map<string, string>, label: string): string[] {
+  const lines: string[] = []
+  let used = 0
+  for (const [i, v] of violations.entries()) {
+    const at = v.line === null ? v.path : `${v.path}:${v.line}`
+    // A path hit's excerpt is its path, and a docs_drift's is its reason, already on the first line.
+    const entry =
+      v.line === null
+        ? [fmt`${at} ${v.rule} ${titles.get(v.rule) ?? v.excerpt}`]
+        : [fmt`${at} ${v.rule} ${titles.get(v.rule)}`, fmt`  ${v.excerpt}`]
+    const size = entry.reduce((n, line) => n + Buffer.byteLength(oneLine(line)) + 1, 0)
+    if (used + size > BODY_BUDGET && i > 0) {
+      lines.push(`${violations.length - i} more ${label} not shown`)
+      break
+    }
+    used += size
+    lines.push(...entry)
+  }
+  return lines
+}
+
+/**
+ * `conventions check`: blocking violations first (docs drift included), then warnings, then the counts. `next:` is
+ * the render command when blocks drifted, else the rules of the paths that were hit.
+ */
+export function conventionsCheckShow(
+  version: number,
+  def: ConventionsDef,
+  filesChecked: number,
+  violations: Violation[],
+  cwd: string,
+): AgentOutput & { exitCode: number } {
+  const titles = new Map(def.rules.map((r) => [r.key, r.title]))
+  const blocking = violations.filter((v) => v.severity === 'block')
+  const warnings = violations.filter((v) => v.severity === 'warn')
+  const paths = [...new Set([...blocking, ...warnings].filter((v) => v.rule !== DOCS_DRIFT).map((v) => v.path))]
+  const next = violations.some((v) => v.rule === DOCS_DRIFT)
+    ? `devrounds conventions render --cwd ${shellArg(cwd)}`
+    : paths.length > 0
+      ? `devrounds conventions show --paths ${shellArg(paths.slice(0, 20).join(','))}`
+      : 'devrounds plan show'
+  return {
+    failures: violationLines(blocking, titles, 'blocking violations'),
+    body: [
+      ...violationLines(warnings, titles, 'warnings'),
+      `checked ${filesChecked} files against version ${version}: ${blocking.length} blocking, ${warnings.length} warnings`,
+    ],
+    next,
+    exitCode: blocking.length > 0 ? 1 : 0,
   }
 }

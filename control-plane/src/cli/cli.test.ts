@@ -1110,3 +1110,49 @@ test('conventions verify --open-tasks opens one F- task per stale rule and none 
     ],
   )
 })
+
+const CHECK_DIFF = fileURLToPath(new URL('../../../roadmap/fixtures/conventions/check-cli.diff', import.meta.url))
+
+test('conventions check --diff <fixture> prints blocking first and exits 1', async (t) => {
+  const { human, envFor } = await conventionsTenant()
+  await decide(human, 'alpha', 1, 'approve', undefined)
+  const repo = await scratch('check-')
+  t.after(() => removeDir(repo))
+  const opts = { env: await envFor('agent'), configPath: NO_CONFIG }
+  // AGENTS.md is the target: rendered, so the only drift is the one written below.
+  assert.equal((await runCli(['conventions', 'render', '--cwd', repo], opts)).exitCode, 0)
+
+  const res = await runCli(['conventions', 'check', '--cwd', repo, '--diff', CHECK_DIFF], opts)
+  assert.equal(res.exitCode, 1, res.stdout + res.stderr)
+  assert.equal(
+    res.stdout,
+    [
+      'control-plane/src/x.ts:5 engine.block title of engine.block',
+      '  // TODO engine',
+      'web/a.ts:2 web.warn title of web.warn',
+      '  // TODO web',
+      'control-plane/src/x.ts:5 engine.warn title of engine.warn',
+      '  // TODO engine',
+      'checked 2 files against version 1: 1 blocking, 2 warnings',
+      "next: devrounds conventions show --paths 'control-plane/src/x.ts,web/a.ts'",
+      '',
+    ].join('\n'),
+  )
+
+  await writeFile(join(repo, 'AGENTS.md'), 'hand-written only\n')
+  const drift = await runCli(['conventions', 'check', '--cwd', repo, '--diff', CHECK_DIFF], opts)
+  assert.equal(drift.exitCode, 1)
+  assert.match(drift.stdout, /^AGENTS\.md docs_drift missing_block\ncontrol-plane\/src\/x\.ts:5 engine\.block /)
+  assert.match(drift.stdout, /\nchecked 2 files against version 1: 2 blocking, 2 warnings\n/)
+  assert.match(drift.stdout, /\nnext: devrounds conventions render --cwd /)
+})
+
+test('conventions check with no active version exits 3', async () => {
+  const { envFor } = await conventionsTenant()
+  const res = await runCli(['conventions', 'check', '--cwd', '.', '--diff', CHECK_DIFF], {
+    env: await envFor('agent'),
+    configPath: NO_CONFIG,
+  })
+  assert.equal(res.exitCode, 3, res.stdout + res.stderr)
+  assert.match(res.stderr, /^DR201 /)
+})
