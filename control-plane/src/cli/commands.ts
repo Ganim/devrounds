@@ -21,6 +21,7 @@ import {
 import { applyBlock, driftOf, readBlock, removeBlock, renderBlocks } from '../conventions/render.ts'
 import type { ConventionIndicators } from '../conventions/results.ts'
 import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
+import type { RunEnvironment } from '../environments/index.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
 import { parseFlowFile } from '../flows/document.ts'
@@ -565,6 +566,14 @@ const runListLine = (r: RunListJson['runs'][number]) =>
 const mib = (bytes: number | null) => (bytes == null ? '-' : `${(bytes / 1048576).toFixed(1)} MiB`)
 const ms = (value: number | null) => (value == null ? '-' : `${value} ms`)
 
+// The lane a run in an environment saw at its start, with the URLs of its units, or why there is none.
+function environmentLine(e: RunEnvironment): string {
+  const head = fmt`environment: ${e.provider} ${e.mode}`
+  if (!e.lane) return fmt`${head} · no lane: ${e.error}`
+  const urls = e.lane.units.flatMap((unit) => unit.urls.slice(0, 1).map((url) => fmt`${unit.name} ${url}`))
+  return fmt`${head} · lane ${e.lane.reference} ${e.lane.state}` + (urls.length ? fmt` · ${urls.join(' · ')}` : '')
+}
+
 // Failures first (state, class, summary), then timeline, durations, resources, steps and delays.
 function runShow(r: RunJson): Result {
   const failed = FAILED_RUN.includes(r.state)
@@ -581,6 +590,7 @@ function runShow(r: RunJson): Result {
     fmt`run ${r.id} ${r.state}${failed ? '' : exit} · ${r.jobType} on ${r.machine} · attempt ${r.attempt}${r.task ? ` · task ${r.task}` : ''}`,
     // A cache hit ran nothing: its outcome, log and resources are the source run's.
     ...(r.cachedFrom ? [fmt`cached from ${r.cachedFrom}`] : []),
+    ...(r.environment ? [environmentLine(r.environment)] : []),
     fmt`timeline: queued ${t.queuedAt} · offered ${t.offeredAt} · admitted ${t.admittedAt} · started ${t.startedAt} · finished ${t.finishedAt}`,
     fmt`durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
     fmt`resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds} s · swept ${res.swept} · visible windows ${res.visibleWindows}`,

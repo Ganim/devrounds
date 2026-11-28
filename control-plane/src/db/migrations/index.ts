@@ -28,6 +28,7 @@ import { conventionCheckCounts } from './0026_convention_check_counts.ts'
 import { claimRunningNeed } from './0027_claim_running_need.ts'
 import { tenantNamesUnique } from './0028_tenant_names_unique.ts'
 import { flows } from './0029_flows.ts'
+import { environments } from './0030_environments.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -64,5 +65,6 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0027_claim_running_need': claimRunningNeed(options),
     '0028_tenant_names_unique': tenantNamesUnique,
     '0029_flows': flows(options),
+    '0030_environments': environments,
   }
 }

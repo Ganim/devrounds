@@ -1,6 +1,7 @@
 import { sql, type Updateable } from 'kysely'
 import type { JobState, RunState, RunsTable } from '../db/schema.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
+import { type JobTypeEnvironment, runEnvironment } from '../environments/index.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
 import { failJob, queueRetry, settledRuns, settleJob, skippedSummary } from '../jobs/outcome.ts'
@@ -255,6 +256,17 @@ async function latestStamp(trx: Trx, runId: string): Promise<Date | null> {
   return rows[0]?.latest ?? null
 }
 
+// The job type's environment when its run starts. The Offer took it when it was sent, so a job type changed in between
+// stores a reading against the new environment (or none); accepted, as only the stored reading is off.
+async function jobTypeEnvironment(trx: Trx, jobTypeId: string): Promise<JobTypeEnvironment | null> {
+  const { environment } = await trx
+    .selectFrom('job_types')
+    .select('environment')
+    .where('id', '=', jobTypeId)
+    .executeTakeFirstOrThrow()
+  return environment as JobTypeEnvironment | null
+}
+
 // The run of `machineId`, locked for its update; DR201 for a run of another machine, as for every executor event.
 async function lockRun(trx: Trx, machineId: string, runId: string) {
   const row = await trx
@@ -345,15 +357,18 @@ export async function applyRunEvent(
           })
           .execute()
         return
-      case 'RunStarted':
+      case 'RunStarted': {
+        const environment = await jobTypeEnvironment(trx, row.job_type_id)
         await update({
           ...move('start'),
           pid: int4(event.pid),
           // FILETIME passes 2^53, so it stays a decimal string from the wire to the int8 column.
           process_start_time: int8(event.start_time),
           boot_id: event.boot_id,
+          ...(environment ? { environment: JSON.stringify(runEnvironment(environment, event.environment)) } : {}),
         })
         return
+      }
       case 'StepStarted': {
         requireRunning()
         await update({ clock_skew_ms })

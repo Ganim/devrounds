@@ -1,6 +1,7 @@
 import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import type { FailureClass } from '../db/schema.ts'
+import { ENVIRONMENT_MODES, ENVIRONMENT_PROVIDERS, type JobTypeEnvironment } from '../environments/index.ts'
 import { FAILURE_CLASSES, RULE_CLASSES } from '../runs/classify.ts'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 
@@ -31,6 +32,11 @@ const Rule = Type.Object(
   { additionalProperties: false },
 )
 
+const Environment = Type.Object(
+  { provider: Type.String({ minLength: 1, maxLength: 100 }), mode: OneOf(...ENVIRONMENT_MODES) },
+  { additionalProperties: false },
+)
+
 export const JobTypeFileSchema = Type.Object(
   {
     key: Key,
@@ -50,6 +56,9 @@ export const JobTypeFileSchema = Type.Object(
     // null is a def without one (a JobTypeDef is accepted back as a file).
     need_mb: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 1048576 }), Type.Null()])),
     timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 2147483647 })),
+    // The cwd's environment the runs use (environments/): mode `with` runs the command inside it, `status` only reads
+    // it into the run. null is a def without one.
+    environment: Type.Optional(Type.Union([Environment, Type.Null()])),
     orphan_policy: Type.Optional(OneOf('kill', 'let_finish')),
     classify: Type.Optional(Type.Array(Rule)),
     retry: Type.Optional(
@@ -81,11 +90,18 @@ export type JobTypeDef = {
   job_env: string[]
   env_set: Record<string, string>
   need_mb: number | null
+  environment: JobTypeEnvironment | null
 }
 
 // Schema first, then what a schema cannot say: a rule needs a condition (or it would swallow every failure), a
 // pattern must compile, cancelled (a person stopped the run) is never retried, and the run id is the executor's.
 export function findJobTypeIssue(value: unknown): Issue | null {
+  // Checked alone first: the union with null would only say `Expected union value` at /environment.
+  const environment = (value as { environment?: unknown } | null)?.environment
+  if (typeof environment === 'object' && environment !== null) {
+    const wrong = Value.Errors(Environment, environment).First()
+    if (wrong) return { path: `/environment${wrong.path}`, reason: wrong.message }
+  }
   const first = Value.Errors(JobTypeFileSchema, value).First()
   if (first) return { path: first.path || '/', reason: first.message }
   for (const [i, rule] of ((value as JobTypeFile).classify ?? []).entries()) {
@@ -106,6 +122,11 @@ export function findJobTypeIssue(value: unknown): Issue | null {
   if (named !== undefined) return { path: `/env_set/${named}`, reason: 'set by the executor' }
   const listed = (file.job_env ?? []).findIndex(isRunId)
   if (listed !== -1) return { path: `/job_env/${listed}`, reason: 'set by the executor' }
+  const provider = file.environment?.provider
+  if (provider !== undefined && !Object.hasOwn(ENVIRONMENT_PROVIDERS, provider)) {
+    const known = Object.keys(ENVIRONMENT_PROVIDERS).join(', ')
+    return { path: '/environment/provider', reason: `unknown provider; one of: ${known}` }
+  }
   const on = file.retry?.on ?? []
   const cancelled = on.indexOf('cancelled')
   if (cancelled !== -1) return { path: `/retry/on/${cancelled}`, reason: 'cancelled is never retried' }
@@ -129,6 +150,7 @@ export function withDefaults(file: JobTypeFile): JobTypeDef {
     job_env: file.job_env ?? [],
     env_set: file.env_set ?? {},
     need_mb: file.need_mb ?? null,
+    environment: file.environment ?? null,
   }
 }
 

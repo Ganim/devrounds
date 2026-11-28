@@ -15,6 +15,7 @@ env: [PATH]
 need_mb: 1024
 timeout_s: 600
 orphan_policy: let_finish
+environment: { provider: devlanes, mode: with }
 classify:
   - class: check_red
     exit_codes: [1]
@@ -50,6 +51,7 @@ test('a job type file round-trips through the project', async () => {
     job_env: [],
     env_set: {},
     need_mb: null,
+    environment: null,
   })
   await assert.rejects(
     putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),
@@ -79,6 +81,24 @@ test('a rule without a condition or with a bad pattern is refused with DR101', (
     assert.throws(
       () => parseJobTypeFile(rule(body)),
       (err: unknown) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === path,
+    )
+  }
+})
+
+test('an environment names a known provider and mode, else DR101 at its path', () => {
+  const file = (environment: string) => `key: check
+command: { program: pnpm }
+environment: ${environment}
+`
+  for (const [environment, path] of [
+    ['{ provider: nope, mode: with }', '/environment/provider'],
+    ['{ provider: devlanes, mode: up }', '/environment/mode'],
+    ['{ provider: devlanes }', '/environment/mode'],
+  ]) {
+    assert.throws(
+      () => parseJobTypeFile(file(environment)),
+      (err: unknown) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === path,
+      environment,
     )
   }
 })

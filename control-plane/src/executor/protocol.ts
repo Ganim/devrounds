@@ -49,6 +49,7 @@ const EnvironmentReading = Type.Object({
   exit_code: Nullable(I64),
   error: Nullable(Type.String()),
 })
+export type EnvironmentReading = Static<typeof EnvironmentReading>
 
 export const RUN_EVENTS = {
   Admitted: Type.Object({ kind: Type.Literal('Admitted'), run: Type.String() }),

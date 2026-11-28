@@ -1,4 +1,5 @@
 import type { DelayReason, FailureClass, RunCause, RunState, StepOutcome } from '../db/schema.ts'
+import type { RunEnvironment } from '../environments/index.ts'
 import { fail } from '../errors/error.ts'
 import { findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 
@@ -18,6 +19,9 @@ export type RunView = {
   task: string | null
   // The run this one is a cache hit of (jobs/cache.ts): it ended at insert and nothing ran.
   cachedFrom: string | null
+  // For a job type with an environment: the lane its executor read just before the run started; null otherwise, and
+  // until the run starts.
+  environment: RunEnvironment | null
   timeline: {
     queuedAt: Date
     offeredAt: Date | null
@@ -130,6 +134,7 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
     notBefore: row.not_before,
     task: row.task_key,
     cachedFrom: row.cached_from_run_id,
+    environment: row.environment as RunEnvironment | null,
     timeline: {
       queuedAt: row.queued_at,
       offeredAt: row.offered_at,

@@ -246,6 +246,74 @@ test("the Offer appends the job's args to the job type's and merges env_set with
   exec.close()
 })
 
+test("a job type in environment mode with runs its command, job args included, inside the cwd's lane, and the run shows the lane", async () => {
+  const { ctx, machine, token } = await setup()
+  await putJobType(ctx, projectKey, {
+    key: 'lane-check',
+    command: { program: 'pnpm', args: ['test'] },
+    args_from_job: true,
+    environment: { provider: 'devlanes', mode: 'with' },
+  })
+  const exec = await executor(machine.token)
+  const view = await enqueueRun(ctx, {
+    projectKey,
+    jobTypeKey: 'lane-check',
+    machineName: 'build-01',
+    cwd: 'C:\\work',
+    args: ['--shard', '2'],
+  })
+  const offer = await exec.next()
+  const job = offer.job as Record<string, unknown>
+  assert.deepEqual([job.program, job.args], ['devlanes', ['with', '--', 'pnpm', 'test', '--shard', '2']])
+  assert.deepEqual(job.environment_probe, { program: 'devlanes', args: ['status', '--json'] })
+
+  await exec.event({ kind: 'Admitted', run: view.id })
+  // Trimmed from a real `devlanes status --json`: two lanes, `here` names the cwd's.
+  const lane = (reference: string, path: string, url: string) => ({
+    reference,
+    project: 'work',
+    branch: 'main',
+    path,
+    state: 'running',
+    units: [{ name: 'api', state: 'ready', urls: [url], ports: { default: 40121 } }],
+  })
+  const output = {
+    items: [
+      lane('work@0', 'C:\\other', 'https://api.work.localhost'),
+      lane('work@1', 'C:\\work', 'https://api.work1.localhost'),
+    ],
+    truncated: false,
+    here: 'work@1',
+  }
+  await exec.event({
+    kind: 'RunStarted',
+    run: view.id,
+    pid: 1,
+    start_time: '1',
+    boot_id: 'boot-1',
+    environment: { output, exit_code: 0, error: null },
+  })
+  const { environment } = await runView(ctx, view.id)
+  assert.deepEqual(environment, {
+    provider: 'devlanes',
+    mode: 'with',
+    lane: {
+      reference: 'work@1',
+      branch: 'main',
+      path: 'C:\\work',
+      state: 'running',
+      units: [{ name: 'api', state: 'ready', urls: ['https://api.work1.localhost'] }],
+    },
+    probeExitCode: 0,
+    error: null,
+  })
+  const env = { DEVROUNDS_URL: `http://${host}`, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: projectKey }
+  const shown = await runCli(['run', 'show', view.id], { env, configPath: join(scratch, 'config.json') })
+  assert.equal(shown.exitCode, 0, shown.stderr)
+  assert.match(shown.stdout, /environment: devlanes with · lane work@1 running · api https:\/\/api\.work1\.localhost/)
+  exec.close()
+})
+
 test('executor events drive the run to finished with timeline and resources', async () => {
   const { ctx, machine, dispatch } = await setup()
   const exec = await executor(machine.token)

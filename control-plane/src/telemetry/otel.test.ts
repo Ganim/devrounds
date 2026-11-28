@@ -93,6 +93,7 @@ function finishedView(id: string, at: Date, later: Date): RunView {
     notBefore: at,
     task: null,
     cachedFrom: null,
+    environment: null,
     timeline: { queuedAt: at, offeredAt: at, admittedAt: at, startedAt: at, finishedAt: later },
     durations: { queueWaitMs: 0, admissionDelayMs: 0, runTimeMs: 5000, totalMs: 5000 },
     outcome: { exitCode: 1, failureClass: 'check_red', failureSummary: 'API_KEY=hunter2', logCursor: null },

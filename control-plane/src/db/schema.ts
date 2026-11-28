@@ -3,14 +3,16 @@ import type { ColumnType, Generated, Selectable } from 'kysely'
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
 // 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts, 0018_job_env.ts, 0019_placement.ts,
 // 0020_result_cache.ts, 0021_gates.ts, 0022_task_source_key.ts, 0024_convention_sets.ts, 0025_convention_checks.ts,
-// 0026_convention_check_counts.ts and 0029_flows.ts (0002, 0003, 0007, 0023 and 0027 add no columns). pg returns int8 and
-// numeric as strings, so those stay strings here.
+// 0026_convention_check_counts.ts, 0029_flows.ts and 0030_environments.ts (0002, 0003, 0007, 0023 and 0027 add no columns).
+// pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
 type Json = ColumnType<unknown, string, string>
 // A jsonb column with a default.
 type OptionalJson = ColumnType<unknown, string | undefined, string>
+// A nullable jsonb column without a default.
+type NullableJson = ColumnType<unknown, string | null | undefined, string | null>
 
 export type MemberKind = 'human' | 'agent'
 export type PhaseState = 'open' | 'delivered'
@@ -206,6 +208,8 @@ export interface JobTypesTable {
   env_set: OptionalJson
   // Starting need in bytes while the key has fewer than 3 samples (migration 0019); null: the 512 MiB default.
   need_bytes: NullableInt8
+  // JobTypeEnvironment (environments/index.ts); null: the run starts its command as is.
+  environment: NullableJson
   updated_at: Timestamp
 }
 
@@ -433,6 +437,8 @@ export interface RunsTable {
   trace_span_id: string | null
   // The finished run this one is a cache hit of: it ended at insert and nothing ran.
   cached_from_run_id: string | null
+  // RunEnvironment (environments/index.ts): the lane its executor read just before it started.
+  environment: NullableJson
 }
 
 export interface LearnedNeedsTable {

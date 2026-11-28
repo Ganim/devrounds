@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { sql } from 'kysely'
+import { environmentOffer, type JobTypeEnvironment } from '../environments/index.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
@@ -41,6 +42,7 @@ function offerRows(trx: Trx) {
       'job_types.env_allow',
       'job_types.timeout_s',
       'job_types.env_set',
+      'job_types.environment',
     ])
 }
 
@@ -58,17 +60,23 @@ function envSet(jobType: Record<string, string>, job: Record<string, string>): R
 }
 
 function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null): Offer {
+  // Wrapped after the job's args are appended, so they reach the run's own command.
+  const { command, probe } = environmentOffer(row.environment as JobTypeEnvironment | null, {
+    program: row.program,
+    args: [...(row.args as string[]), ...(row.job_args as string[])],
+  })
   return {
     type: 'Offer',
     run: row.id,
     job: {
       job_type: row.key,
-      program: row.program,
-      args: [...(row.args as string[]), ...(row.job_args as string[])],
+      program: command.program,
+      args: command.args,
       cwd: row.cwd,
       env_allow: row.env_allow,
       timeout_s: row.timeout_s,
       env_set: envSet(row.env_set as Record<string, string>, row.job_env as Record<string, string>),
+      ...(probe ? { environment_probe: probe } : {}),
     },
     // A need is a byte count well under 2^53, so the wire carries it as a JSON number.
     memory_need: Number(memoryNeed),
