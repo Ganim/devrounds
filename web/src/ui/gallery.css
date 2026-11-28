@@ -1,0 +1,58 @@
+/* Layout of the gallery page only (ui/gallery.tsx); no component reads these classes. */
+.g-both {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.g-theme {
+  min-width: 0;
+  padding: var(--space-8);
+  background: var(--bg-image), var(--bg);
+  color: var(--text);
+}
+.g-theme h1 {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-2xl);
+  letter-spacing: -0.02em;
+}
+.g-section {
+  margin-bottom: var(--space-8);
+}
+.g-section > h2 {
+  margin: 0 0 var(--space-4);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.g-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+.g-stack {
+  display: grid;
+  gap: var(--space-4);
+  width: 100%;
+}
+.g-pop {
+  max-width: 220px;
+  padding: var(--space-4);
+  font-size: var(--text-md);
+}
+.g-combo {
+  width: 100%;
+  max-width: 420px;
+}
+.g-chat .dr-thread {
+  max-height: 320px;
+}
+.g-icon {
+  font-size: 20px;
+  color: var(--text-2);
+}
+/* The open popover of the sample overlaps the next row; leave it room. */
+.g-section:has(.dr-popover) {
+  padding-bottom: 60px;
+}
