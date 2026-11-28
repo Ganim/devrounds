@@ -16,6 +16,7 @@ export const FEATURES = [
   'acked-through',
   'withdraw',
   'job-env',
+  'environment',
 ] as const
 
 const U32 = Type.Integer({ minimum: 0, maximum: 4294967295 })
@@ -37,6 +38,16 @@ const JobSpec = Type.Object({
   timeout_s: U32,
   // Feature job-env: values the run gets (job type env_set, then the job's env); never secrets.
   env_set: Type.Record(Type.String(), Type.String()),
+  // Feature environment: run in cwd just before the run, its stdout read back on RunStarted (environments/).
+  environment_probe: Type.Optional(Type.Object({ program: Type.String(), args: Type.Array(Type.String()) })),
+})
+
+// Feature environment: what the probe printed, as JSON, or why there is nothing (error). The exit code stands apart,
+// as a probe may describe a failed environment and still print it.
+const EnvironmentReading = Type.Object({
+  output: Type.Unknown(),
+  exit_code: Nullable(I64),
+  error: Nullable(Type.String()),
 })
 
 export const RUN_EVENTS = {
@@ -56,6 +67,8 @@ export const RUN_EVENTS = {
     pid: U32,
     start_time: DecimalU64,
     boot_id: Type.String(),
+    // Feature environment, for a job with an environment_probe. Absent from older executors.
+    environment: Type.Optional(EnvironmentReading),
   }),
   StepStarted: Type.Object({ kind: Type.Literal('StepStarted'), run: Type.String(), step: U32, name: Type.String() }),
   StepFinished: Type.Object({

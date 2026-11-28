@@ -14,7 +14,7 @@ use std::{
 
 use async_trait::async_trait;
 use devrounds_core::{
-    Error, JobSpec,
+    Error, JobSpec, Probe,
     clock::{Clock, TokioClock},
     gate::{MemoryPressure, PressureSample, PressureSource, StartSlot},
 };
@@ -23,8 +23,8 @@ use devrounds_executor::{
     runs::{RunLoop, RunLoopDeps, run_log_options},
 };
 use devrounds_protocol::{
-    ClientMessage, FinishReason, Offer, RunEvent, ServerMessage, StepOutcome, Stop, StopReason,
-    decode_client,
+    ClientMessage, EnvironmentReading, FinishReason, Offer, RunEvent, ServerMessage, StepOutcome,
+    Stop, StopReason, decode_client,
 };
 use devrounds_runner_windows::{ConsoleHelper, HELPER_ARG, WindowsRunner};
 use devrounds_store::Store;
@@ -127,6 +127,7 @@ fn offer(run: &str, program: String, args: &[&str], cwd: &Path, timeout_s: u32) 
             env_allow: ENV_ALLOW.map(str::to_owned).into(),
             timeout_s,
             env_set: Default::default(),
+            environment_probe: None,
         },
         memory_need: DEFAULT_MEMORY_NEED,
         trace_parent: None,
@@ -528,6 +529,87 @@ async fn a_cmd_wrapper_gets_exact_arguments_and_stays_hidden() {
         assert_eq!(exit_code, Some(0));
         assert_eq!(tail, ["[a b]", "[c&d]", "[plain]"]);
         assert_eq!(visible_windows, 0);
+    })
+    .await
+    .expect("bounded");
+}
+
+/// The RunStarted of an offer with `environment_probe`, after the run ended.
+async fn started_with_probe(h: &Harness, run: &str, program: String, args: &[&str]) -> RunEvent {
+    let ServerMessage::Offer(mut offered) = offer(run, fixture(), &[], h.home.path(), 600) else {
+        unreachable!()
+    };
+    offered.job.environment_probe = Some(Probe {
+        program,
+        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+    });
+    h.runs.handle(ServerMessage::Offer(offered));
+    let events = until_finished(&h.store, run).await;
+    let RunEvent::RunFinished { exit_code, .. } = finished(&events) else {
+        unreachable!()
+    };
+    assert_eq!(exit_code, Some(0), "a probe never fails its run");
+    events
+        .into_iter()
+        .map(|(_, event)| event)
+        .find(|event| matches!(event, RunEvent::RunStarted { .. }))
+        .expect("RunStarted")
+}
+
+/// The probe's JSON stdout and exit code reach RunStarted; a probe that does
+/// not start or prints no JSON leaves an error there and the run still runs.
+#[tokio::test]
+async fn an_environment_probe_reading_rides_on_run_started() {
+    tokio::time::timeout(LIMIT, async {
+        let h = harness(AdmissionConfig::default()).await;
+        // `{"here":"repo@1"}`, with exit 1: a probe may report a failed
+        // environment and still describe it.
+        let hex = "7b2268657265223a227265706f4031227d";
+        let started = started_with_probe(
+            &h,
+            "run-probe",
+            fixture(),
+            &["--raw-hex", hex, "--exit", "1"],
+        )
+        .await;
+        let RunEvent::RunStarted { environment, .. } = started else {
+            unreachable!()
+        };
+        assert_eq!(
+            environment,
+            Some(EnvironmentReading {
+                output: Some(serde_json::json!({ "here": "repo@1" })),
+                exit_code: Some(1),
+                error: None,
+            })
+        );
+
+        let started = started_with_probe(&h, "run-probe-text", fixture(), &["--print", "1"]).await;
+        let RunEvent::RunStarted { environment, .. } = started else {
+            unreachable!()
+        };
+        let reading = environment.expect("a reading");
+        assert_eq!((reading.output, reading.exit_code), (None, Some(0)));
+        let error = reading.error.expect("why there is no output");
+        assert!(error.starts_with("printed no JSON"), "{error}");
+
+        let started = started_with_probe(
+            &h,
+            "run-probe-missing",
+            "devrounds-no-such-probe".to_owned(),
+            &[],
+        )
+        .await;
+        let RunEvent::RunStarted { environment, .. } = started else {
+            unreachable!()
+        };
+        let error = environment
+            .and_then(|reading| reading.error)
+            .expect("an error");
+        assert!(
+            error.contains("devrounds-no-such-probe could not start"),
+            "{error}"
+        );
     })
     .await
     .expect("bounded");

@@ -18,7 +18,9 @@ use devrounds_core::{
     gate::{Release, StartSlot},
 };
 use devrounds_logs::LogOptions;
-use devrounds_protocol::{FinishReason, Offer, Orphan, RunEvent, ServerMessage};
+use devrounds_protocol::{
+    EnvironmentReading, FinishReason, Offer, Orphan, RunEvent, ServerMessage,
+};
 use devrounds_runner_windows::{ExitReport, WindowsRunner, WindowsUnit};
 use devrounds_store::{RunIdentity, Store, StoredRun};
 use tokio::sync::{mpsc, watch};
@@ -27,6 +29,7 @@ use crate::{
     Sampler,
     admission::{Admission, AdmissionStep, DelayReason},
     connection::MAX_MESSAGE,
+    environment,
     isolation::{Isolation, NoneIsolation, PrepareError},
     orphans::{OrphanDeps, follow_orphan},
     output::OutputTail,
@@ -474,7 +477,18 @@ async fn run_once(
     emit(&shared.store, RunEvent::Admitted { run: run.clone() }).await;
     times.admitted = Some(SystemTime::now());
 
-    let output = spec.output.clone();
+    // Inside the run's slot, so admission counts the probe as part of the run.
+    let environment = match &job.environment_probe {
+        Some(probe) => {
+            let run_dir = shared.runs_dir.join(&run);
+            Some(environment::read(&shared.runner, probe, &spec.cwd, &spec.env, &run_dir).await)
+        }
+        None => None,
+    };
+    let launch = Launch {
+        output: spec.output.clone(),
+        environment,
+    };
     // Not cancellation safe, so never raced against a stop: a stop asked
     // meanwhile is seen once the unit exists.
     let unit = match shared.runner.spawn_unit(spec).await {
@@ -490,7 +504,7 @@ async fn run_once(
     };
     times.started = Some(SystemTime::now());
     shared.running.fetch_add(1, Ordering::SeqCst);
-    let ending = follow(shared, &run, &job, unit, slot, output, stopped).await;
+    let ending = follow(shared, &run, &job, unit, slot, launch, stopped).await;
     shared.running.fetch_sub(1, Ordering::SeqCst);
     Some(ending)
 }
@@ -567,6 +581,13 @@ async fn admit(
     }
 }
 
+/// What a spawned run carries into [`follow`] from before its spawn.
+struct Launch {
+    output: devrounds_core::RunOutput,
+    /// The job's environment probe reading, for `RunStarted`.
+    environment: Option<EnvironmentReading>,
+}
+
 /// From the spawned unit to its ending: identity, sampling and output, then
 /// its exit, its timeout or a stop.
 async fn follow(
@@ -575,7 +596,10 @@ async fn follow(
     job: &JobSpec,
     unit: Arc<WindowsUnit>,
     slot: StartSlot,
-    output: devrounds_core::RunOutput,
+    Launch {
+        output,
+        environment,
+    }: Launch,
     mut stopped: watch::Receiver<bool>,
 ) -> Ending {
     let identity = unit.run_identity();
@@ -594,6 +618,7 @@ async fn follow(
             pid: identity.leader.pid,
             start_time: identity.leader.start_time,
             boot_id: identity.boot_id,
+            environment,
         },
     )
     .await;

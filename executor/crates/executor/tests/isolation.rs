@@ -44,6 +44,7 @@ fn job(cwd: &str, env_allow: &[&str]) -> JobSpec {
         env_allow: env_allow.iter().map(|name| (*name).to_owned()).collect(),
         timeout_s: 60,
         env_set: BTreeMap::new(),
+        environment_probe: None,
     }
 }
 

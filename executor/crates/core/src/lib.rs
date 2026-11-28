@@ -12,7 +12,7 @@ pub mod runtime;
 mod stop;
 
 pub use error::DrError;
-pub use job::JobSpec;
+pub use job::{JobSpec, Probe};
 pub use runtime::*;
 pub use stop::StopSignal;
 #[cfg(windows)]

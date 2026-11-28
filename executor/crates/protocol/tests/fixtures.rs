@@ -108,6 +108,56 @@ fn offer_env_set_reads_from_the_fixture_and_defaults_to_empty() {
 }
 
 #[test]
+/// Feature `environment` is additive both ways: an Offer without a probe and
+/// a RunStarted without a reading, as the peers before it send them, decode
+/// to `None`, and `None` is not written out.
+fn environment_fields_are_optional() {
+    let all = fixtures();
+    let without = |name: &str, path: &str, field: &str| {
+        let text = &all
+            .iter()
+            .find(|(fixture, _)| fixture == name)
+            .expect(name)
+            .1;
+        let mut value: Value = serde_json::from_str(text).expect("fixture is JSON");
+        value[path]
+            .as_object_mut()
+            .expect(path)
+            .remove(field)
+            .expect(field);
+        value
+    };
+    let offer = without("Offer", "job", "environment_probe");
+    let message = decode_server(&offer.to_string()).expect("Offer");
+    let ServerMessage::Offer(decoded) = &message else {
+        panic!("expected an Offer, got {message:?}");
+    };
+    assert_eq!(decoded.job.environment_probe, None);
+    let again: Value =
+        serde_json::from_str(&encode_server(&message).expect("encode")).expect("JSON");
+    assert_eq!(again, offer);
+
+    let started = without("Event.RunStarted", "event", "environment");
+    let message = decode_client(&started.to_string()).expect("RunStarted");
+    let ClientMessage::Event(event) = &message else {
+        panic!("expected an event, got {message:?}");
+    };
+    assert!(
+        matches!(
+            &event.event,
+            RunEvent::RunStarted {
+                environment: None,
+                ..
+            }
+        ),
+        "{event:?}"
+    );
+    let again: Value =
+        serde_json::from_str(&encode_client(&message).expect("encode")).expect("JSON");
+    assert_eq!(again, started);
+}
+
+#[test]
 /// Fixture names cover every message type and event kind, and nothing else.
 fn every_message_type_has_a_fixture() {
     let expected: BTreeSet<String> = CLIENT_TYPES

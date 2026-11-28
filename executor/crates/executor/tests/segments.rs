@@ -123,6 +123,7 @@ fn offer(run: &str, args: &[&str], cwd: &Path) -> ServerMessage {
             env_allow: ENV_ALLOW.map(str::to_owned).into(),
             timeout_s: 600,
             env_set: Default::default(),
+            environment_probe: None,
         },
         memory_need: DEFAULT_MEMORY_NEED,
         trace_parent: None,

@@ -6,6 +6,8 @@ pub mod admission;
 pub mod config;
 #[cfg(windows)]
 pub mod connection;
+#[cfg(windows)]
+mod environment;
 pub mod isolation;
 #[cfg(windows)]
 pub mod orphans;

@@ -2,7 +2,7 @@
   "type": "Hello",
   "protocol": 1,
   "version": "0.1.0",
-  "features": ["seq", "steps", "log-segments", "orphans", "trace-context", "acked-through", "withdraw", "job-env"],
+  "features": ["seq", "steps", "log-segments", "orphans", "trace-context", "acked-through", "withdraw", "job-env", "environment"],
   "boot_id": "2026-11-17T08:00:01Z",
   "acked_through": 41
 }

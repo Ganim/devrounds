@@ -21,4 +21,18 @@ pub struct JobSpec {
     /// the control plane, so never secrets. Absent from older control planes.
     #[serde(default)]
     pub env_set: BTreeMap<String, String>,
+    /// Feature `environment`: a command run in `cwd`, with the run's
+    /// environment, just before the run starts; its stdout, read as JSON, goes
+    /// back on `RunStarted`. The control plane takes it from the job type's
+    /// environment provider, so the executor names no tool. Absent from older
+    /// control planes and for job types without an environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_probe: Option<Probe>,
+}
+
+/// A command run for its output; see [`JobSpec::environment_probe`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Probe {
+    pub program: String,
+    pub args: Vec<String>,
 }

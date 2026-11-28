@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 pub const PROTOCOL: u32 = 1;
 
 /// Optional capabilities this build speaks; a session uses the intersection.
-pub const FEATURES: [&str; 8] = [
+pub const FEATURES: [&str; 9] = [
     "seq",
     "steps",
     "log-segments",
@@ -23,6 +23,7 @@ pub const FEATURES: [&str; 8] = [
     "acked-through",
     "withdraw",
     "job-env",
+    "environment",
 ];
 
 /// The features both sides speak, in the order of `ours`.
@@ -147,6 +148,10 @@ pub enum RunEvent {
         #[serde(with = "decimal")]
         start_time: u64,
         boot_id: String,
+        /// Feature `environment`: what the job's `environment_probe` read,
+        /// for a job that has one. Absent from older executors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        environment: Option<EnvironmentReading>,
     },
     StepStarted {
         run: String,
@@ -188,6 +193,17 @@ pub enum RunEvent {
     /// A kind this build does not know; the receiver ignores it.
     #[serde(other)]
     Unknown,
+}
+
+/// The outcome of a job's `environment_probe`: its stdout as JSON in
+/// `output`, or `error` saying why there is none (it did not start, ran past
+/// its time, printed too much or printed no JSON). The exit code stands apart:
+/// a probe may describe a failed environment and still print it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvironmentReading {
+    pub output: Option<Value>,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

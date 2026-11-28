@@ -160,6 +160,7 @@ mod live {
                         .into(),
                     timeout_s: 600,
                     env_set: Default::default(),
+                    environment_probe: None,
                 },
                 memory_need: DEFAULT_MEMORY_NEED,
                 trace_parent: Some(format!("00-{TRACE_ID}-{DISPATCH_SPAN}-01")),

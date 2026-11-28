@@ -7,6 +7,7 @@
     "run": "0b6f2a3e-5c1d-4e8a-9f7b-2d4c6e8a0b1c",
     "pid": 4321,
     "start_time": "134077128011234567",
-    "boot_id": "2026-11-17T08:00:01Z"
+    "boot_id": "2026-11-17T08:00:01Z",
+    "environment": { "output": { "here": "repo@1" }, "exit_code": 0, "error": null }
   }
 }
