@@ -1,8 +1,8 @@
 import { sql } from 'kysely'
 import type { FailureClass } from '../db/schema.ts'
+import type { JobTypeEnvironment } from '../environments/index.ts'
 import { fail } from '../errors/error.ts'
 import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
-import type { JobTypeEnvironment } from '../environments/index.ts'
 import type { ClassifyRule } from '../runs/classify.ts'
 import { findJobTypeIssue, type JobTypeDef, type JobTypeFile, withDefaults } from './file.ts'
 
