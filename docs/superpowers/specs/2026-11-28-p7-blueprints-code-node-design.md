@@ -267,27 +267,27 @@ PR per track, a stage review at the end of each stage.
 
 **Stage 1 — four independent tracks (T01 after P4-T11; T05 none; T06 after P4-T07; T08 none).**
 
-| Track | Tasks                         | Acceptance                                                                                                                                        |
-| ----- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1a    | T01 blueprints                | the meta-test renders and checks every combination; `project new` on an empty test repository commits, sets up the project and its gate runs green |
-| 1b    | T05 run files and run result  | a job with files sees them in `in/`; a result round-trips; an oversized or invalid result is DR557 on both executors                              |
-| 1c    | T06 capture                   | a run's patch is stored as a private artifact, redacted; over 5 MiB is truncated with a marker                                                    |
-| 1d    | T08 sandbox spike             | agentos embedded and the container runner measured on the same fixtures on a Windows and a Linux host; the §2.C 14 rule applied and recorded       |
+| Track | Tasks                        | Acceptance                                                                                                                                         |
+| ----- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1a    | T01 blueprints               | the meta-test renders and checks every combination; `project new` on an empty test repository commits, sets up the project and its gate runs green |
+| 1b    | T05 run files and run result | a job with files sees them in `in/`; a result round-trips; an oversized or invalid result is DR557 on both executors                               |
+| 1c    | T06 capture                  | a run's patch is stored as a private artifact, redacted; over 5 MiB is truncated with a marker                                                     |
+| 1d    | T08 sandbox spike            | agentos embedded and the container runner measured on the same fixtures on a Windows and a Linux host; the §2.C 14 rule applied and recorded       |
 
 **Stage 2 — modules, code node, viewer (T02 after 1a; T03 after 1b, 1d, P4-T16, P6-T03, P4-T01; T04 after 1c, P4-T11,
 P5-T09).**
 
 | Track | Tasks              | Acceptance                                                                                                                                                                           |
 | ----- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2a    | T02 modules, login | `project new --module login` gate green (phase criterion 1); `module add` on an existing project opens a PR; an overlapping path is DR317; an unknown module answers with `next:`  |
+| 2a    | T02 modules, login | `project new --module login` gate green (phase criterion 1); `module add` on an existing project opens a PR; an overlapping path is DR317; an unknown module answers with `next:`    |
 | 2b    | T03 code node      | a flow with a code node runs in a container with no network; the schema check fails as `output_invalid`; a secret granted to node A is unreadable from node B; agent save rules hold |
-| 2c    | T04 code viewer    | tree, file and diff views read through the provider, nothing stored (test on the response headers and tables); task changes show run patches and the PR compare; both themes        |
+| 2c    | T04 code viewer    | tree, file and diff views read through the provider, nothing stored (test on the response headers and tables); task changes show run patches and the PR compare; both themes         |
 
 **Stage 3 — `code_run` (T07 after 2b, P4-T02), then the phase review.**
 
-| Track | Tasks              | Acceptance                                                                                       |
-| ----- | ------------------ | ------------------------------------------------------------------------------------------------ |
-| 3a    | T07 `code_run`     | a run calls `code_run`, gets the result and tail; the child run has no network and no secrets    |
+| Track | Tasks          | Acceptance                                                                                    |
+| ----- | -------------- | --------------------------------------------------------------------------------------------- |
+| 3a    | T07 `code_run` | a run calls `code_run`, gets the result and tail; the child run has no network and no secrets |
 
 ## 5. Tracker mapping (commands to run; not executed)
 

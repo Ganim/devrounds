@@ -71,7 +71,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: .agents/skills/ai-docs-guide/SKILL.md
-        excerpt: "- Prefer code comments/JSDoc for package-specific implementation rationale; use package `README.md` only
+        excerpt:
+          "- Prefer code comments/JSDoc for package-specific implementation rationale; use package `README.md` only
           for public API/usage/onboarding"
         role: source
       - path: .agents/skills/ai-docs-guide/SKILL.md
@@ -161,7 +162,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: Worktrees live under gitignored `.worktrees/` (create if missing); implement, test, commit, push and ship
+        excerpt:
+          Worktrees live under gitignored `.worktrees/` (create if missing); implement, test, commit, push and ship
           from there.
         role: source
       - path: AGENTS.md
@@ -313,7 +315,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: .claude/commands/open-pr.md
-        excerpt: always fill with the real agent + model running this command (e.g. `Claude Code / Claude Opus 4.1`); never
+        excerpt:
+          always fill with the real agent + model running this command (e.g. `Claude Code / Claude Opus 4.1`); never
           omit or guess
         role: source
       - path: .github/PULL_REQUEST_TEMPLATE.md

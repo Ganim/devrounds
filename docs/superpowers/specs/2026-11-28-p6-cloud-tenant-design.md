@@ -492,29 +492,29 @@ a fresh-reviewer stage review at the end of each stage.
 
 **Stage 1 — local and independent (startable once the phase edge changes, §5; six tracks).**
 
-| Track | Tasks                            | Acceptance                                                                                                                                                                             |
-| ----- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1a    | T10 owner role                   | local `migrate` and the whole suite run with `devrounds_owner` (no superuser in `server.json`); every definer function still resolves across tenants; the AGENTS.md exception is gone |
-| 1b    | T11 image and public serving     | the image runs the suite in a container; behind a local Caddy, pairing failures from two clients land in two buckets; secure cookie set over https; SSE passes unbuffered             |
-| 1c    | T12 Linux executor (on `linux-1`) | `cargo test` of the Linux crates green; a run's peak matches its cgroup `memory.peak`; stop kills the tree; DevRounds's gate runs on `linux-1` through a loopback-free https link      |
-| 1d    | T15 cross-tenant suite           | every registered route has a case; removing one case fails the meta-test                                                                                                               |
-| 1e    | T14 limits and usage             | each limit answers DR316 with its data; log trimming keeps tail and summary; usage day totals match the runs table in the tenant time zone                                             |
+| Track | Tasks                                                | Acceptance                                                                                                                                                                                        |
+| ----- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1a    | T10 owner role                                       | local `migrate` and the whole suite run with `devrounds_owner` (no superuser in `server.json`); every definer function still resolves across tenants; the AGENTS.md exception is gone             |
+| 1b    | T11 image and public serving                         | the image runs the suite in a container; behind a local Caddy, pairing failures from two clients land in two buckets; secure cookie set over https; SSE passes unbuffered                         |
+| 1c    | T12 Linux executor (on `linux-1`)                    | `cargo test` of the Linux crates green; a run's peak matches its cgroup `memory.peak`; stop kills the tree; DevRounds's gate runs on `linux-1` through a loopback-free https link                 |
+| 1d    | T15 cross-tenant suite                               | every registered route has a case; removing one case fails the meta-test                                                                                                                          |
+| 1e    | T14 limits and usage                                 | each limit answers DR316 with its data; log trimming keeps tail and summary; usage day totals match the runs table in the tenant time zone                                                        |
 | 1f    | T09 agent experiments (after P4-T03, P4-T11, P4-T16) | a 3-case dataset from done DevRounds tasks runs both arms in throwaway checkouts; no external write happens; a candidate that costs 2 × fails; `jobtype set` without a passed experiment is DR319 |
 
 **Stage 2 — cloud and Linux capabilities (2a after 1a, 1b, P4-T01, P4-T11; 2b after 1c and P4-T03; 2c after 1c).**
 
-| Track | Tasks                          | Acceptance                                                                                                                                                                                       |
-| ----- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2a    | T01 cloud control plane        | cutover done per §2.A 10; plan export byte-equal; DevRounds gate wall time from his machine ≤ local baseline +10 %; restore drill passes; only 80/443 answer from outside; webhooks arrive direct |
-| 2b    | T03 isolation/container        | a container run's peak is in its learned need; stop leaves no container; `--network none` blocks egress (test); a tag-only image is DR106; an executor restart reports a live container orphan; one agent run executes its tool calls in the container while the credential and transcript stay outside (§2.G 26) |
-| 2c    | T13 workspaces                 | a job by `workspace:` runs on `linux-1` with no local checkout; the token never appears in argv, logs or `run show`; a second run on the same machine is placed warm                             |
+| Track | Tasks                   | Acceptance                                                                                                                                                                                                                                                                                                        |
+| ----- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2a    | T01 cloud control plane | cutover done per §2.A 10; plan export byte-equal; DevRounds gate wall time from his machine ≤ local baseline +10 %; restore drill passes; only 80/443 answer from outside; webhooks arrive direct                                                                                                                 |
+| 2b    | T03 isolation/container | a container run's peak is in its learned need; stop leaves no container; `--network none` blocks egress (test); a tag-only image is DR106; an executor restart reports a live container orphan; one agent run executes its tool calls in the container while the credential and transcript stay outside (§2.G 26) |
+| 2c    | T13 workspaces          | a job by `workspace:` runs on `linux-1` with no local checkout; the token never appears in argv, logs or `run show`; a second run on the same machine is placed warm                                                                                                                                              |
 
 **Stage 3 — pools and the second tenant (3a after 2a, 2b, 2c; 3b after 2a, 1d, 1e).**
 
-| Track | Tasks                   | Acceptance                                                                                                                                                                              |
-| ----- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 3a    | T02 compute engine      | a queued run on a pool queue provisions an instance, pairs, runs in a container and the machine is released after idle; a killed instance is reaped; budget 0 waits `compute_budget` |
-| 3b    | T04 second tenant       | tenant B on the cloud runs a gate on its own machine; the cross-tenant e2e passes against the deployment with both tenants' real tokens (phase criterion 1); phase review               |
+| Track | Tasks              | Acceptance                                                                                                                                                                           |
+| ----- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 3a    | T02 compute engine | a queued run on a pool queue provisions an instance, pairs, runs in a container and the machine is released after idle; a killed instance is reaped; budget 0 waits `compute_budget` |
+| 3b    | T04 second tenant  | tenant B on the cloud runs a gate on its own machine; the cross-tenant e2e passes against the deployment with both tenants' real tokens (phase criterion 1); phase review            |
 
 ## 5. Tracker mapping (commands to run; not executed)
 
