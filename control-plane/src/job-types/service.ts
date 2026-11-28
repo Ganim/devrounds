@@ -1,6 +1,7 @@
 import { sql } from 'kysely'
 import type { FailureClass } from '../db/schema.ts'
 import type { JobTypeEnvironment } from '../environments/index.ts'
+import type { AgentDef } from '../engines/agent-runtime/contract.ts'
 import { fail } from '../errors/error.ts'
 import { type Ctx, findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
 import type { ClassifyRule } from '../runs/classify.ts'
@@ -23,6 +24,8 @@ const COLUMNS = [
   'env_set',
   'need_bytes',
   'environment',
+  'agent',
+  'stall_s',
 ] as const
 
 type JobTypeRow = {
@@ -42,6 +45,8 @@ type JobTypeRow = {
   env_set: unknown
   need_bytes: string | null
   environment: unknown
+  agent: unknown
+  stall_s: number | null
 }
 
 const MIB = 1048576n
@@ -60,6 +65,8 @@ export function toDef(row: JobTypeRow): JobTypeDef {
     env_set: row.env_set as Record<string, string>,
     need_mb: row.need_bytes === null ? null : Number(BigInt(row.need_bytes) / MIB),
     environment: row.environment as JobTypeEnvironment | null,
+    agent: row.agent as AgentDef | null,
+    stall_s: row.stall_s,
   }
 }
 
@@ -98,6 +105,8 @@ export async function putJobType(ctx: Ctx, projectKey: string, input: JobTypeFil
       env_set: JSON.stringify(def.env_set),
       need_bytes: def.need_mb === null ? null : (BigInt(def.need_mb) * MIB).toString(),
       environment: def.environment === null ? null : JSON.stringify(def.environment),
+      agent: def.agent === null ? null : JSON.stringify(def.agent),
+      stall_s: def.stall_s,
     }
     await trx
       .insertInto('job_types')

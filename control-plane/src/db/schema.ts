@@ -3,8 +3,8 @@ import type { ColumnType, Generated, Selectable } from 'kysely'
 // Mirrors migrations/0001_core.ts, 0004_machines.ts, 0005_runs.ts, 0006_log_segments.ts, 0008_runs_orphaned_at.ts,
 // 0009_runs_trace_span_id.ts, 0010_queues.ts, 0011_claim_run.ts, 0014_schedules.ts, 0018_job_env.ts, 0019_placement.ts,
 // 0020_result_cache.ts, 0021_gates.ts, 0022_task_source_key.ts, 0024_convention_sets.ts, 0025_convention_checks.ts,
-// 0026_convention_check_counts.ts, 0029_flows.ts and 0030_environments.ts (0002, 0003, 0007, 0023 and 0027 add no columns).
-// pg returns int8 and numeric as strings, so those stay strings here.
+// 0026_convention_check_counts.ts, 0029_flows.ts, 0030_environments.ts and 0032_agent_runs.ts (0002, 0003, 0007, 0023,
+// 0027 and 0033 add no columns). pg returns int8 and numeric as strings, so those stay strings here.
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>
 // Why string on write: pg turns a JS array parameter into a Postgres array, so callers JSON.stringify first.
@@ -170,6 +170,8 @@ type NullableInt8 = ColumnType<
   string | number | bigint | null | undefined,
   string | number | bigint | null
 >
+// numeric read as a decimal string.
+type NullableNumeric = ColumnType<string | null, string | number | null | undefined, string | number | null>
 
 export type OrphanPolicy = 'kill' | 'let_finish'
 export type RunState =
@@ -184,7 +186,17 @@ export type RunState =
   | 'skipped'
 export type RunCause = 'first' | 'retry' | 'requeue'
 export type JobState = 'open' | 'finished' | 'failed' | 'stopped' | 'skipped'
-export type FailureClass = 'check_red' | 'environment' | 'timeout' | 'memory' | 'infra' | 'cancelled' | 'unclassified'
+export type FailureClass =
+  | 'check_red'
+  | 'environment'
+  | 'timeout'
+  | 'memory'
+  | 'infra'
+  | 'cancelled'
+  | 'unclassified'
+  | 'stalled'
+  | 'no_outcome'
+  | 'limit'
 export type DelayReason = 'memory' | 'concurrency' | 'memory_critical'
 export type StepOutcome = 'finished' | 'failed'
 
@@ -211,6 +223,9 @@ export interface JobTypesTable {
   // JobTypeEnvironment (environments/index.ts); null: the run starts its command as is.
   environment: NullableJson
   updated_at: Timestamp
+  // The `agent` block of the job type file (job-types/file.ts AgentDef); null for a plain command (0032).
+  agent: ColumnType<unknown, string | null | undefined, string | null>
+  stall_s: number | null
 }
 
 export interface JobsTable {
@@ -235,6 +250,8 @@ export interface JobsTable {
   schedule_id: string | null
   // The caller's key of the job's inputs (jobs/cache.ts); null: never cached.
   cache_key: string | null
+  // Record<string, string>, read by prompt templates as {{input.<key>}} (0032).
+  input: OptionalJson
 }
 
 export interface SchedulesTable {
@@ -439,6 +456,18 @@ export interface RunsTable {
   cached_from_run_id: string | null
   // RunEnvironment (environments/index.ts): the lane its executor read just before it started.
   environment: NullableJson
+  // Agent runs (0032): usage filled at RunFinished from agent_events; numeric cost as a string.
+  tokens_in: NullableInt8
+  tokens_out: NullableInt8
+  tokens_cache_read: NullableInt8
+  tokens_cache_write: NullableInt8
+  cost_usd: NullableNumeric
+  usage_source: UsageSource | null
+  agent_session_id: string | null
+  // The run whose session this one resumes, and the machine holding it (claim_run places it only there).
+  resumed_from_run_id: string | null
+  pinned_machine_id: string | null
+  parent_run_id: string | null
 }
 
 export interface LearnedNeedsTable {
@@ -497,6 +526,46 @@ export interface MemberPrefsTable {
   updated_at: Timestamp
 }
 
+export type UsageSource = 'result' | 'transcript' | 'missing'
+
+export interface RunResultsTable {
+  id: Generated<string>
+  tenant_id: string
+  run_id: string
+  label: string
+  data: OptionalJson
+  reported_by: string | null
+  at: Generated<Date>
+}
+
+export type AgentEventKind = 'message' | 'tool_call' | 'tool_result' | 'permission_request' | 'usage' | 'result'
+
+export interface AgentEventsTable {
+  id: Generated<string>
+  tenant_id: string
+  run_id: string
+  // The log line the event was read from, and its place among that line's events.
+  line_seq: Int8
+  position: number
+  at: Timestamp
+  kind: AgentEventKind
+  data: Json
+}
+
+export interface AgentBudgetsTable {
+  id: Generated<string>
+  tenant_id: string
+  project_id: string
+  // Exactly one of them.
+  job_type_id: string | null
+  member_id: string | null
+  usd_per_day: NullableNumeric
+  tokens_per_day: NullableInt8
+  usd_per_run: NullableNumeric
+  updated_by: string
+  updated_at: Generated<Date>
+}
+
 export interface Database {
   tenants: TenantsTable
   members: MembersTable
@@ -531,6 +600,9 @@ export interface Database {
   run_steps: RunStepsTable
   run_delays: RunDelaysTable
   log_segments: LogSegmentsTable
+  run_results: RunResultsTable
+  agent_events: AgentEventsTable
+  agent_budgets: AgentBudgetsTable
 }
 
 export type Member = Selectable<MembersTable>

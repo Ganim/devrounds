@@ -1,16 +1,25 @@
 import { Worker } from 'node:worker_threads'
 import type { FailureClass } from '../db/schema.ts'
 
-// Classes a job type rule may name. cancelled and unclassified only come from the run itself.
+// Classes a job type rule may name. The others only come from the run itself: cancelled (a person stopped it),
+// unclassified (no rule matched), and for agent runs stalled (the executor's stall stop), no_outcome (no result
+// reported) and limit (the runtime's budget or turn limit; engines/agent-runtime).
 export const RULE_CLASSES = ['check_red', 'environment', 'timeout', 'memory', 'infra'] as const
 export type RuleClass = (typeof RULE_CLASSES)[number]
-export const FAILURE_CLASSES = [...RULE_CLASSES, 'cancelled', 'unclassified'] as const satisfies FailureClass[]
+export const FAILURE_CLASSES = [
+  ...RULE_CLASSES,
+  'cancelled',
+  'unclassified',
+  'stalled',
+  'no_outcome',
+  'limit',
+] as const satisfies FailureClass[]
 
 /** One job type rule; with both conditions given, both must match. */
 export type ClassifyRule = { class: RuleClass; exit_codes?: number[]; log_pattern?: string }
 
 export type ClassifyInput = {
-  reason: 'exited' | 'stopped' | 'timeout' | 'spawn_failed' | 'infra'
+  reason: 'exited' | 'stopped' | 'timeout' | 'spawn_failed' | 'infra' | 'stalled'
   exitCode: number | null
   tail: string[]
   // Set by the executor when it knows the cause better than the output does (a spawn failure names the missing piece).
@@ -47,6 +56,7 @@ export async function classifyRun(
   })
   if (input.reason === 'stopped') return failed('cancelled')
   if (input.reason === 'timeout') return failed('timeout')
+  if (input.reason === 'stalled') return failed('stalled')
   if (input.reason === 'spawn_failed') return failed('environment')
   if (input.reason === 'infra') return failed('infra')
   if (input.exitCode === 0) return { state: 'finished', failureClass: null, failureSummary: null }

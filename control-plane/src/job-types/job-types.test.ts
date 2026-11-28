@@ -52,6 +52,8 @@ test('a job type file round-trips through the project', async () => {
     env_set: {},
     need_mb: null,
     environment: null,
+    agent: null,
+    stall_s: null,
   })
   await assert.rejects(
     putJobType(ctx, 'devrounds', { ...minimal, classify: [{ class: 'check_red', log_pattern: '[' }] }),

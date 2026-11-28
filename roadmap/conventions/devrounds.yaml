@@ -143,7 +143,7 @@ rules:
     title: Never put a vendor, customer or tool name in engine code
     why: Providers are adapters; the moment the core names one, a second customer needs a fork.
     paths: [control-plane/src/**/*.ts, control-plane/src/**/*.tsx]
-    exclude: ["**/*.test.ts", control-plane/src/test-support/**]
+    exclude: ["**/*.test.ts", control-plane/src/test-support/**, control-plane/src/providers/**]
     check:
       kind: pattern
       forbid: '\b(?:[Cc]lickmax|CLICKMAX|[Dd]evlanes|[Pp]npm|[Cc]argo|Linear|Claude|Slack|WhatsApp|GitHub)\b|(?<![.\w])[Gg]it\b'

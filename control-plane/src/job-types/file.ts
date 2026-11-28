@@ -2,6 +2,9 @@ import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import type { FailureClass } from '../db/schema.ts'
 import { ENVIRONMENT_MODES, ENVIRONMENT_PROVIDERS, type JobTypeEnvironment } from '../environments/index.ts'
+import { agentWithDefaults, findAgentIssue } from '../engines/agent-runtime/agent-def.ts'
+import { type AgentDef, AgentSchema } from '../engines/agent-runtime/contract.ts'
+import { findAgentRuntime } from '../engines/registry.ts'
 import { FAILURE_CLASSES, RULE_CLASSES } from '../runs/classify.ts'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 
@@ -40,10 +43,19 @@ const Environment = Type.Object(
 export const JobTypeFileSchema = Type.Object(
   {
     key: Key,
-    command: Type.Object(
-      { program: Type.String({ minLength: 1 }), args: Type.Optional(Type.Array(Type.String())) },
-      { additionalProperties: false },
+    // Optional only with `agent`: the runtime's provider names the program, and `command` then replaces it (a wrapper,
+    // a fake runtime in tests) with its args before the provider's.
+    command: Type.Optional(
+      Type.Object(
+        { program: Type.String({ minLength: 1 }), args: Type.Optional(Type.Array(Type.String())) },
+        { additionalProperties: false },
+      ),
     ),
+    // An agent run (engines/agent-runtime): the provider builds the command from this at dispatch. Job args then
+    // only fill the prompt ({{job.args.N}}); they are never appended to the command.
+    agent: Type.Optional(Type.Union([AgentSchema, Type.Null()])),
+    // Seconds without output growth and CPU after which the executor stops the run, class stalled (feature stall).
+    stall_s: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 604800 }), Type.Null()])),
     // Names of the machine's environment variables the run may see; values never leave the machine.
     env: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     // A job may append arguments to command.args (its `args`).
@@ -91,6 +103,8 @@ export type JobTypeDef = {
   env_set: Record<string, string>
   need_mb: number | null
   environment: JobTypeEnvironment | null
+  agent: AgentDef | null
+  stall_s: number | null
 }
 
 // Schema first, then what a schema cannot say: a rule needs a condition (or it would swallow every failure), a
@@ -104,6 +118,14 @@ export function findJobTypeIssue(value: unknown): Issue | null {
   }
   const first = Value.Errors(JobTypeFileSchema, value).First()
   if (first) return { path: first.path || '/', reason: first.message }
+  const file = value as JobTypeFile
+  if (file.command === undefined && file.agent === undefined) {
+    return { path: '/command', reason: 'give a command, or an agent block' }
+  }
+  if (file.agent) {
+    const issue = findAgentIssue(file.agent)
+    if (issue) return issue
+  }
   for (const [i, rule] of ((value as JobTypeFile).classify ?? []).entries()) {
     if (rule.exit_codes === undefined && rule.log_pattern === undefined) {
       return { path: `/classify/${i}`, reason: 'give exit_codes, log_pattern or both' }
@@ -116,7 +138,6 @@ export function findJobTypeIssue(value: unknown): Issue | null {
       }
     }
   }
-  const file = value as JobTypeFile
   const isRunId = (name: string) => sameEnvName(name, RUN_ID_VAR)
   const named = Object.keys(file.env_set ?? {}).find(isRunId)
   if (named !== undefined) return { path: `/env_set/${named}`, reason: 'set by the executor' }
@@ -133,13 +154,17 @@ export function findJobTypeIssue(value: unknown): Issue | null {
   return null
 }
 
+// A def without a command is an agent job type (findJobTypeIssue): its program is the runtime's. Agent runs default to
+// let_finish: a session outliving a restart of the executor goes on (spec §11.5).
 export function withDefaults(file: JobTypeFile): JobTypeDef {
+  const agent = file.agent ? agentWithDefaults(file.agent) : null
+  const program = file.command?.program ?? (agent ? findAgentRuntime(agent.runtime)?.program : undefined) ?? ''
   return {
     key: file.key,
-    command: { program: file.command.program, args: file.command.args ?? [] },
+    command: { program, args: file.command?.args ?? [] },
     env: file.env ?? [],
     timeout_s: file.timeout_s ?? 3600,
-    orphan_policy: file.orphan_policy ?? 'kill',
+    orphan_policy: file.orphan_policy ?? (agent ? 'let_finish' : 'kill'),
     classify: file.classify ?? [],
     retry: {
       max_attempts: file.retry?.max_attempts ?? 1,
@@ -151,6 +176,8 @@ export function withDefaults(file: JobTypeFile): JobTypeDef {
     env_set: file.env_set ?? {},
     need_mb: file.need_mb ?? null,
     environment: file.environment ?? null,
+    agent,
+    stall_s: file.stall_s ?? null,
   }
 }
 

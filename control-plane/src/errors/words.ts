@@ -46,6 +46,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 400,
     keys: ['jobType', 'queue'],
   },
+  DR154: {
+    text: 'Run stopped: no output and no CPU for {stall_s} s.',
+    hint: 'The agent or command waited on something that never came (a prompt, a lock, a hung tool). Read the end of its log with `devrounds run logs <run>`; raise stall_s in the job type if it legitimately works that long in silence.',
+    httpStatus: 400,
+    keys: ['stall_s'],
+  },
   DR201: {
     text: 'No {kind} {key} found.',
     hint: 'Check the {kind} key with the `devrounds` command that lists it (`plan show` for tasks); keys are case-sensitive.',

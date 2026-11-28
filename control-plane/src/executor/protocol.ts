@@ -17,6 +17,7 @@ export const FEATURES = [
   'withdraw',
   'job-env',
   'environment',
+  'stall',
 ] as const
 
 const U32 = Type.Integer({ minimum: 0, maximum: 4294967295 })
@@ -40,6 +41,8 @@ const JobSpec = Type.Object({
   env_set: Type.Record(Type.String(), Type.String()),
   // Feature environment: run in cwd just before the run, its stdout read back on RunStarted (environments/).
   environment_probe: Type.Optional(Type.Object({ program: Type.String(), args: Type.Array(Type.String()) })),
+  // Feature stall: seconds without output and CPU after which the executor stops the run (reason stalled).
+  stall_s: Type.Optional(U32),
 })
 
 // Feature environment: what the probe printed, as JSON, or why there is nothing (error). The exit code stands apart,
@@ -89,7 +92,7 @@ export const RUN_EVENTS = {
   RunFinished: Type.Object({
     kind: Type.Literal('RunFinished'),
     run: Type.String(),
-    reason: OneOf('exited', 'stopped', 'timeout', 'spawn_failed', 'infra'),
+    reason: OneOf('exited', 'stopped', 'timeout', 'spawn_failed', 'infra', 'stalled'),
     exit_code: Nullable(I64),
     peak: U64,
     p95: U64,

@@ -30,6 +30,8 @@ import { tenantNamesUnique } from './0028_tenant_names_unique.ts'
 import { flows } from './0029_flows.ts'
 import { environments } from './0030_environments.ts'
 import { memberPrefs } from './0031_member_prefs.ts'
+import { agentRuns } from './0032_agent_runs.ts'
+import { claimRunAgents } from './0033_claim_run_agents.ts'
 
 export type MigrationOptions = { appRole: string }
 
@@ -68,5 +70,7 @@ export function migrations(options: MigrationOptions): Record<string, Migration>
     '0029_flows': flows(options),
     '0030_environments': environments,
     '0031_member_prefs': memberPrefs,
+    '0032_agent_runs': agentRuns,
+    '0033_claim_run_agents': claimRunAgents(options),
   }
 }

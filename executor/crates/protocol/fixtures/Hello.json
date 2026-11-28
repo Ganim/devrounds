@@ -11,7 +11,8 @@
     "acked-through",
     "withdraw",
     "job-env",
-    "environment"
+    "environment",
+    "stall"
   ],
   "boot_id": "2026-11-17T08:00:01Z",
   "acked_through": 41

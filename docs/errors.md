@@ -58,6 +58,14 @@ Job type {jobType} is not allowed on queue {queue}.
 
 Pick a queue that lists {jobType} (see `devrounds queue list`), or list it with the job types the queue already allows: `devrounds queue set {queue} --job-types <a,b>` (the list replaces the old one).
 
+## DR154
+
+Run stopped: no output and no CPU for {stall_s} s.
+
+### Fix
+
+The agent or command waited on something that never came (a prompt, a lock, a hung tool). Read the end of its log with `devrounds run logs <run>`; raise stall_s in the job type if it legitimately works that long in silence.
+
 ## DR201
 
 No {kind} {key} found.
