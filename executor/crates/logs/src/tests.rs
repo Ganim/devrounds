@@ -132,7 +132,13 @@ fn extracts_structured_levels() {
     }
 }
 
+/// The files of the directory this crate writes: segments, metadata and its own
+/// temporaries (case-sensitive suffixes), lock files left out. Anything else is
+/// another program's: on Windows a scanner copying a fresh `.log.zst` left
+/// `…0796.LOG.ZST.tmp` beside it while `trim_to` ran (F-0016), which says nothing
+/// about retention.
 fn listing(directory: &Path) -> Vec<String> {
+    const OWN: [&str; 5] = [".log", ".log.zst", ".meta.json", ".zst.tmp", ".json.tmp"];
     let mut names: Vec<_> = fs::read_dir(directory)
         .expect("test step")
         .map(|entry| {
@@ -142,7 +148,7 @@ fn listing(directory: &Path) -> Vec<String> {
                 .into_string()
                 .expect("test step")
         })
-        .filter(|name| !name.starts_with('.'))
+        .filter(|name| !name.starts_with('.') && OWN.iter().any(|own| name.ends_with(own)))
         .collect();
     names.sort();
     names
