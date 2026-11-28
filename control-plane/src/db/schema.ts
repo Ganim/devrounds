@@ -487,6 +487,16 @@ export interface LogSegmentsTable {
   created_at: Timestamp
 }
 
+// One preference a member shares across devices (prefs/service.ts); the value is opaque to the server.
+export interface MemberPrefsTable {
+  tenant_id: string
+  member_id: string
+  project_id: string
+  name: string
+  value: Json
+  updated_at: Timestamp
+}
+
 export interface Database {
   tenants: TenantsTable
   members: MembersTable
@@ -515,6 +525,7 @@ export interface Database {
   flow_node_runs: FlowNodeRunsTable
   convention_sets: ConventionSetsTable
   convention_checks: ConventionChecksTable
+  member_prefs: MemberPrefsTable
   runs: RunsTable
   learned_needs: LearnedNeedsTable
   run_steps: RunStepsTable

@@ -45,7 +45,9 @@ another open task holds answers DR309. Plan files carry the key as `source_key`,
 The web view at http://127.0.0.1:4992/ signs in with that email and password (Better Auth, schema `auth`). A session
 cookie writes only from the page itself: a write needs the `x-devrounds-action` header and, when the browser sends
 them, the server's own `Origin` and `Sec-Fetch-Site: same-origin`; anything else is DR402. The CLI and agents use a
-token and never meet that check. `devrounds-admin login remove`
+token and never meet that check. What a member arranges in the view (order, custom names, columns) is saved per
+member and project at `GET /prefs`, `GET|PUT /prefs/<name>` (body `{ "value": <json> }`, at most 64 KiB), so it
+follows the member to every device. `devrounds-admin login remove`
 deletes a login and its sessions. Besides the roadmap, the view shows machines (free memory, the needs reserved by
 offers and the reserve), queues, jobs, runs and one run with its log, at `#/machines`, `#/queues`, `#/jobs`, `#/runs`
 and `#/run/<id>`. Logs go to `~/.devrounds/logs/`. `devrounds-admin service uninstall` stops and

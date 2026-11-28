@@ -20,6 +20,7 @@ import { flowRoutes } from './flow-routes.ts'
 import { gateRoutes } from './gate-routes.ts'
 import { jobRoutes } from './job-routes.ts'
 import { machineRoutes } from './machine-routes.ts'
+import { prefRoutes } from './pref-routes.ts'
 import { reportRoutes } from './report-routes.ts'
 import { projectRoutes } from './routes.ts'
 import { runRoutes } from './run-routes.ts'
@@ -130,6 +131,7 @@ export function buildServer(opts: ServerOptions) {
   app.register(conventionRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(viewRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(reportRoutes, { prefix: '/api/projects/:key', db: opts.db })
+  app.register(prefRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(machineRoutes, { prefix: '/api/machines', db: opts.db, sessions })
   app.register(executorRoutes, {
     prefix: '/api/executor',
