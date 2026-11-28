@@ -21,6 +21,7 @@ import {
 import { applyBlock, driftOf, readBlock, removeBlock, renderBlocks } from '../conventions/render.ts'
 import type { ConventionIndicators } from '../conventions/results.ts'
 import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
+import type { BudgetView } from '../engines/agent-runtime/budgets.ts'
 import type { RunEnvironment } from '../environments/index.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
@@ -276,6 +277,30 @@ function list(inv: Invocation, name: string): string[] | undefined {
   return Array.isArray(value) ? value : undefined
 }
 
+// Repeated `--<name> KEY=value` options as one record; the value may hold `=`.
+function pairs(inv: Invocation, name: string): Record<string, string> | undefined {
+  const given = list(inv, name)
+  return (
+    given &&
+    Object.fromEntries(
+      given.map((pair) => {
+        const at = pair.indexOf('=')
+        if (at === -1) fail('DR101', { path: `--${name}`, reason: `${pair} is not KEY=value` })
+        return [pair.slice(0, at), pair.slice(at + 1)]
+      }),
+    )
+  )
+}
+
+// A dollar amount for a budget cap; `none` removes the cap.
+function usd(inv: Invocation, name: string): number | null {
+  const value = text(inv, name)
+  if (value === undefined || value === 'none') return null
+  const n = Number(value)
+  if (value.trim() === '' || !Number.isFinite(n) || n < 0) fail('DR101', { path: `--${name}`, reason: 'must be >= 0' })
+  return n
+}
+
 function integer(inv: Invocation, name: string, min: number): number | undefined {
   const value = text(inv, name)
   if (value === undefined) return undefined
@@ -392,6 +417,15 @@ type RunJson = Omit<RunView, 'timeline' | 'steps' | 'delays'> & {
   unplaced?: Unplaced | null
 }
 
+// engines/agent-runtime/budgets.ts BudgetView.
+type BudgetJson = BudgetView
+
+function budgetLine(b: BudgetJson): string {
+  const cap = (value: number | null, unit: (n: number) => string) => (value === null ? 'none' : unit(value))
+  const dollars = (n: number) => `$${n}`
+  return fmt`${b.subject.kind === 'job_type' ? 'job type' : 'member'} ${b.subject.key}${b.overBudget ? ' over budget' : ''} · per day ${cap(b.usdPerDay, dollars)} / ${cap(b.tokensPerDay, String)} tokens · per run ${cap(b.usdPerRun, dollars)} · today ${dollars(b.today.usd)} / ${b.today.tokens} tokens`
+}
+
 // GET /runs/:id/logs (runs/log-store.ts LogPage, with the cursor as a number).
 type LogPageJson = { lines: { seq: number; text: string }[]; nextCursor: number | null }
 
@@ -439,6 +473,8 @@ function unplacedText(u: Unplaced): string {
       return 'no machine connected'
     case 'machine_offline':
       return fmt`machine ${u.machine} (pinned) is offline`
+    case 'budget':
+      return 'a daily agent budget is spent (see `devrounds budget list`)'
     case 'memory':
       return fmt`needs ${mib(u.needBytes)}, above the ${mib(Math.max(u.freeBytes, 0))} free on ${u.machine}`
     default:
@@ -595,6 +631,17 @@ function runShow(r: RunJson): Result {
     fmt`durations: queue wait ${ms(r.durations.queueWaitMs)} · admission delay ${ms(r.durations.admissionDelayMs)} · run ${ms(r.durations.runTimeMs)} · total ${ms(r.durations.totalMs)}`,
     fmt`resources: peak ${mib(res.peak)} · p95 ${mib(res.p95)} · p50 ${mib(res.p50)} · cpu ${res.cpuSeconds} s · swept ${res.swept} · visible windows ${res.visibleWindows}`,
   ]
+  const agent = r.agent
+  if (agent) {
+    const u = agent.usage
+    body.push(
+      fmt`agent: session ${agent.sessionId}${agent.resumedFrom ? ` (resumed from ${agent.resumedFrom})` : ''}`,
+      u === null
+        ? 'usage: not recorded yet'
+        : fmt`usage (${u.source}): in ${u.tokensIn} · out ${u.tokensOut} · cache read ${u.cacheRead} · cache write ${u.cacheWrite} · cost ${u.costUsd === null ? null : `$${u.costUsd}`}`,
+      agent.result === null ? 'result: none' : fmt`result: ${agent.result.label} ${JSON.stringify(agent.result.data)}`,
+    )
+  }
   if (r.steps.length > 0) {
     body.push('steps:')
     for (const s of r.steps)
@@ -1251,25 +1298,16 @@ export const COMMANDS: Spec[] = [
     path: ['run', 'start'],
     usage:
       'run start <jobType> --cwd <path> [--machine <name>] [--queue <key>] [--task <key>] [--arg <a>]... ' +
-      '[--env NAME=value]...   queue a run; the scheduler offers it to a machine with room, --machine pins it; ' +
-      '--arg and --env need a job type that allows them (args_from_job, job_env)',
+      '[--env NAME=value]... [--input key=value]...   queue a run; the scheduler offers it to a machine with room, ' +
+      '--machine pins it; --arg and --env need a job type that allows them (args_from_job, job_env); --input fills ' +
+      "an agent job type's {{input.<key>}}",
     args: 1,
-    options: { machine: str, cwd: str, queue: str, task: str, arg: many, env: many },
+    options: { machine: str, cwd: str, queue: str, task: str, arg: many, env: many, input: many },
     run: async (inv, connect) => {
       const api = await connect()
       const jobType = arg(inv, 0, '<jobType>')
       const cwd = text(inv, 'cwd') ?? fail('DR101', { path: '--cwd', reason: 'is required' })
       const machine = text(inv, 'machine')
-      const pairs = list(inv, 'env')
-      const env =
-        pairs &&
-        Object.fromEntries(
-          pairs.map((pair) => {
-            const at = pair.indexOf('=')
-            if (at === -1) fail('DR101', { path: '--env', reason: `${pair} is not NAME=value` })
-            return [pair.slice(0, at), pair.slice(at + 1)]
-          }),
-        )
       const body = {
         jobType,
         cwd,
@@ -1277,7 +1315,8 @@ export const COMMANDS: Spec[] = [
         queue: text(inv, 'queue'),
         task: text(inv, 'task'),
         args: list(inv, 'arg'),
-        env,
+        env: pairs(inv, 'env'),
+        input: pairs(inv, 'input'),
       }
       const r = await api.send<RunJson>('POST', '/runs', body)
       // The run is placed later, so the machine printed is the pin, if any.
@@ -1398,6 +1437,77 @@ export const COMMANDS: Spec[] = [
         failures: [],
         body: [`asked the executor to stop run ${id}`],
         next: `devrounds run show ${shellArg(id)} --wait`,
+      }
+    },
+  },
+  {
+    path: ['run', 'result'],
+    usage:
+      'run result --json \'{"label":"<label>","data":{...}}\' [--run <id>]   the one result an agent run reports; ' +
+      "the run is DEVROUNDS_RUN_ID unless --run names it; its job type's done and park labels decide how it ends",
+    args: 0,
+    options: { json: str, run: str },
+    run: async (inv, connect, deps) => {
+      const runId =
+        text(inv, 'run') ??
+        deps.env.DEVROUNDS_RUN_ID ??
+        fail('DR101', { path: '--run', reason: 'is required outside a run (no DEVROUNDS_RUN_ID)' })
+      const json = text(inv, 'json') ?? fail('DR101', { path: '--json', reason: 'is required' })
+      let body: unknown
+      try {
+        body = JSON.parse(json)
+      } catch {
+        fail('DR101', { path: '--json', reason: 'is not JSON' })
+      }
+      const api = await connect()
+      const r = await api.send<{ label: string }>('POST', path('runs', runId, 'result'), body)
+      return {
+        failures: [],
+        body: [fmt`run ${runId} reported ${r.label}`],
+        next: `devrounds run show ${shellArg(runId)}`,
+      }
+    },
+  },
+  {
+    path: ['budget', 'set'],
+    usage:
+      'budget set (--job-type <key> | --member <name>) [--usd-per-day <n>|none] [--tokens-per-day <n>|none] ' +
+      '[--usd-per-run <n>|none]   replace the agent budget of a job type or of the member who makes the jobs; a ' +
+      'spent daily cap holds queued runs until the next day in the tenant time zone; all none removes it',
+    args: 0,
+    options: { 'job-type': str, member: str, 'usd-per-day': str, 'tokens-per-day': str, 'usd-per-run': str },
+    run: async (inv, connect) => {
+      const tokens = orNull(text(inv, 'tokens-per-day'))
+      const body = {
+        jobType: text(inv, 'job-type'),
+        member: text(inv, 'member'),
+        usdPerDay: usd(inv, 'usd-per-day'),
+        tokensPerDay: tokens == null ? null : (integer(inv, 'tokens-per-day', 0) as number),
+        usdPerRun: usd(inv, 'usd-per-run'),
+      }
+      const api = await connect()
+      const r = await api.send<{ budget: BudgetJson | null }>('PUT', '/agent-budgets', body)
+      const subject = body.jobType === undefined ? `member ${body.member}` : `job type ${body.jobType}`
+      return {
+        failures: [],
+        body: [r.budget === null ? `removed the agent budget of ${subject}` : budgetLine(r.budget)],
+        next: 'devrounds budget list',
+      }
+    },
+  },
+  {
+    path: ['budget', 'list'],
+    usage: 'budget list   the agent budgets of the project with what they spent today; over = runs held',
+    args: 0,
+    options: {},
+    run: async (_inv, connect) => {
+      const api = await connect()
+      const budgets = await api.get<BudgetJson[]>('/agent-budgets')
+      const over = budgets.filter((b) => b.overBudget)
+      return {
+        failures: over.map(budgetLine),
+        body: budgets.length > 0 ? budgets.filter((b) => !b.overBudget).map(budgetLine) : ['no agent budgets'],
+        next: 'devrounds budget set --job-type <key> --usd-per-day <n>',
       }
     },
   },
