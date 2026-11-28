@@ -2,7 +2,7 @@ import dagre from '@dagrejs/dagre'
 import { Background, type Edge, MarkerType, type Node, Position, ReactFlow } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useMemo } from 'react'
-import type { TaskView } from './api.ts'
+import type { TaskView } from '../../data/contract.ts'
 
 const NODE = { width: 170, height: 46 }
 const COLOR: Record<string, string> = {

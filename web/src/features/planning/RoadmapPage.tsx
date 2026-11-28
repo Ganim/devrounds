@@ -1,5 +1,7 @@
-import type { PlanView, Remote } from './api.ts'
-import { Loading, Pill, StackedBar } from './ui.tsx'
+import type { PlanView } from '../../data/contract.ts'
+import type { Remote } from '../../data/resources.ts'
+import { Loading } from '../../ui/index.ts'
+import { StackedBar, StatePill } from './TaskState.tsx'
 
 export function Roadmap({ plan }: { plan: PlanView }) {
   return (
@@ -24,7 +26,7 @@ export function Roadmap({ plan }: { plan: PlanView }) {
                 </a>
               </td>
               <td>
-                <Pill state={p.state} />
+                <StatePill state={p.state} />
               </td>
               <td style={{ minWidth: 180 }}>
                 <StackedBar progress={p.progress} />

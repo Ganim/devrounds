@@ -1,19 +1,16 @@
-import {
-  type ConventionsDiffJson,
-  type ConventionsSummaryJson,
-  type ConventionsVersionJson,
-  getProject,
-  useRemote,
-} from './api.ts'
-import { bySection, diffEntries } from './conventions.ts'
-import { Loading, when } from './ui.tsx'
+import type { ConventionsSummaryJson, ConventionsVersionJson } from '../../data/contract.ts'
+import { getProject } from '../../data/http.ts'
+import { useConventions, useConventionsDiff, useConventionsVersion } from '../../data/resources.ts'
+import { bySection, diffEntries } from '../../lib/conventions.ts'
+import { when } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 
 type Rule = ConventionsVersionJson['document']['rules'][number]
 
 const uniquePaths = (item: Pick<Rule, 'evidence'>): string[] => [...new Set(item.evidence.map((e) => e.path))]
 
 function ActiveVersion() {
-  const view = useRemote<ConventionsVersionJson>('/conventions/active')
+  const view = useConventionsVersion('active')
   const v = view.data
   return (
     <Loading data={v} error={view.error}>
@@ -106,7 +103,7 @@ function Proposal({
   proposal: NonNullable<ConventionsSummaryJson['proposal']>
   active: number | null
 }) {
-  const diff = useRemote<ConventionsDiffJson>(`/conventions/${proposal.version}/diff`)
+  const diff = useConventionsDiff(proposal.version)
   const d = diff.data
   const entries = d ? diffEntries(d) : []
   return (
@@ -194,7 +191,7 @@ function Proposal({
 
 // Read-only (design call 3): approving stays in the CLI with a human token, so the page prints the command instead.
 export function ConventionsPage() {
-  const summary = useRemote<ConventionsSummaryJson>('/conventions')
+  const summary = useConventions()
   const s = summary.data
   return (
     <Loading data={s} error={summary.error}>

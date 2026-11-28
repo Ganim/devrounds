@@ -1,6 +1,9 @@
-import type { CriterionView, LinkView, PlanView, Remote, TaskView } from './api.ts'
+import type { CriterionView, LinkView, PlanView, TaskView } from '../../data/contract.ts'
+import type { Remote } from '../../data/resources.ts'
+import { when } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 import { DependencyGraph } from './DependencyGraph.tsx'
-import { Loading, Pill, StackedBar, when } from './ui.tsx'
+import { StackedBar, StatePill } from './TaskState.tsx'
 
 function Criteria({ items }: { items: CriterionView[] }) {
   if (items.length === 0) return <p className="muted">No exit criteria.</p>
@@ -71,7 +74,7 @@ function TaskRows({ tasks }: { tasks: TaskView[] }) {
               <Links items={t.links} />
             </td>
             <td>
-              <Pill state={t.state} />
+              <StatePill state={t.state} />
             </td>
             <td>{t.assignee ?? ''}</td>
             <td className="num">
@@ -93,7 +96,7 @@ export function PhasePage({ phaseKey, plan }: { phaseKey: string; plan: Remote<P
       {phase ? (
         <>
           <p>
-            <a href="#/">Roadmap</a> / <strong>{phase.key}</strong> {phase.title} <Pill state={phase.state} />
+            <a href="#/">Roadmap</a> / <strong>{phase.key}</strong> {phase.title} <StatePill state={phase.state} />
           </p>
           <p>{phase.goal}</p>
           <div style={{ maxWidth: 420 }}>

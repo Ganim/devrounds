@@ -1,4 +1,13 @@
-import type { PhaseView } from '../../control-plane/src/planning/view.ts'
+// The task counts of a phase (planning/view.ts PhaseView['progress']); lib stays off server types, and tsc checks that a
+// PhaseView still fits at the call site.
+export type Progress = {
+  done: number
+  inProgress: number
+  blocked: number
+  todo: number
+  cancelled: number
+  total: number
+}
 
 export type Segment = {
   state: 'done' | 'in_progress' | 'blocked' | 'todo' | 'cancelled'
@@ -7,7 +16,7 @@ export type Segment = {
 }
 
 // Cancelled is last (and greyed by the caller) so it never reads as progress.
-export function segments(progress: PhaseView['progress']): Segment[] {
+export function segments(progress: Progress): Segment[] {
   const parts: Array<[Segment['state'], number]> = [
     ['done', progress.done],
     ['in_progress', progress.inProgress],

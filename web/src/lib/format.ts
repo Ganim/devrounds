@@ -25,3 +25,9 @@ export function formatDuration(ms: number | null): string {
   const s = total % 60
   return h > 0 ? `${h}h ${pad(m)}m ${pad(s)}s` : `${m}m ${pad(s)}s`
 }
+
+/** An ISO timestamp as `YYYY-MM-DD HH:MM`, as the server wrote it (UTC); null → empty. */
+export const when = (iso: string | null): string => (iso ? iso.slice(0, 16).replace('T', ' ') : '')
+
+/** The first 8 characters of a uuid, enough to tell runs and jobs apart on one page. */
+export const shortId = (id: string): string => id.slice(0, 8)

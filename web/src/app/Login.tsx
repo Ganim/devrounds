@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { type ApiError, getProject, setProject, signIn } from './api.ts'
-import { ErrorBox } from './ui.tsx'
+import { type ApiError, getProject, setProject } from '../data/http.ts'
+import { signIn } from '../data/resources.ts'
+import { ErrorBox } from '../ui/index.ts'
 
 // Email and password from `devrounds-admin login create`. Better Auth sets the session cookie on success.
 export function Login({ onDone }: { onDone: () => void }) {

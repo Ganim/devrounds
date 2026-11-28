@@ -8,7 +8,7 @@ const dist = fileURLToPath(new URL('./dist/', import.meta.url))
 await rm(dist, { recursive: true, force: true })
 await mkdir(dist, { recursive: true })
 await build({
-  entryPoints: [fileURLToPath(new URL('./src/main.tsx', import.meta.url))],
+  entryPoints: [fileURLToPath(new URL('./src/app/main.tsx', import.meta.url))],
   outfile: `${dist}app.js`,
   bundle: true,
   format: 'esm',

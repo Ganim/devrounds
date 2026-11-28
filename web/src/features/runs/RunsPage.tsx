@@ -1,29 +1,9 @@
-import { type RunListJson, usePages, useRemote } from './api.ts'
-import { formatDuration } from './format.ts'
-import { Loading, when } from './ui.tsx'
+import { usePages, useRuns } from '../../data/resources.ts'
+import { formatDuration, shortId, when } from '../../lib/format.ts'
+import { Loading, Pager } from '../../ui/index.ts'
+import { RunState } from './RunState.tsx'
 
 const STATES = ['queued', 'offered', 'admitted', 'running', 'finished', 'failed', 'stopped', 'orphaned', 'skipped']
-
-// `cached`: a cache hit, which ran nothing (its run points to the run it reuses).
-export function RunState({
-  state,
-  failureClass,
-  cached,
-}: {
-  state: string
-  failureClass?: string | null
-  cached?: boolean
-}) {
-  return (
-    <>
-      <span className={`pill ${state}`}>{state}</span>
-      {failureClass ? <span className="muted"> {failureClass}</span> : null}
-      {cached ? <span className="muted"> cached</span> : null}
-    </>
-  )
-}
-
-export const shortId = (id: string): string => id.slice(0, 8)
 
 // `filters` come from the hash (#/runs?state=failed&jobType=check&queue=nightly); changing one rewrites the hash, so
 // a filtered list is a link that can be shared or reloaded.
@@ -35,7 +15,7 @@ export function RunsPage({ filters }: { filters: URLSearchParams }) {
   }
   const pages = usePages(query.toString())
   if (pages.cursor) query.set('cursor', pages.cursor)
-  const runs = useRemote<RunListJson>(`/runs?${query}`)
+  const runs = useRuns(query)
   const filter = (name: string, value: string) => {
     const next = new URLSearchParams(filters)
     if (value) next.set(name, value)
@@ -118,21 +98,5 @@ export function RunsPage({ filters }: { filters: URLSearchParams }) {
         <Pager page={pages.page} onNewer={pages.newer} next={runs.data?.nextCursor ?? null} onOlder={pages.older} />
       </Loading>
     </>
-  )
-}
-
-export function Pager(p: { page: number; next: string | null; onNewer: () => void; onOlder: (next: string) => void }) {
-  if (p.page === 1 && p.next === null) return null
-  const { next } = p
-  return (
-    <p className="pager">
-      <button type="button" className="link" disabled={p.page === 1} onClick={p.onNewer}>
-        newer
-      </button>
-      <span className="muted"> page {p.page} </span>
-      <button type="button" className="link" disabled={next === null} onClick={() => next && p.onOlder(next)}>
-        older
-      </button>
-    </p>
   )
 }

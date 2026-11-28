@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { type ApiError, type LogPageJson, projectUrl, type RunJson, request, useRemote } from './api.ts'
-import { formatBytes, formatDuration } from './format.ts'
-import { RunState } from './RunsPage.tsx'
-import { ErrorBox, Loading, when } from './ui.tsx'
+import type { LogPageJson } from '../../data/contract.ts'
+import type { ApiError } from '../../data/http.ts'
+import { fetchRunLogs, useRun } from '../../data/resources.ts'
+import { formatBytes, formatDuration, when } from '../../lib/format.ts'
+import { ErrorBox, Loading } from '../../ui/index.ts'
+import { RunState } from './RunState.tsx'
 
 const ENDED = ['finished', 'failed', 'stopped', 'orphaned', 'skipped']
 
 // Outcome and failure summary first, then timeline, durations, resources, steps, delays, and the log last: the same
 // order as `devrounds run show`.
 export function RunPage({ runId }: { runId: string }) {
-  const run = useRemote<RunJson>(`/runs/${encodeURIComponent(runId)}`)
+  const run = useRun(runId)
   const r = run.data
   return (
     <Loading data={r} error={run.error}>
@@ -148,11 +150,6 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
-const logPage = (runId: string, cursor: number | null): Promise<LogPageJson> =>
-  request<LogPageJson>(
-    projectUrl(`/runs/${encodeURIComponent(runId)}/logs${cursor === null ? '' : `?cursor=${cursor}`}`),
-  )
-
 // The first log page, then one more page per "more" (GET /runs/:id/logs?cursor=<nextCursor>). Not polled: a running
 // run's output grows, so its last page offers "more" again from the line after the last one shown.
 function RunLog({ runId, ended }: { runId: string; ended: boolean }) {
@@ -168,7 +165,7 @@ function RunLog({ runId, ended }: { runId: string; ended: boolean }) {
     const { cursor } = ask
     let live = true
     setLoading(true)
-    logPage(runId, cursor).then(
+    fetchRunLogs(runId, cursor).then(
       (page) => {
         if (!live) return
         setLines((shown) => (cursor === null ? page.lines : [...shown, ...page.lines]))

@@ -1,9 +1,10 @@
-import { type EventView, useRemote } from './api.ts'
-import { Loading, when } from './ui.tsx'
+import { useEvents } from '../../data/resources.ts'
+import { when } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 
 // The newest 200 events; older history has no UI in P0.
 export function HistoryPage() {
-  const events = useRemote<EventView[]>('/events?order=desc&limit=200')
+  const events = useEvents(new URLSearchParams({ order: 'desc', limit: '200' }))
   const rows = events.data ?? []
   return (
     <Loading data={events.data} error={events.error}>

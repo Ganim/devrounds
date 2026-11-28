@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { type JobListJson, usePages, useRemote } from './api.ts'
-import { Pager, RunState, shortId } from './RunsPage.tsx'
-import { Loading } from './ui.tsx'
+import { useJobs, usePages } from '../../data/resources.ts'
+import { shortId } from '../../lib/format.ts'
+import { Loading, Pager, Pill } from '../../ui/index.ts'
 
 const STATES = ['open', 'finished', 'failed', 'stopped', 'skipped']
 
@@ -10,7 +10,7 @@ export function JobsPage() {
   const query = new URLSearchParams(state ? { state } : {})
   const pages = usePages(query.toString())
   if (pages.cursor) query.set('cursor', pages.cursor)
-  const jobs = useRemote<JobListJson>(`/jobs?${query}`)
+  const jobs = useJobs(query)
   const rows = jobs.data?.jobs ?? []
   return (
     <>
@@ -49,7 +49,7 @@ export function JobsPage() {
                   <a href={`#/run/${j.lastRun.id}`} className="mono">
                     {shortId(j.lastRun.id)}
                   </a>{' '}
-                  <RunState state={j.lastRun.state} failureClass={j.lastRun.failureClass} />
+                  <Pill state={j.lastRun.state} notes={[j.lastRun.failureClass]} />
                 </td>
               </tr>
             ))}

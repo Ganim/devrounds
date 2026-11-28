@@ -1,9 +1,9 @@
-import { type QueueJson, useRemote } from './api.ts'
-import { formatDuration } from './format.ts'
-import { Loading } from './ui.tsx'
+import { useQueues } from '../../data/resources.ts'
+import { formatDuration } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 
 export function QueuesPage() {
-  const queues = useRemote<QueueJson[]>('/queues')
+  const queues = useQueues()
   const rows = queues.data ?? []
   // Ages are from this render; the 10 s poll moves them along.
   const now = Date.now()

@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { type BalanceRow, type IndicatorRow, type IndicatorsNow, useRemote } from './api.ts'
-import { formatBytes, formatDuration } from './format.ts'
-import { Loading } from './ui.tsx'
+import type { IndicatorRow } from '../../data/contract.ts'
+import { useBalance, useIndicators, useIndicatorsNow } from '../../data/resources.ts'
+import { formatBytes, formatDuration } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 
 export function BalancePage() {
   const [period, setPeriod] = useState<'day' | 'week'>('day')
-  const balance = useRemote<BalanceRow[]>(`/balance?period=${period}`)
+  const balance = useBalance(period)
   const rows = [...(balance.data ?? [])].reverse()
   const maxDone = Math.max(1, ...rows.map((r) => r.done))
   const maxHours = Math.max(1, ...rows.map((r) => r.hoursInProgress))
@@ -65,8 +66,8 @@ const classes = (r: IndicatorRow) =>
 
 // Runs that ended in each local period, by job type, then queues, machines and learned needs as they stand.
 function RunsSection({ period }: { period: 'day' | 'week' }) {
-  const indicators = useRemote<IndicatorRow[]>(`/indicators?period=${period}`)
-  const now = useRemote<IndicatorsNow>('/indicators/now')
+  const indicators = useIndicators(period)
+  const now = useIndicatorsNow()
   const rows = [...(indicators.data ?? [])].sort(
     (a, b) => b.period.localeCompare(a.period) || a.jobType.localeCompare(b.jobType),
   )

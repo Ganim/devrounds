@@ -1,5 +1,12 @@
-// Types only: erased by esbuild, so the web bundle never pulls in server code.
-import type { DiffItem, VersionDiff } from '../../control-plane/src/conventions/diff-versions.ts'
+// The shapes of conventions/diff-versions.ts; lib stays off server types, and tsc checks that the server's diff still
+// fits at the call site.
+type DiffItem = { key: string; item: 'rule' | 'fact'; severity: 'warn' | 'block' | null }
+type VersionDiff = {
+  added: DiffItem[]
+  removed: DiffItem[]
+  changed: (DiffItem & { fields: string[] })[]
+  targets: { added: string[]; removed: string[] }
+}
 
 export type DiffEntry = DiffItem & { verb: 'removed' | 'changed' | 'added'; fields: string[]; blocking: boolean }
 

@@ -1,13 +1,14 @@
-import { type MachineJson, useRemote } from './api.ts'
-import { formatBytes } from './format.ts'
-import { Loading, when } from './ui.tsx'
+import type { MachineJson } from '../../data/contract.ts'
+import { useMachines } from '../../data/resources.ts'
+import { formatBytes, when } from '../../lib/format.ts'
+import { Loading } from '../../ui/index.ts'
 
 // Room is what the scheduler can still place on the machine: free − reserve − reserved (scheduler/scheduler.ts).
 const room = (m: MachineJson): number | null =>
   m.freeBytes === null || m.reserveBytes === null ? null : m.freeBytes - m.reserveBytes - m.reservedBytes
 
 export function MachinesPage() {
-  const machines = useRemote<MachineJson[]>('/api/machines', { absolute: true })
+  const machines = useMachines()
   const rows = machines.data ?? []
   return (
     <Loading data={machines.data} error={machines.error}>
