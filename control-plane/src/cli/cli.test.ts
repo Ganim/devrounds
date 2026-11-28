@@ -1338,3 +1338,47 @@ test('conventions check with no active version exits 3', async () => {
   assert.match(res.stderr, /^DR201 /)
   assert.match(res.stderr, /\nnext: devrounds conventions propose /)
 })
+
+test('flow set, run, show and cancel over the server; a second run for one source key exits 1 with DR314', async (t) => {
+  const db = await testDb()
+  const mine = await db.newTenant()
+  const ctx = { db: db.db, tenantId: mine.tenantId, actor: mine.human }
+  await createProject(ctx, { key: 'alpha', name: 'Alpha' })
+  await addTask(ctx, { projectKey: 'alpha', key: 'P4-T16', title: 'flow engine' })
+  await putJobType(ctx, 'alpha', { key: 'check', command: { program: 'node', args: ['check'] } })
+  const token = await createToken(db.admin, mine.tenantId, 'human', 'human')
+  const env = { DEVROUNDS_URL: url, DEVROUNDS_TOKEN: token, DEVROUNDS_PROJECT: 'alpha' }
+  const dir = await scratch('flow-')
+  t.after(() => removeDir(dir))
+  const file = join(dir, 'flow.yaml')
+  await writeFile(
+    file,
+    'key: loop\nstart: build\nnodes:\n  build:\n    kind: job\n    job_type: check\n    cwd: "{{input.repo}}"\n' +
+      '    next: { done: finish }\n  finish:\n    kind: finish\n',
+  )
+  const run = (args: string[]) => runCli(args, { env, configPath: NO_CONFIG })
+
+  const set = await run(['flow', 'set', file])
+  assert.equal(set.exitCode, 0, set.stderr)
+  assert.match(set.stdout, /^flow loop version 1 stored · sha [0-9a-f]{12}\n/)
+  const start = ['flow', 'run', 'loop', '--task', 'P4-T16', '--input', 'repo=C:\\src', '--source-key', 'linear:FLOWS-1']
+  const first = await run(start)
+  assert.equal(first.exitCode, 0, first.stderr)
+  const id = /^(\S+) loop@1 running · task P4-T16 · linear:FLOWS-1 · at build/.exec(first.stdout)?.[1] as string
+  assert.ok(id, first.stdout)
+  assert.match(first.stdout, /\nbuild#1 job waiting · run \S+ queued\n/)
+  assert.match(first.stdout, /next: devrounds run show \S+ --wait\n$/)
+
+  const second = await run(start)
+  assert.equal(second.exitCode, 1, second.stderr)
+  assert.match(second.stderr, /^DR314 Flow loop is already running for linear:FLOWS-1\./)
+  assert.ok(second.stderr.includes(`devrounds flow show ${id}`), second.stderr)
+
+  const cancel = await run(['flow', 'cancel', id])
+  assert.equal(cancel.exitCode, 0, cancel.stderr)
+  assert.match(cancel.stdout, new RegExp(`^${id} loop@1 cancelled`))
+  assert.match(cancel.stdout, /\nbuild#1 job cancelled · run \S+ stopped\n/)
+  const show = await run(['flow', 'show', id, '--json'])
+  const view = JSON.parse(show.stdout)
+  assert.deepEqual([view.state, view.nodes[0].run.state], ['cancelled', 'stopped'])
+})

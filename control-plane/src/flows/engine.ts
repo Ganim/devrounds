@@ -235,7 +235,7 @@ export async function settleFlowJob(trx: Trx, jobId: string, state: JobState): P
     .executeTakeFirst()
   if (!open) return
   const fr = await lockFlowRun(trx, open.flow_run_id)
-  if (!fr || fr.state !== 'running') return
+  if (fr?.state !== 'running') return
   // Read again under the lock: a cancel that committed first closed it.
   const nodeRun = await trx
     .selectFrom('flow_node_runs')

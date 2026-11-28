@@ -16,6 +16,7 @@ import { executorRoutes, MAX_PAYLOAD, type SchedulerPoke, Sessions } from '../ex
 import { PairingLimiter } from '../machines/pairing.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { conventionRoutes } from './convention-routes.ts'
+import { flowRoutes } from './flow-routes.ts'
 import { gateRoutes } from './gate-routes.ts'
 import { jobRoutes } from './job-routes.ts'
 import { machineRoutes } from './machine-routes.ts'
@@ -125,6 +126,7 @@ export function buildServer(opts: ServerOptions) {
   app.register(runRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions, logsRoot })
   app.register(jobRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(gateRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
+  app.register(flowRoutes, { prefix: '/api/projects/:key', db: opts.db, sessions })
   app.register(conventionRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(viewRoutes, { prefix: '/api/projects/:key', db: opts.db })
   app.register(reportRoutes, { prefix: '/api/projects/:key', db: opts.db })

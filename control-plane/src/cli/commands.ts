@@ -23,6 +23,7 @@ import type { ConventionIndicators } from '../conventions/results.ts'
 import { parseUnifiedDiff } from '../conventions/unified-diff.ts'
 import { exitCodeFor } from '../errors/codes.ts'
 import { DevRoundsError, explain, fail } from '../errors/error.ts'
+import { parseFlowFile } from '../flows/document.ts'
 import { parseGateFile } from '../gates/file.ts'
 import type { CheckIndicatorRow, GateIndicatorRow } from '../gates/indicators.ts'
 import { parseJobTypeFile } from '../job-types/file.ts'
@@ -468,6 +469,64 @@ async function waitGate(api: Api, first: GateJson, wait: boolean, deps: Deps): P
     gate = await api.get<GateJson>(path('gates', gate.id), { wait: String(GATE_WAIT_S) })
   }
   return gate
+}
+
+// Flows (flows/service.ts views), dates as ISO strings.
+type FlowJson = { key: string; version: number; sha: string; created: boolean }
+type FlowSummaryJson = { key: string; version: number; running: number }
+type FlowRunJson = {
+  id: string
+  flow: string
+  version: number
+  task: string
+  sourceKey: string | null
+  state: string
+  reason: string | null
+  // Only in a list row: the node it waits on.
+  node?: string | null
+  nodes?: {
+    node: string
+    kind: string
+    visit: number
+    outcome: string | null
+    data: Record<string, unknown>
+    run: { id: string; state: string } | null
+    wakeAt: string | null
+    endedAt: string | null
+  }[]
+}
+
+function flowRunLine(r: FlowRunJson): string {
+  const source = r.sourceKey === null ? '' : fmt` · ${r.sourceKey}`
+  const node = r.node ?? r.nodes?.find((n) => n.endedAt === null)?.node
+  const at = r.state === 'running' && node ? fmt` · at ${node}` : ''
+  const why = r.reason === null ? '' : fmt` · ${r.reason}`
+  return fmt`${r.id} ${r.flow}@${r.version} ${r.state} · task ${r.task}${source}${at}${why}`
+}
+
+// One node visit; a waiting job names its run, a waiting wait its wake time, a park what it asks.
+function flowNodeLine(n: NonNullable<FlowRunJson['nodes']>[number]): string {
+  const run = n.run === null ? '' : fmt` · run ${n.run.id} ${n.run.state}`
+  const wake = n.endedAt === null && n.wakeAt !== null ? fmt` · wakes ${n.wakeAt}` : ''
+  const ask = n.kind === 'park' && n.data.ask_schema ? fmt` · asks ${JSON.stringify(n.data.ask_schema)}` : ''
+  return fmt`${n.node}#${n.visit} ${n.kind} ${n.outcome ?? 'waiting'}${run}${wake}${ask}`
+}
+
+function flowRunResult(r: FlowRunJson): Result {
+  const id = shellArg(r.id)
+  const waiting = r.nodes?.at(-1)
+  return {
+    failures: r.state === 'parked' ? [fmt`parked: ${r.reason}`] : [],
+    body: [flowRunLine(r), ...(r.nodes ?? []).map(flowNodeLine)],
+    next:
+      r.state === 'running'
+        ? waiting?.run
+          ? `devrounds run show ${shellArg(waiting.run.id)} --wait`
+          : `devrounds flow show ${id}`
+        : r.state === 'parked' && waiting?.kind === 'park'
+          ? `devrounds flow resume ${id} --answer <json object>`
+          : 'devrounds plan show',
+  }
 }
 
 // --json prints the gate view as the server answered it, and nothing else.
@@ -1549,6 +1608,136 @@ export const COMMANDS: Spec[] = [
       // The first look does not wait, so a check no machine can take says so at once.
       const gate = await api.get<GateJson>(path('gates', id))
       return gateResult(inv, await waitGate(api, gate, wait, deps))
+    },
+  },
+  {
+    path: ['flow', 'set'],
+    usage:
+      'flow set <file.yaml>   store the flow document as its next version (the same document returns the latest ' +
+      'version); runs already started keep the version they started on',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      const file = arg(inv, 0, '<file.yaml>')
+      const yaml = await readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) =>
+        fail('DR101', { path: file, reason: `cannot be read (${err.code ?? err.message})` }),
+      )
+      // Parsed here so a problem points at its line in the file; the server checks the document again.
+      const f = await api.send<FlowJson>('POST', '/flows', parseFlowFile(yaml))
+      return {
+        failures: [],
+        body: [fmt`flow ${f.key} version ${f.version} ${f.created ? 'stored' : 'unchanged'} · sha ${f.sha.slice(0, 12)}`],
+        next: `devrounds flow run ${shellArg(f.key)} --task <key>`,
+      }
+    },
+  },
+  {
+    path: ['flow', 'run'],
+    usage:
+      'flow run <flow> --task <key> [--input <name=value>]... [--source-key <key>]   start the latest version for the ' +
+      'task; one run per flow and source key is live (DR314), and the source key defaults to the one of the task',
+    args: 1,
+    options: { task: str, input: many, 'source-key': str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const flow = arg(inv, 0, '<flow>')
+      const input: Record<string, string> = {}
+      for (const pair of list(inv, 'input') ?? []) {
+        const at = pair.indexOf('=')
+        if (at < 1) fail('DR101', { path: '--input', reason: `${pair} must be <name>=<value>` })
+        input[pair.slice(0, at)] = pair.slice(at + 1)
+      }
+      const body = {
+        task: text(inv, 'task') ?? fail('DR101', { path: '--task', reason: 'is required' }),
+        input,
+        sourceKey: text(inv, 'source-key'),
+      }
+      return flowRunResult(await api.send<FlowRunJson>('POST', path('flows', flow, 'runs'), body))
+    },
+  },
+  {
+    path: ['flow', 'show'],
+    usage: 'flow show <run> [--json]   a parked run first says why; then every node visit, oldest first',
+    args: 1,
+    options: { json: { type: 'boolean' } },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const r = await api.get<FlowRunJson>(path('flow-runs', arg(inv, 0, '<run>')))
+      return inv.values.json === true ? { failures: [], body: [], next: '', raw: `${JSON.stringify(r)}\n` } : flowRunResult(r)
+    },
+  },
+  {
+    path: ['flow', 'list'],
+    usage: 'flow list   the latest version of each flow, with its running runs',
+    args: 0,
+    pages: true,
+    options: {},
+    run: async (_inv, connect) => {
+      const api = await connect()
+      const flows = await api.get<FlowSummaryJson[]>('/flows')
+      return {
+        failures: [],
+        body:
+          flows.length > 0
+            ? flows.map((f) => fmt`${f.key} version ${f.version} · ${f.running} running`)
+            : ['no flows'],
+        next: flows.length > 0 ? 'devrounds flow runs' : 'devrounds flow set <file.yaml>',
+      }
+    },
+  },
+  {
+    path: ['flow', 'runs'],
+    usage: 'flow runs [--state <s>] [--flow <key>]   newest first, parked runs first',
+    args: 0,
+    pages: true,
+    options: { state: str, flow: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const runs = await api.get<FlowRunJson[]>('/flow-runs', {
+        state: text(inv, 'state'),
+        flow: text(inv, 'flow'),
+        limit: '200',
+      })
+      const parked = runs.filter((r) => r.state === 'parked')
+      return {
+        failures: parked.map(flowRunLine),
+        body: runs.length > 0 ? runs.filter((r) => r.state !== 'parked').map(flowRunLine) : ['no flow runs'],
+        next:
+          runs.length > 0 ? `devrounds flow show ${shellArg((parked[0] ?? runs[0]).id)}` : 'devrounds flow list',
+      }
+    },
+  },
+  {
+    path: ['flow', 'cancel'],
+    usage: 'flow cancel <run>   end a running run and stop the run of the job it waits on; an ended run stays as it is',
+    args: 1,
+    options: {},
+    run: async (inv, connect) => {
+      const api = await connect()
+      return flowRunResult(await api.send<FlowRunJson>('POST', path('flow-runs', arg(inv, 0, '<run>'), 'cancel')))
+    },
+  },
+  {
+    path: ['flow', 'resume'],
+    usage:
+      'flow resume <run> [--answer <json object>]   human members: go on from the park node the run stopped at; the ' +
+      'answer must match what the park asks (flow show prints it)',
+    args: 1,
+    options: { answer: str },
+    run: async (inv, connect) => {
+      const api = await connect()
+      const raw = text(inv, 'answer')
+      let answer: unknown
+      if (raw !== undefined) {
+        try {
+          answer = JSON.parse(raw)
+        } catch {
+          fail('DR101', { path: '--answer', reason: 'must be a JSON object' })
+        }
+      }
+      const r = await api.send<FlowRunJson>('POST', path('flow-runs', arg(inv, 0, '<run>'), 'resume'), { answer })
+      return flowRunResult(r)
     },
   },
   {
