@@ -58,6 +58,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 404,
     keys: ['route'],
   },
+  DR203: {
+    text: 'Flow run {run} ({state}) has no park node to resume at.',
+    hint: 'Only a run parked by a park node with a `resumed` or `default` edge resumes; read it with `devrounds flow show {run}`, and start a new run if it ended another way.',
+    httpStatus: 404,
+    keys: ['run', 'state'],
+  },
   DR301: {
     text: 'A task cannot move from {from} to {to}.',
     hint: 'Check the allowed moves for the current state, then pick another target state.',
@@ -135,6 +141,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     hint: 'Read it with `devrounds conventions show --version {version}`: a decided or withdrawn version stays as it is; propose a new version to change the conventions.',
     httpStatus: 409,
     keys: ['version', 'state'],
+  },
+  DR314: {
+    text: 'Flow {flow} is already running for {source}.',
+    hint: 'One run of a flow is live per source key: follow it with `devrounds flow show {run}`, or cancel it with `devrounds flow cancel {run}` before starting another.',
+    httpStatus: 409,
+    keys: ['flow', 'source', 'run'],
   },
   DR350: {
     text: 'Machine {machine} is not connected.',

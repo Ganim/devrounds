@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
 import type { Sessions } from '../executor/gateway.ts'
+import { wakeDueFlowWaits } from '../flows/engine.ts'
 import { claimedOffer } from '../runs/dispatch.ts'
 import type { Telemetry } from '../telemetry/otel.ts'
 import { withTenant } from '../tenancy/scope.ts'
@@ -131,6 +132,12 @@ export class Scheduler {
         await fireDueSchedules(this.#o.db, new Date(this.#now()), this.#o.log)
       } catch (err) {
         this.#o.log.error({ err }, 'schedule fire failed')
+      }
+      // Same place for the same reason: a wait that leads to a job queues it before this pass places runs.
+      try {
+        await wakeDueFlowWaits(this.#o.db, new Date(this.#now()), this.#o.log)
+      } catch (err) {
+        this.#o.log.error({ err }, 'flow wait wake failed')
       }
       for (const tenantId of tenants) {
         try {

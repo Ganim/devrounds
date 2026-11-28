@@ -1,5 +1,6 @@
 import { type RawBuilder, sql } from 'kysely'
 import type { JobState } from '../db/schema.ts'
+import { settleFlowJob } from '../flows/engine.ts'
 import { settleGate } from '../gates/settle.ts'
 import type { Trx } from '../planning/resolve.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -132,7 +133,8 @@ export function skippedSummary(dependency: string, state: JobState): string {
 }
 
 // Sets the job's outcome; a red one (failed, stopped) skips its open dependents and returns their skipped runs. The
-// job's gate, if its batch has one, ends here once nothing of the batch is open (settleGate).
+// job's gate, if its batch has one, ends here once nothing of the batch is open (settleGate), and the flow run whose
+// node waits on the job moves on (settleFlowJob).
 async function endJob(trx: Trx, jobId: string, ref: string | null, state: JobState): Promise<string[]> {
   const { batch_id } = await trx
     .updateTable('jobs')
@@ -142,6 +144,7 @@ async function endJob(trx: Trx, jobId: string, ref: string | null, state: JobSta
     .executeTakeFirstOrThrow()
   const skipped = await skipDependents(trx, jobId, ref, state)
   if (batch_id !== null) await settleGate(trx, batch_id)
+  await settleFlowJob(trx, jobId, state)
   return skipped
 }
 

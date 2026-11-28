@@ -74,6 +74,14 @@ The control plane has no route {route}.
 
 Check the URL; if the CLI sent it, compare its version with `GET /api/health` and update the older one.
 
+## DR203
+
+Flow run {run} ({state}) has no park node to resume at.
+
+### Fix
+
+Only a run parked by a park node with a `resumed` or `default` edge resumes; read it with `devrounds flow show {run}`, and start a new run if it ended another way.
+
 ## DR301
 
 A task cannot move from {from} to {to}.
@@ -177,6 +185,14 @@ Conventions version {version} is {state}; only a proposed version can be approve
 ### Fix
 
 Read it with `devrounds conventions show --version {version}`: a decided or withdrawn version stays as it is; propose a new version to change the conventions.
+
+## DR314
+
+Flow {flow} is already running for {source}.
+
+### Fix
+
+One run of a flow is live per source key: follow it with `devrounds flow show {run}`, or cancel it with `devrounds flow cancel {run}` before starting another.
 
 ## DR350
 
