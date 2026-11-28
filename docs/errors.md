@@ -228,11 +228,11 @@ Send `Authorization: Bearer <token>` with a token from `devrounds-admin token cr
 
 ## DR402
 
-A session cookie only reads; {method} {route} needs an API token.
+A session cookie writes only from the DevRounds web view; {method} {route} {reason}.
 
 ### Fix
 
-Send {method} {route} with `Authorization: Bearer <token>` (a token from `devrounds-admin token create`); a signed-in browser can only read.
+Write from the DevRounds page itself (it sends `x-devrounds-action` from its own origin), or send {method} {route} with `Authorization: Bearer <token>` (a token from `devrounds-admin token create`).
 
 ## DR450
 

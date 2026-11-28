@@ -22,6 +22,7 @@ test('every endpoint of data/contract.ts has a route on the server', async () =>
   const sessionAuth: SessionAuth = {
     handler: async () => {},
     userOf: async () => null,
+    origins: [],
     close: async () => {},
   }
   const app = buildServer({

@@ -17,6 +17,8 @@ export type SessionAuth = {
   handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   /** The Better Auth user id of a valid session cookie in `headers`, or null. */
   userOf(headers: Headers): Promise<string | null>
+  /** The origins the web view is served from (webOrigins); a cookie write from any other is DR402 (api/members.ts). */
+  origins: readonly string[]
   close(): Promise<void>
 }
 
@@ -40,13 +42,18 @@ export function authDb(databaseUrl: string): Kysely<unknown> {
   return new Kysely({ dialect: new PostgresDialect({ pool }) })
 }
 
+/** Where the web view runs: the control plane serves it on loopback, by address or by name. */
+export function webOrigins(port: number): string[] {
+  return [`http://127.0.0.1:${port}`, `http://localhost:${port}`]
+}
+
 // The one place the Better Auth options are written, shared by serve, the migration and `login create`. Only
 // `login create` passes signUp: there is no self sign-up, the operator creates every login.
 export function authOptions(
   db: Kysely<unknown>,
   o: { port: number; secret: string; signUp?: boolean; signInLimit?: RateRule },
 ): BetterAuthOptions {
-  const origins = [`http://127.0.0.1:${o.port}`, `http://localhost:${o.port}`]
+  const origins = webOrigins(o.port)
   return {
     appName: 'DevRounds',
     baseURL: origins[0],
@@ -89,6 +96,7 @@ export async function startAuth(
       const session = await auth.api.getSession({ headers })
       return session?.user.id ?? null
     },
+    origins: webOrigins(o.port),
     close: () => db.destroy(),
   }
 }

@@ -151,9 +151,77 @@ test('a POST with only the session cookie answers DR402 and changes nothing', as
   })
   assert.equal(res.statusCode, 403)
   assert.equal(res.json().code, 'DR402')
-  assert.deepEqual(res.json().data, { method: 'POST', route: '/api/projects/alpha/tasks' })
+  assert.deepEqual(res.json().data, {
+    method: 'POST',
+    route: '/api/projects/alpha/tasks',
+    reason: 'has no x-devrounds-action header',
+  })
   const tasks = await t.admin.selectFrom('tasks').select('id').where('tenant_id', '=', tenant.tenantId).execute()
   assert.deepEqual(tasks, [])
+})
+
+const postTask = (headers: Record<string, string>, key = 'alpha') =>
+  app.inject({
+    method: 'POST',
+    url: `/api/projects/${key}/tasks`,
+    headers,
+    payload: { key: 'P0-T01', title: 'From the web view', phaseKey: 'P0' },
+  })
+
+// P5 design call 6: a cookie write needs the action header (a cross-site form cannot set one and no CORS is granted)
+// and, when the browser sends them, the server's own Origin and Sec-Fetch-Site same-origin.
+test('a cookie write without x-devrounds-action or from another site answers DR402 and changes nothing', async () => {
+  const { tenant, email, password } = await setup()
+  const cookie = await signIn(email, password)
+  const action = { 'x-devrounds-action': 'task.add' }
+  const refused: [Record<string, string>, string][] = [
+    [{ origin: ORIGIN }, 'has no x-devrounds-action header'],
+    [{ ...action, 'x-devrounds-action': ' ' }, 'has no x-devrounds-action header'],
+    [{ ...action, origin: 'https://evil.example' }, 'comes from another origin'],
+    [{ ...action, origin: 'null' }, 'comes from another origin'],
+    [{ ...action, origin: `http://127.0.0.1:${PORT + 1}` }, 'comes from another origin'],
+    [{ ...action, 'sec-fetch-site': 'cross-site' }, 'is not a same-origin request'],
+    [{ ...action, origin: ORIGIN, 'sec-fetch-site': 'same-site' }, 'is not a same-origin request'],
+  ]
+  for (const [headers, reason] of refused) {
+    const res = await postTask({ cookie, ...headers })
+    assert.equal(res.statusCode, 403, JSON.stringify(headers))
+    assert.equal(res.json().code, 'DR402')
+    assert.deepEqual(res.json().data, { method: 'POST', route: '/api/projects/alpha/tasks', reason })
+  }
+  const tasks = await t.admin.selectFrom('tasks').select('id').where('tenant_id', '=', tenant.tenantId).execute()
+  assert.deepEqual(tasks, [])
+})
+
+test('a same-origin cookie write with x-devrounds-action acts as the signed-in member in its own tenant', async () => {
+  const a = await setup('alpha')
+  await setup('beta')
+  const cookie = await signIn(a.email, a.password)
+  const web = { cookie, 'x-devrounds-action': 'task.add', 'sec-fetch-site': 'same-origin' }
+
+  const posted = await postTask({ ...web, origin: ORIGIN })
+  assert.equal(posted.statusCode, 200, posted.body)
+  const event = await t.admin
+    .selectFrom('plan_events')
+    .select(['tenant_id', 'actor_id'])
+    .where('tenant_id', '=', a.tenant.tenantId)
+    .where('task_id', 'is not', null)
+    .executeTakeFirstOrThrow()
+  assert.deepEqual(event, { tenant_id: a.tenant.tenantId, actor_id: a.tenant.human.id })
+
+  // Origin is optional (call 6): the action header alone is what a cross-site form cannot send.
+  const second = await app.inject({
+    method: 'POST',
+    url: '/api/projects/alpha/tasks',
+    headers: { cookie, 'x-devrounds-action': 'task.add' },
+    payload: { key: 'P0-T02', title: 'No Origin', phaseKey: 'P0' },
+  })
+  assert.equal(second.statusCode, 200, second.body)
+
+  // The guard admits the request; RLS still keeps it in the session's tenant.
+  const foreign = await postTask({ ...web, origin: ORIGIN }, 'beta')
+  assert.equal(foreign.statusCode, 404)
+  assert.equal(foreign.json().code, 'DR201')
 })
 
 test('a Bearer token wins over a cookie and a bad Bearer answers DR401 even with a valid cookie', async () => {
