@@ -28,6 +28,10 @@ pub struct JobSpec {
     /// control planes and for job types without an environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_probe: Option<Probe>,
+    /// Feature `stall`: seconds without output growth and without CPU after
+    /// which the executor stops the run as stalled. Absent: never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_s: Option<u32>,
 }
 
 /// A command run for its output; see [`JobSpec::environment_probe`].

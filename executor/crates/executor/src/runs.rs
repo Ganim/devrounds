@@ -33,6 +33,7 @@ use crate::{
     isolation::{Isolation, NoneIsolation, PrepareError},
     orphans::{OrphanDeps, follow_orphan},
     output::OutputTail,
+    stall::{STALL_EVERY, StallWatch},
     telemetry::{RunTimes, RunTrace, Telemetry},
 };
 
@@ -631,6 +632,7 @@ async fn follow(
         samples,
         shared.store.clone(),
     );
+    let output_files = [output.stdout.clone(), output.stderr.clone()];
     let tail = OutputTail::spawn(
         run.to_owned(),
         output,
@@ -643,6 +645,14 @@ async fn follow(
     tokio::pin!(timeout);
     let mut windows = tokio::time::interval(WINDOWS_EVERY);
     let mut visible_windows = 0;
+    let stall_limit = job
+        .stall_s
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| Duration::from_secs(seconds.into()));
+    let mut stall =
+        stall_limit.map(|limit| StallWatch::new(limit, tokio::time::Instant::now().into_std()));
+    let mut stall_looks = tokio::time::interval(STALL_EVERY);
+    let mut stall_summary = None;
     let (reason, report) = loop {
         tokio::select! {
             biased;
@@ -652,6 +662,19 @@ async fn follow(
             }
             () = stop_asked(&mut stopped) => {
                 break (FinishReason::Stopped, unit.stop_with_report(StopPolicy::default()).await);
+            }
+            _ = stall_looks.tick(), if stall.is_some() => {
+                let bytes = output_bytes(&output_files).await;
+                // A CPU reading that fails counts as no CPU; the output still counts.
+                let cpu = unit.cpu_time().await.unwrap_or_default();
+                let now = tokio::time::Instant::now().into_std();
+                if stall.as_mut().is_some_and(|watch| watch.observe(bytes, cpu, now)) {
+                    let error = DrError::new("DR154", serde_json::json!({ "stall_s": job.stall_s }));
+                    tracing::info!(%run, %error, "run stalled; stopping it");
+                    let report = unit.stop_with_report(StopPolicy::default()).await;
+                    stall_summary = Some(error.to_string());
+                    break (FinishReason::Stalled, report);
+                }
             }
             _ = windows.tick() => {
                 if let Ok(count) = unit.visible_windows().await {
@@ -672,7 +695,7 @@ async fn follow(
         swept: 0,
         visible_windows,
         tail,
-        summary: None,
+        summary: stall_summary,
     };
     match report {
         Ok(ExitReport { outcome, swept, .. }) => {
@@ -685,4 +708,17 @@ async fn follow(
         }
     }
     ending
+}
+
+/// The bytes written so far to the run's output files (one file when stdout
+/// and stderr share it). A file not readable counts as empty.
+async fn output_bytes(files: &[PathBuf; 2]) -> u64 {
+    let mut total = 0;
+    for (index, file) in files.iter().enumerate() {
+        if index == 1 && files[1] == files[0] {
+            break;
+        }
+        total += tokio::fs::metadata(file).await.map_or(0, |meta| meta.len());
+    }
+    total
 }

@@ -128,6 +128,7 @@ fn offer(run: &str, program: String, args: &[&str], cwd: &Path, timeout_s: u32) 
             timeout_s,
             env_set: Default::default(),
             environment_probe: None,
+            stall_s: None,
         },
         memory_need: DEFAULT_MEMORY_NEED,
         trace_parent: None,
@@ -384,6 +385,44 @@ async fn timeout_stops_the_tree_and_reports_timeout() {
         // Ctrl-C ends the tree well before the 10 s grace would escalate.
         assert!(
             started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    })
+    .await
+    .expect("bounded");
+}
+
+#[tokio::test]
+async fn silence_past_stall_s_stops_the_run_as_stalled() {
+    let program = fixture();
+    tokio::time::timeout(LIMIT, async {
+        let h = harness(AdmissionConfig::default()).await;
+        // Sleeps a minute without a line or CPU; the timeout alone would wait that long.
+        let ServerMessage::Offer(mut stalled) = offer(
+            "run-stall",
+            program,
+            &["--run-ms", "60000", "--ctrl-c", "bye"],
+            h.home.path(),
+            120,
+        ) else {
+            unreachable!()
+        };
+        stalled.job.stall_s = Some(2);
+        let started = Instant::now();
+        h.runs.handle(ServerMessage::Offer(stalled));
+        let events = until_finished(&h.store, "run-stall").await;
+
+        let RunEvent::RunFinished {
+            reason, summary, ..
+        } = finished(&events)
+        else {
+            unreachable!()
+        };
+        assert_eq!(reason, FinishReason::Stalled);
+        assert_eq!(summary.as_deref(), Some(r#"DR154 {"stall_s":2}"#));
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
             "{:?}",
             started.elapsed()
         );

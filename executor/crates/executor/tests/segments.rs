@@ -124,6 +124,7 @@ fn offer(run: &str, args: &[&str], cwd: &Path) -> ServerMessage {
             timeout_s: 600,
             env_set: Default::default(),
             environment_probe: None,
+            stall_s: None,
         },
         memory_need: DEFAULT_MEMORY_NEED,
         trace_parent: None,

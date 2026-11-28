@@ -45,6 +45,7 @@ fn job(cwd: &str, env_allow: &[&str]) -> JobSpec {
         timeout_s: 60,
         env_set: BTreeMap::new(),
         environment_probe: None,
+        stall_s: None,
     }
 }
 

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 pub const PROTOCOL: u32 = 1;
 
 /// Optional capabilities this build speaks; a session uses the intersection.
-pub const FEATURES: [&str; 9] = [
+pub const FEATURES: [&str; 10] = [
     "seq",
     "steps",
     "log-segments",
@@ -24,6 +24,7 @@ pub const FEATURES: [&str; 9] = [
     "withdraw",
     "job-env",
     "environment",
+    "stall",
 ];
 
 /// The features both sides speak, in the order of `ours`.
@@ -229,6 +230,10 @@ pub enum FinishReason {
     Timeout,
     SpawnFailed,
     Infra,
+    /// Feature `stall`: no output growth and no CPU for the job's `stall_s`,
+    /// so the executor stopped it. Only a job with `stall_s` ends this way,
+    /// and only a control plane that speaks `stall` sends one.
+    Stalled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

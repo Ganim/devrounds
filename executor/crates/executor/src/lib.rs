@@ -21,6 +21,7 @@ pub mod runs;
 mod sampler;
 #[cfg(windows)]
 pub mod service;
+pub mod stall;
 pub mod steps;
 #[cfg(windows)]
 pub mod supervise;

@@ -206,6 +206,7 @@ fn job(variable: &str) -> JobSpec {
         timeout_s: 600,
         env_set: Default::default(),
         environment_probe: None,
+        stall_s: None,
     }
 }
 
