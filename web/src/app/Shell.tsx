@@ -1,10 +1,12 @@
 import { type ReactNode, useState } from 'react'
+import { setDevicePref } from '../data/prefs.ts'
 import { shortId } from '../lib/format.ts'
+import { Icon, type IconName, ThemeToggle } from '../ui/index.ts'
 import { ASIDE_DEFAULT, clampAside, saveAside, savedAside } from './aside.ts'
-import { CLOSE_ICON, MORE_ICON, NAV_ICONS, SIGN_OUT_ICON } from './icons.tsx'
 import { useEscapeLayer } from './layers.ts'
 import { hrefOf, NAV, type NavEntry, navOf, ROUTES, type Route, type RouteName } from './routes.ts'
 import './shell.css'
+import { useTheme } from './theme.ts'
 
 // The shell, same split as the cx-env panel (page-v2.html `.app`, P5 design §3 call 9): from 900 px a left rail, the
 // main column and, when a detail is selected, a resizable aside; below it the main column, a floating bottom bar with
@@ -13,6 +15,22 @@ import './shell.css'
 // The last filters seen on each list, so a detail opened from a link without them (#/run/<id> from Jobs) still shows
 // the list as the reader left it. Per page load, like cx-env's per-tab memory.
 const lastQuery = new Map<RouteName, string>()
+
+const NAV_ICONS: Partial<Record<RouteName, IconName>> = {
+  roadmap: 'map',
+  balance: 'scale',
+  history: 'history',
+  conventions: 'book-check',
+  machines: 'server',
+  queues: 'list-ordered',
+  jobs: 'briefcase',
+  runs: 'activity',
+}
+
+function NavIcon({ name }: { name: RouteName }) {
+  const icon = NAV_ICONS[name]
+  return icon ? <Icon name={icon} /> : null
+}
 
 export type ShellProps = {
   route: Route
@@ -37,6 +55,7 @@ export function Shell({ route, render, project, summary, onSignOut }: ShellProps
   }
   const mainName = main.name ?? 'roadmap'
   const active = navOf(name) ?? 'roadmap'
+  const theme = useTheme()
 
   return (
     <div className={`app-shell${master ? ' has-detail' : ''}`} style={{ ['--aside' as string]: `${aside}px` }}>
@@ -54,7 +73,9 @@ export function Shell({ route, render, project, summary, onSignOut }: ShellProps
         ))}
         <span className="app-spacer" />
         <button type="button" className="app-navbtn" onClick={onSignOut} title="Sign out">
-          <span className="app-ico">{SIGN_OUT_ICON}</span>
+          <span className="app-ico">
+            <Icon name="log-out" />
+          </span>
           Sign out
         </button>
       </nav>
@@ -66,6 +87,7 @@ export function Shell({ route, render, project, summary, onSignOut }: ShellProps
             <h1>{ROUTES[mainName].title}</h1>
           </div>
           <span className="app-summary">{summary}</span>
+          <ThemeToggle theme={theme} onChange={(next) => setDevicePref('theme', next)} />
         </header>
         {render(main)}
       </main>
@@ -91,7 +113,9 @@ export function Shell({ route, render, project, summary, onSignOut }: ShellProps
           aria-haspopup="dialog"
           onClick={() => setMore(true)}
         >
-          <span className="app-ico">{MORE_ICON}</span>
+          <span className="app-ico">
+            <Icon name="ellipsis" />
+          </span>
           More
         </button>
       </nav>
@@ -105,7 +129,9 @@ function RailLink({ entry, on, divided = false }: { entry: NavEntry; on: boolean
     <>
       {divided ? <hr className="app-navsep" /> : null}
       <a className={`app-navbtn${on ? ' on' : ''}`} href={hrefOf(entry.name)} aria-current={on ? 'page' : undefined}>
-        <span className="app-ico">{NAV_ICONS[entry.name]}</span>
+        <span className="app-ico">
+          <NavIcon name={entry.name} />
+        </span>
         {entry.label}
       </a>
     </>
@@ -144,7 +170,7 @@ function Detail(props: {
         <header className="app-aside-head">
           <h2>{props.title}</h2>
           <a className="app-iconbtn" href={props.closeHref} aria-label="Close" title="Close (Esc)">
-            {CLOSE_ICON}
+            <Icon name="x" />
           </a>
         </header>
         <div className="app-aside-body">{props.children}</div>
@@ -203,13 +229,17 @@ function MoreSheet({ active, onClose, onSignOut }: { active: RouteName; onClose:
             href={hrefOf(entry.name)}
             onClick={onClose}
           >
-            <span className="app-ico">{NAV_ICONS[entry.name]}</span>
+            <span className="app-ico">
+              <NavIcon name={entry.name} />
+            </span>
             {entry.label}
           </a>
         ))}
         <hr className="app-navsep" />
         <button type="button" className="app-moreitem" onClick={onSignOut}>
-          <span className="app-ico">{SIGN_OUT_ICON}</span>
+          <span className="app-ico">
+            <Icon name="log-out" />
+          </span>
           Sign out
         </button>
       </div>

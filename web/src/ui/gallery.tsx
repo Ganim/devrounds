@@ -114,7 +114,7 @@ function Samples() {
         <IconButton icon="copy" label="Copy" size="sm" />
         <IconButton icon="x" label="Close" variant="ghost" />
         <IconButton icon="arrow-up" label="Send" variant="primary" />
-        <ThemeToggle />
+        <SampleThemeToggle />
       </Section>
       <Section title="Badge and Dot">
         {TONES.map((tone) => (
@@ -396,6 +396,12 @@ function Samples() {
       </Section>
     </>
   )
+}
+
+// The page shows both themes anyway, so the sample only flips its own icon.
+function SampleThemeToggle() {
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+  return <ThemeToggle theme={theme} onChange={setTheme} />
 }
 
 function Themed({ theme }: { theme: 'dark' | 'light' }) {

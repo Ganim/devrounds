@@ -1,6 +1,6 @@
 /* App shell (P5 design §3 call 9; cx-env page-v2.html `.app`, `.rail`, `.tabs`, `.sheet`). Colors read the semantic
-   tokens P5-T07 defines in ui/tokens.css; the fallbacks are today's light values until it lands. Selectors start at
-   .app-shell so the old global `main`, `nav a` and `h1` rules in ui/style.css do not reach in, whatever the CSS order. */
+   tokens in ui/tokens.css. Selectors start at .app-shell so the old global `main`, `nav a` and `h1` rules in
+   ui/legacy.css do not reach in, whatever the CSS order. */
 .app-shell {
   --rail: 84px;
   --tabs: 68px;
@@ -8,8 +8,8 @@
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: 100dvh;
-  color: var(--text, #1c2128);
-  background: var(--bg, #f6f7f9);
+  color: var(--text);
+  background: var(--bg);
 }
 
 .app-shell .app-rail,
@@ -43,12 +43,12 @@
 }
 .app-shell .app-project {
   font-size: 12px;
-  color: var(--text-muted, #5d6673);
+  color: var(--text-muted);
 }
 .app-shell .app-summary {
   margin-left: auto;
   font-size: 13px;
-  color: var(--text-muted, #5d6673);
+  color: var(--text-muted);
 }
 
 /* Nav entries: an icon tile over a label, in the rail and in the bottom bar. */
@@ -63,7 +63,7 @@
   background: none;
   font: inherit;
   font-size: 11px;
-  color: var(--text-muted, #5d6673);
+  color: var(--text-muted);
   text-decoration: none;
   cursor: pointer;
 }
@@ -79,28 +79,29 @@
   height: 20px;
 }
 .app-shell .app-navbtn.on {
-  color: var(--text, #1c2128);
+  color: var(--text);
   font-weight: 600;
   border: 0;
 }
 .app-shell .app-navbtn.on .app-ico {
-  background: var(--accent, #2b6fd6);
-  color: var(--on-accent, #fff);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .app-shell .app-navbtn:focus-visible,
 .app-shell .app-iconbtn:focus-visible,
 .app-shell .app-moreitem:focus-visible {
-  outline: 2px solid var(--accent, #2b6fd6);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .app-shell .app-navsep {
   width: 36px;
   border: 0;
-  border-top: 1px solid var(--border, #d9dde3);
+  border-top: 1px solid var(--border);
   margin: 4px auto;
 }
 
-/* Phone: a floating bottom bar; the detail and "More" are bottom sheets over a backdrop. */
+/* Phone: a floating bottom bar; the detail and "More" are bottom sheets over a backdrop. Layers that float over the
+   page use the opaque --panel: --surface-* are translucent and would show the list through. */
 .app-shell .app-tabs {
   position: fixed;
   left: max(8px, env(safe-area-inset-left));
@@ -110,10 +111,10 @@
   display: flex;
   justify-content: space-around;
   align-items: center;
-  background: var(--surface-1, #fff);
-  border: 1px solid var(--border, #d9dde3);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 20px;
-  box-shadow: var(--shadow-2, 0 6px 24px rgba(0, 0, 0, 0.12));
+  box-shadow: var(--shadow-2);
   z-index: var(--z-nav, 20);
 }
 .app-shell .app-tabs .app-navbtn {
@@ -126,7 +127,7 @@
   inset: 0;
   border: 0;
   padding: 0;
-  background: var(--backdrop, rgba(0, 0, 0, 0.45));
+  background: var(--overlay);
   z-index: var(--z-sheet, 30);
 }
 .app-shell .app-aside,
@@ -138,10 +139,10 @@
   max-height: min(92dvh, var(--vvh, 100dvh));
   display: flex;
   flex-direction: column;
-  background: var(--surface-1, #fff);
-  border-top: 1px solid var(--border, #d9dde3);
+  background: var(--panel);
+  border-top: 1px solid var(--border);
   border-radius: 20px 20px 0 0;
-  box-shadow: var(--shadow-3, 0 -12px 40px rgba(0, 0, 0, 0.2));
+  box-shadow: var(--shadow-2);
   z-index: calc(var(--z-sheet, 30) + 1);
 }
 .app-shell .app-aside {
@@ -159,7 +160,7 @@
   width: 40px;
   height: 5px;
   border-radius: 999px;
-  background: var(--border, #d9dde3);
+  background: var(--border);
   margin: 8px auto 4px;
 }
 .app-shell .app-moreitem {
@@ -172,7 +173,7 @@
   border-radius: 12px;
   background: none;
   font: inherit;
-  color: var(--text, #1c2128);
+  color: var(--text);
   text-decoration: none;
   text-align: left;
   cursor: pointer;
@@ -181,8 +182,8 @@
   font-weight: 600;
 }
 .app-shell .app-moreitem.on .app-ico {
-  background: var(--accent, #2b6fd6);
-  color: var(--on-accent, #fff);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .app-shell .app-aside-head {
@@ -191,7 +192,7 @@
   align-items: center;
   gap: 8px;
   padding: 4px 14px 8px;
-  border-bottom: 1px solid var(--border, #d9dde3);
+  border-bottom: 1px solid var(--border);
 }
 .app-shell .app-aside-head h2 {
   flex: 1;
@@ -209,10 +210,10 @@
   display: grid;
   place-items: center;
   border-radius: 10px;
-  color: var(--text-muted, #5d6673);
+  color: var(--text-muted);
 }
 .app-shell .app-iconbtn:hover {
-  background: var(--surface-2, #eef0f3);
+  background: var(--surface-2);
 }
 .app-shell .app-iconbtn svg {
   width: 18px;
@@ -247,8 +248,8 @@
     gap: 6px;
     padding: 14px 0;
     overflow-y: auto;
-    border-right: 1px solid var(--border, #d9dde3);
-    background: var(--surface-1, #fff);
+    border-right: 1px solid var(--border);
+    background: var(--surface-1);
   }
   .app-shell .app-logo {
     width: 44px;
@@ -259,8 +260,8 @@
     border-radius: 12px;
     font-weight: 700;
     text-decoration: none;
-    color: var(--on-accent, #fff);
-    background: var(--accent, #2b6fd6);
+    color: var(--on-accent);
+    background: var(--accent);
   }
   .app-shell .app-spacer {
     flex: 1;
@@ -275,7 +276,7 @@
     max-height: none;
     min-height: 0;
     border-top: 0;
-    border-left: 1px solid var(--border, #d9dde3);
+    border-left: 1px solid var(--border);
     border-radius: 0;
     box-shadow: none;
     z-index: auto;
@@ -306,6 +307,6 @@
   }
   .app-shell .app-resizer:hover::after,
   .app-shell .app-resizer.on::after {
-    background: var(--accent, #2b6fd6);
+    background: var(--accent);
   }
 }

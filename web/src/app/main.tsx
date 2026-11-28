@@ -16,6 +16,7 @@ import { RunsPage } from '../features/runs/RunsPage.tsx'
 import { Login } from './Login.tsx'
 import { matchRoute, type Route, type RouteName } from './routes.ts'
 import { Shell } from './Shell.tsx'
+import { useTheme } from './theme.ts'
 import { publishViewport } from './viewport.ts'
 import '../ui/style.css'
 
@@ -66,6 +67,8 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
 }
 
 function Root() {
+  // Applies the theme pref on every screen, the sign-in form included.
+  useTheme()
   // null until get-session answers, so a signed-in browser never flashes the form.
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   useEffect(() => {

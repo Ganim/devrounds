@@ -38,6 +38,11 @@ export function Dialog({
       className={cx('dr-dialog', wide && 'dr-dialog--wide')}
       aria-label={title}
       onClose={onClose}
+      // The browser closes the dialog on Esc; stop the key there so a window-level Esc handler (the shell's detail
+      // panel, app/layers.ts) does not close the layer under it too.
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') event.stopPropagation()
+      }}
       onPointerDown={(event) => {
         // The dialog box itself is only hit outside the inner frame, i.e. on the backdrop.
         if (event.target === event.currentTarget) onClose()

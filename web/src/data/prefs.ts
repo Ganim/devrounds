@@ -33,6 +33,12 @@ const DEVICE: { [K in keyof DevicePrefs]: Spec<DevicePrefs[K]> } = {
   },
 }
 
+/**
+ * Inlined in index.html by web/build.ts so the theme lands on <html> before the first paint: the saved choice, else
+ * the OS preference, else dark (P5 design §3 call 10). app/theme.ts keeps it in step afterwards.
+ */
+export const THEME_BOOT_SCRIPT = `try{var t=localStorage.getItem('${DEVICE.theme.storageKey}');if(t!=='dark'&&t!=='light')t=matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='dark'}`
+
 const listeners = new Set<() => void>()
 const notify = () => {
   for (const listener of listeners) listener()

@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import { THEME_BOOT_SCRIPT } from './src/ui/theme.ts'
+import { THEME_BOOT_SCRIPT } from './src/data/prefs.ts'
 
 // web/dist is gitignored; the control plane serves it at `/` (hash routes, so no server-side fallback is needed).
 const dist = fileURLToPath(new URL('./dist/', import.meta.url))
