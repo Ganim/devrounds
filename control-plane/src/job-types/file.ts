@@ -1,10 +1,10 @@
 import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import type { FailureClass } from '../db/schema.ts'
-import { ENVIRONMENT_MODES, ENVIRONMENT_PROVIDERS, type JobTypeEnvironment } from '../environments/index.ts'
 import { agentWithDefaults, findAgentIssue } from '../engines/agent-runtime/agent-def.ts'
 import { type AgentDef, AgentSchema } from '../engines/agent-runtime/contract.ts'
 import { findAgentRuntime } from '../engines/registry.ts'
+import { ENVIRONMENT_MODES, ENVIRONMENT_PROVIDERS, type JobTypeEnvironment } from '../environments/index.ts'
 import { FAILURE_CLASSES, RULE_CLASSES } from '../runs/classify.ts'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 

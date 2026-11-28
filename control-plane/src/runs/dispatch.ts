@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { sql } from 'kysely'
-import { environmentOffer, type JobTypeEnvironment } from '../environments/index.ts'
 import { agentCommand } from '../engines/agent-runtime/engine.ts'
+import { environmentOffer, type JobTypeEnvironment } from '../environments/index.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'

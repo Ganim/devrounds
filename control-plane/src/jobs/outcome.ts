@@ -1,7 +1,7 @@
 import { type RawBuilder, sql } from 'kysely'
 import type { JobState } from '../db/schema.ts'
-import { settleFlowJob } from '../flows/engine.ts'
 import { resumeOf } from '../engines/agent-runtime/engine.ts'
+import { settleFlowJob } from '../flows/engine.ts'
 import { settleGate } from '../gates/settle.ts'
 import type { Trx } from '../planning/resolve.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
