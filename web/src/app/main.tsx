@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PlanView } from '../data/contract.ts'
+import { DataProvider } from '../data/query.tsx'
 import { getSession, type Remote, signOut, usePlan } from '../data/resources.ts'
 import { BalancePage } from '../features/balance/BalancePage.tsx'
 import { ConventionsPage } from '../features/conventions/ConventionsPage.tsx'
@@ -83,4 +84,8 @@ function Root() {
 localStorage.removeItem('devrounds.token')
 publishViewport()
 
-createRoot(document.getElementById('root') as HTMLElement).render(<Root />)
+createRoot(document.getElementById('root') as HTMLElement).render(
+  <DataProvider>
+    <Root />
+  </DataProvider>,
+)

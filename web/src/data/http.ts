@@ -1,9 +1,5 @@
 import { type Endpoint, PROJECT_PREFIX } from './contract.ts'
-
-const PROJECT_KEY = 'devrounds.project'
-
-export const getProject = (): string => localStorage.getItem(PROJECT_KEY) ?? 'devrounds'
-export const setProject = (key: string): void => localStorage.setItem(PROJECT_KEY, key.trim() || 'devrounds')
+import { getProject } from './prefs.ts'
 
 export class ApiError extends Error {
   code: string
@@ -31,17 +27,21 @@ export function urlOf(
   return query === undefined ? path : `${path}?${query}`
 }
 
+type Method = Endpoint<unknown>['method']
+
 /**
  * Calls the control plane at `url` (an absolute path such as `/api/machines`) with the browser's session cookie and
- * returns the JSON body. No Authorization header is ever sent: the view signs in through Better Auth, and the cookie
- * only reads (anything but GET answers DR402 outside `/api/auth`). A failure throws ApiError; DR401 means the session
- * is gone and the view shows the sign-in form.
+ * returns the JSON body. No Authorization header is ever sent: the view signs in through Better Auth. A failure throws
+ * ApiError; DR401 means the session is gone and the view shows the sign-in form.
  */
-export async function request<T>(url: string, init?: { method: 'GET' | 'POST'; body?: unknown }): Promise<T> {
+export async function request<T>(
+  url: string,
+  init?: { method: Method; body?: unknown; headers?: Record<string, string> },
+): Promise<T> {
   const json = init?.body !== undefined
   const response = await fetch(url, {
     method: init?.method ?? 'GET',
-    headers: json ? { 'content-type': 'application/json' } : undefined,
+    headers: { ...(json ? { 'content-type': 'application/json' } : {}), ...init?.headers },
     body: json ? JSON.stringify(init.body) : undefined,
   })
   const body = await response.json().catch(() => null)
@@ -52,3 +52,20 @@ export async function request<T>(url: string, init?: { method: 'GET' | 'POST'; b
   }
   return body as T
 }
+
+/**
+ * A mutating call to our API (not /api/auth). `action` goes in `x-devrounds-action`: a cookie write needs that custom
+ * header, which a cross-site form cannot send (P5 design §3 call 6, P5-T10); until that guard ships, a cookie write
+ * answers DR402. Every call gets its own `Idempotency-Key` (AGENTS invariant), so one repeated by the network applies
+ * once; writes are never retried by the cache (TanStack Query mutations default to no retry), since a retry with a new
+ * key could apply twice.
+ */
+export const write = <T>(
+  url: string,
+  { method, action, body }: { method: Exclude<Method, 'GET'>; action: string; body?: unknown },
+): Promise<T> =>
+  request<T>(url, {
+    method,
+    body,
+    headers: { 'idempotency-key': crypto.randomUUID(), 'x-devrounds-action': action },
+  })

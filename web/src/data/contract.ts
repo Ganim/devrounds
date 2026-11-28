@@ -59,7 +59,12 @@ export type SignedIn = { user: { email: string; name: string } }
  * One API route the web calls. `path` is the server's route pattern (`:name` params); `project` routes live under
  * `/api/projects/:key` and get the selected project's key. `response` is never set: it only carries the type.
  */
-export type Endpoint<T> = { method: 'GET' | 'POST'; path: `/${string}`; project: boolean; response?: T }
+export type Endpoint<T> = {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  path: `/${string}`
+  project: boolean
+  response?: T
+}
 
 const get = <T>(path: `/${string}`, project = true): Endpoint<T> => ({ method: 'GET', path, project })
 const post = <T>(path: `/${string}`): Endpoint<T> => ({ method: 'POST', path, project: false })

@@ -1,5 +1,5 @@
 import type { ConventionsSummaryJson, ConventionsVersionJson } from '../../data/contract.ts'
-import { getProject } from '../../data/http.ts'
+import { getProject } from '../../data/prefs.ts'
 import { useConventions, useConventionsDiff, useConventionsVersion } from '../../data/resources.ts'
 import { bySection, diffEntries } from '../../lib/conventions.ts'
 import { when } from '../../lib/format.ts'

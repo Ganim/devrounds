@@ -1,11 +1,12 @@
+import { type QueryKey, useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { type Endpoint, endpoints, type LogPageJson, type SignedIn } from './contract.ts'
 import { type ApiError, request, urlOf } from './http.ts'
+import { getProject } from './prefs.ts'
+import { queryClient, queryKeyOf } from './query.tsx'
 
-// Features read the API only through the hooks below, so P5-T08 can move them onto a query cache without touching a
-// page.
-
-const POLL_MS = 10_000
+// Features read and write the API only through the hooks below; they never import the query library (checked by
+// boundaries.test.ts), so the cache can change without touching a page.
 
 export type Remote<T> = { data: T | null; error: ApiError | null }
 
@@ -24,45 +25,36 @@ export function usePages(filters: string) {
   }
 }
 
-// Fetches `url` now and every 10 s (P0 exception; P5 replaces polling with SSE). The previous data stays on screen
-// while a refresh is in flight or fails, so a hiccup does not blank the page.
-function useRemote<T>(url: string): Remote<T> {
-  const [state, setState] = useState<Remote<T>>({ data: null, error: null })
-  useEffect(() => {
-    let live = true
-    const load = () =>
-      request<T>(url).then(
-        (data) => live && setState({ data, error: null }),
-        (error: ApiError) => live && setState((s) => ({ data: s.data, error })),
-      )
-    setState({ data: null, error: null })
-    load()
-    const timer = setInterval(load, POLL_MS)
-    return () => {
-      live = false
-      clearInterval(timer)
-    }
-  }, [url])
-  return state
+type Endpoints = typeof endpoints
+type ResponseOf<E> = E extends Endpoint<infer T> ? T : never
+
+// One GET endpoint through the cache, polled by the client's defaults (query.tsx).
+function useEndpoint<N extends keyof Endpoints>(
+  name: N,
+  params: Record<string, string | number> = {},
+  query?: URLSearchParams,
+): Remote<ResponseOf<Endpoints[N]>> {
+  const url = urlOf(endpoints[name], params, query)
+  const result = useQuery({
+    queryKey: queryKeyOf(name, params, query?.toString()),
+    queryFn: () => request<ResponseOf<Endpoints[N]>>(url),
+  })
+  return { data: result.data ?? null, error: result.error as ApiError | null }
 }
 
-const useEndpoint = <T>(endpoint: Endpoint<T>, params?: Record<string, string | number>, query?: URLSearchParams) =>
-  useRemote<T>(urlOf(endpoint, params, query))
-
-export const usePlan = () => useEndpoint(endpoints.plan)
-export const useBalance = (period: string) => useEndpoint(endpoints.balance, {}, new URLSearchParams({ period }))
-export const useIndicators = (period: string) => useEndpoint(endpoints.indicators, {}, new URLSearchParams({ period }))
-export const useIndicatorsNow = () => useEndpoint(endpoints.indicatorsNow)
-export const useEvents = (query: URLSearchParams) => useEndpoint(endpoints.events, {}, query)
-export const useConventions = () => useEndpoint(endpoints.conventions)
-export const useConventionsVersion = (version: string | number) =>
-  useEndpoint(endpoints.conventionsVersion, { version })
-export const useConventionsDiff = (version: string | number) => useEndpoint(endpoints.conventionsDiff, { version })
-export const useQueues = () => useEndpoint(endpoints.queues)
-export const useJobs = (query: URLSearchParams) => useEndpoint(endpoints.jobs, {}, query)
-export const useRuns = (query: URLSearchParams) => useEndpoint(endpoints.runs, {}, query)
-export const useRun = (id: string) => useEndpoint(endpoints.run, { id })
-export const useMachines = () => useEndpoint(endpoints.machines)
+export const usePlan = () => useEndpoint('plan')
+export const useBalance = (period: string) => useEndpoint('balance', {}, new URLSearchParams({ period }))
+export const useIndicators = (period: string) => useEndpoint('indicators', {}, new URLSearchParams({ period }))
+export const useIndicatorsNow = () => useEndpoint('indicatorsNow')
+export const useEvents = (query: URLSearchParams) => useEndpoint('events', {}, query)
+export const useConventions = () => useEndpoint('conventions')
+export const useConventionsVersion = (version: string | number) => useEndpoint('conventionsVersion', { version })
+export const useConventionsDiff = (version: string | number) => useEndpoint('conventionsDiff', { version })
+export const useQueues = () => useEndpoint('queues')
+export const useJobs = (query: URLSearchParams) => useEndpoint('jobs', {}, query)
+export const useRuns = (query: URLSearchParams) => useEndpoint('runs', {}, query)
+export const useRun = (id: string) => useEndpoint('run', { id })
+export const useMachines = () => useEndpoint('machines')
 
 const fetchRunLogs = (id: string, cursor: number | null) =>
   request<LogPageJson>(
@@ -127,8 +119,78 @@ export function useRunLog(runId: string, ended: boolean) {
   }
 }
 
+/**
+ * A write with an optimistic update: `apply` sets the cached value of `optimistic.key` before `send` answers, and a
+ * failure puts the previous value back (the cx-env panel shows the revert, `cxenv-03c-tasks-reverted.png`). `refresh`
+ * keys are refetched once the write settles, success or not, so the screen ends on the server's state.
+ */
+export function useWrite<V, R, D>({
+  send,
+  optimistic,
+  refresh = [],
+}: {
+  send: (vars: V) => Promise<R>
+  optimistic?: { key: QueryKey; apply: (current: D | undefined, vars: V) => D }
+  refresh?: QueryKey[]
+}) {
+  const mutation = useMutation({
+    mutationFn: send,
+    onMutate: async (vars: V) => {
+      if (!optimistic) return undefined
+      // A refetch in flight would overwrite the optimistic value with the old one.
+      await queryClient.cancelQueries({ queryKey: optimistic.key })
+      const previous = queryClient.getQueryData<D>(optimistic.key)
+      queryClient.setQueryData<D>(optimistic.key, (current) => optimistic.apply(current, vars))
+      return { previous }
+    },
+    onError: (_error, _vars, context) => {
+      if (optimistic && context) queryClient.setQueryData(optimistic.key, context.previous)
+    },
+    onSettled: () => Promise.all(refresh.map((queryKey) => queryClient.invalidateQueries({ queryKey }))),
+  })
+  return { write: mutation.mutateAsync, pending: mutation.isPending, error: mutation.error as ApiError | null }
+}
+
+// STUB until P5-T11 ships the member prefs routes (`GET/PUT /prefs/:key` under the project, design §3 call 8): the
+// value lives in this browser's localStorage, so it does not follow the member to another device yet. When the route
+// lands only `readPref` and `sendPref` change, to `request(urlOf(endpoints.pref, { key }))` and
+// `write(urlOf(endpoints.pref, { key }), { method: 'PUT', action: 'pref.set', body: value })` with the endpoint added to
+// contract.ts; the hook, its cache key and the optimistic update stay.
+const stubKeyOf = (key: string) => `devrounds.memberPref.${getProject()}.${key}`
+const readPref = async <T>(key: string): Promise<T | null> => {
+  const raw = localStorage.getItem(stubKeyOf(key))
+  return raw === null ? null : (JSON.parse(raw) as T)
+}
+const sendPref = async <T>(key: string, value: T): Promise<void> =>
+  localStorage.setItem(stubKeyOf(key), JSON.stringify(value))
+
+/**
+ * A member-shared preference (card order, custom names, sections, board columns): opaque JSON per key, `fallback` until
+ * one is saved. `set` shows the new value at once and puts the previous one back when saving fails.
+ */
+export function useMemberPref<T>(key: string, fallback: T) {
+  const queryKey = queryKeyOf('memberPref', { key })
+  const pref = useQuery({
+    queryKey,
+    queryFn: () => readPref<T>(key),
+    refetchInterval: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  })
+  const save = useWrite<T, void, T | null>({
+    send: (value) => sendPref(key, value),
+    optimistic: { key: queryKey, apply: (_, value) => value },
+  })
+  return { value: pref.data ?? fallback, set: save.write, error: (pref.error as ApiError | null) ?? save.error }
+}
+
 /** The signed-in user, or null when this browser has no valid session. */
 export const getSession = (): Promise<SignedIn | null> => request<SignedIn | null>(urlOf(endpoints.session))
+
+// Signing in or out drops the cache, so the next member never sees what the previous session read.
 export const signIn = (email: string, password: string): Promise<unknown> =>
-  request(urlOf(endpoints.signIn), { method: 'POST', body: { email, password } })
-export const signOut = (): Promise<unknown> => request(urlOf(endpoints.signOut), { method: 'POST', body: {} })
+  request(urlOf(endpoints.signIn), { method: 'POST', body: { email, password } }).then((answer) => {
+    queryClient.clear()
+    return answer
+  })
+export const signOut = (): Promise<unknown> =>
+  request(urlOf(endpoints.signOut), { method: 'POST', body: {} }).finally(() => queryClient.clear())

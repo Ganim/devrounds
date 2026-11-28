@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { type ApiError, getProject, setProject } from '../data/http.ts'
+import type { ApiError } from '../data/http.ts'
+import { getProject, setProject } from '../data/prefs.ts'
 import { signIn } from '../data/resources.ts'
 import { ErrorBox } from '../ui/index.ts'
 
