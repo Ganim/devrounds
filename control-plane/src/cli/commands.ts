@@ -1627,7 +1627,9 @@ export const COMMANDS: Spec[] = [
       const f = await api.send<FlowJson>('POST', '/flows', parseFlowFile(yaml))
       return {
         failures: [],
-        body: [fmt`flow ${f.key} version ${f.version} ${f.created ? 'stored' : 'unchanged'} · sha ${f.sha.slice(0, 12)}`],
+        body: [
+          fmt`flow ${f.key} version ${f.version} ${f.created ? 'stored' : 'unchanged'} · sha ${f.sha.slice(0, 12)}`,
+        ],
         next: `devrounds flow run ${shellArg(f.key)} --task <key>`,
       }
     },
@@ -1664,7 +1666,9 @@ export const COMMANDS: Spec[] = [
     run: async (inv, connect) => {
       const api = await connect()
       const r = await api.get<FlowRunJson>(path('flow-runs', arg(inv, 0, '<run>')))
-      return inv.values.json === true ? { failures: [], body: [], next: '', raw: `${JSON.stringify(r)}\n` } : flowRunResult(r)
+      return inv.values.json === true
+        ? { failures: [], body: [], next: '', raw: `${JSON.stringify(r)}\n` }
+        : flowRunResult(r)
     },
   },
   {
@@ -1679,9 +1683,7 @@ export const COMMANDS: Spec[] = [
       return {
         failures: [],
         body:
-          flows.length > 0
-            ? flows.map((f) => fmt`${f.key} version ${f.version} · ${f.running} running`)
-            : ['no flows'],
+          flows.length > 0 ? flows.map((f) => fmt`${f.key} version ${f.version} · ${f.running} running`) : ['no flows'],
         next: flows.length > 0 ? 'devrounds flow runs' : 'devrounds flow set <file.yaml>',
       }
     },
@@ -1703,8 +1705,7 @@ export const COMMANDS: Spec[] = [
       return {
         failures: parked.map(flowRunLine),
         body: runs.length > 0 ? runs.filter((r) => r.state !== 'parked').map(flowRunLine) : ['no flow runs'],
-        next:
-          runs.length > 0 ? `devrounds flow show ${shellArg((parked[0] ?? runs[0]).id)}` : 'devrounds flow list',
+        next: runs.length > 0 ? `devrounds flow show ${shellArg((parked[0] ?? runs[0]).id)}` : 'devrounds flow list',
       }
     },
   },

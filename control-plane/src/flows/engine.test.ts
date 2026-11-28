@@ -66,7 +66,13 @@ async function setup() {
   const machineId = await withTenant(t.db, tenant.tenantId, async (trx) => {
     const row = await trx
       .insertInto('machines')
-      .values({ tenant_id: tenant.tenantId, name: 'build-01', token_hash: randomBytes(32), os: 'windows', executor_version: '0.1.0' })
+      .values({
+        tenant_id: tenant.tenantId,
+        name: 'build-01',
+        token_hash: randomBytes(32),
+        os: 'windows',
+        executor_version: '0.1.0',
+      })
       .returning('id')
       .executeTakeFirstOrThrow()
     return row.id
@@ -187,7 +193,11 @@ test('a label with no edge parks the run, and a park node ends it with its reaso
     start: 'build',
     nodes: {
       build: { kind: 'job', job_type: 'check', cwd: 'C:\\src', next: { done: 'route' } },
-      route: { kind: 'branch', cases: [{ field: 'label', equals: 'never', label: 'never' }], next: { default: 'stop' } },
+      route: {
+        kind: 'branch',
+        cases: [{ field: 'label', equals: 'never', label: 'never' }],
+        next: { default: 'stop' },
+      },
       stop: { kind: 'park', reason: 'needs {{input.who}}' },
     },
   }
@@ -211,13 +221,19 @@ test('one live flow run per (flow, source key): a second start is DR314 until th
     startFlowRun(s.ctx, projectKey, 'loop', { task: 'P4-T16', input: INPUT, sourceKey })
   const first = await start('linear:FLOWS-1')
   assert.equal(first.sourceKey, 'linear:FLOWS-1')
-  await assert.rejects(start('linear:FLOWS-1'), failsWith('DR314', { flow: 'loop', source: 'linear:FLOWS-1', run: first.id }))
+  await assert.rejects(
+    start('linear:FLOWS-1'),
+    failsWith('DR314', { flow: 'loop', source: 'linear:FLOWS-1', run: first.id }),
+  )
   // Another source key, or none, is another run.
   await start('linear:FLOWS-2')
   await start()
   await start()
   // A new version does not lift the lock: it is per flow key.
-  await putFlow(s.ctx, projectKey, { ...LOOP, nodes: { ...LOOP.nodes, pause: { ...LOOP.nodes.pause, duration_s: 30 } } })
+  await putFlow(s.ctx, projectKey, {
+    ...LOOP,
+    nodes: { ...LOOP.nodes, pause: { ...LOOP.nodes.pause, duration_s: 30 } },
+  })
   await assert.rejects(start('linear:FLOWS-1'), failsWith('DR314'))
 
   const { view, liveRun } = await cancelFlowRun(s.ctx, projectKey, first.id)
@@ -257,7 +273,10 @@ test('a start checks the input, the job types and the flow, and leaves nothing b
     startFlowRun(s.ctx, projectKey, 'loop', { task: 'P4-T16', input: { repo: 'C:\\src' } }),
     failsWith('DR101', { path: '/input/tag', reason: 'is required by /nodes/build/args/1' }),
   )
-  await putFlow(s.ctx, projectKey, { ...LOOP, nodes: { ...LOOP.nodes, build: { ...LOOP.nodes.build, job_type: 'gone' } } })
+  await putFlow(s.ctx, projectKey, {
+    ...LOOP,
+    nodes: { ...LOOP.nodes, build: { ...LOOP.nodes.build, job_type: 'gone' } },
+  })
   await assert.rejects(
     startFlowRun(s.ctx, projectKey, 'loop', { task: 'P4-T16', input: INPUT }),
     failsWith('DR201', { kind: 'job type', key: 'gone' }),
@@ -284,7 +303,10 @@ test('flow set stores a new version only when the document changes; a run keeps 
   await s.end(s.waitingRun(run), 1)
   run = await s.show(run.id)
   assert.deepEqual([run.version, run.nodes.at(-1)?.node], [1, 'pause'])
-  await assert.rejects(putFlow(s.ctx, projectKey, { ...LOOP, start: 'nowhere' }), failsWith('DR101', { path: '/start' }))
+  await assert.rejects(
+    putFlow(s.ctx, projectKey, { ...LOOP, start: 'nowhere' }),
+    failsWith('DR101', { path: '/start' }),
+  )
 })
 
 test('a flow run of another tenant is not found', async () => {
@@ -307,7 +329,13 @@ test('a park node with ask resumes with a checked answer that the next node read
     key: 'ask',
     start: 'build',
     nodes: {
-      build: { kind: 'job', job_type: 'check', cwd: 'C:\\src', max_visits: 2, next: { done: 'finish', failed: 'decide' } },
+      build: {
+        kind: 'job',
+        job_type: 'check',
+        cwd: 'C:\\src',
+        max_visits: 2,
+        next: { done: 'finish', failed: 'decide' },
+      },
       decide: { kind: 'park', reason: 'build red', ask: ASK, next: { resumed: 'route' } },
       route: {
         kind: 'branch',
@@ -324,7 +352,8 @@ test('a park node with ask resumes with a checked answer that the next node read
   assert.deepEqual([view.state, view.reason], ['parked', 'build red'])
   assert.deepEqual(view.nodes.at(-1)?.data, { reason: 'build red', ask_schema: ASK })
 
-  const resume = (answer: Record<string, unknown>, ctx = s.ctx) => resumeFlowRun(ctx, projectKey, started.id, { answer })
+  const resume = (answer: Record<string, unknown>, ctx = s.ctx) =>
+    resumeFlowRun(ctx, projectKey, started.id, { answer })
   await assert.rejects(resume({}), failsWith('DR101', { path: '/answer/action' }))
   await assert.rejects(resume({ action: 'later' }), failsWith('DR101', { path: '/answer/action' }))
   await assert.rejects(resume({ action: 'retry', typo: 1 }), failsWith('DR101', { path: '/answer/typo' }))
@@ -333,7 +362,11 @@ test('a park node with ask resumes with a checked answer that the next node read
 
   view = await resume({ action: 'retry', note: 'flaky' })
   assert.equal(view.state, 'running')
-  assert.deepEqual(view.nodes.at(-3)?.data, { reason: 'build red', ask_schema: ASK, answer: { action: 'retry', note: 'flaky' } })
+  assert.deepEqual(view.nodes.at(-3)?.data, {
+    reason: 'build red',
+    ask_schema: ASK,
+    answer: { action: 'retry', note: 'flaky' },
+  })
   assert.deepEqual(trail(view), ['build#1:failed', 'decide#1:parked', 'route#1:retry', 'build#2:open'])
   // Running again: nothing to resume.
   await assert.rejects(resume({ action: 'drop' }), failsWith('DR203', { state: 'running' }))

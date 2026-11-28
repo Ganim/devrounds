@@ -319,7 +319,12 @@ export type FlowResumeInput = Static<typeof FlowResumeInput>
  * any other way (max_visits, a label with no edge), or not parked, has nowhere to resume (DR203). The run is running
  * again, so the live-run lock applies (DR314). The resume is a plan event of the task.
  */
-export async function resumeFlowRun(ctx: Ctx, projectKey: string, id: string, i: FlowResumeInput): Promise<FlowRunView> {
+export async function resumeFlowRun(
+  ctx: Ctx,
+  projectKey: string,
+  id: string,
+  i: FlowResumeInput,
+): Promise<FlowRunView> {
   if (ctx.actor.kind !== 'human') fail('DR453', { action: 'resume a flow run' })
   validate(FlowResumeInput, i)
   if (!isUuid(id)) fail('DR201', { kind: 'flow run', key: id })
@@ -410,17 +415,15 @@ async function loadFlowRunView(trx: Trx, projectId: string, id: string): Promise
   const nodes = await trx
     .selectFrom('flow_node_runs as n')
     .leftJoin('runs as run', (join) =>
-      join
-        .onRef('run.job_id', '=', 'n.job_id')
-        .on(({ eb, selectFrom }) =>
-          eb(
-            'run.attempt',
-            '=',
-            selectFrom('runs as last')
-              .select(({ fn }) => fn.max('last.attempt').as('a'))
-              .whereRef('last.job_id', '=', 'n.job_id'),
-          ),
+      join.onRef('run.job_id', '=', 'n.job_id').on(({ eb, selectFrom }) =>
+        eb(
+          'run.attempt',
+          '=',
+          selectFrom('runs as last')
+            .select(({ fn }) => fn.max('last.attempt').as('a'))
+            .whereRef('last.job_id', '=', 'n.job_id'),
         ),
+      ),
     )
     .select([
       'n.node',

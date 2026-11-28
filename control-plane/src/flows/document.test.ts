@@ -44,9 +44,14 @@ test('edges, the start, templates, kinds and ask fields are checked with their p
 })
 
 test('a flow file points a problem at its line', () => {
-  const text = 'key: flow\nstart: a\nnodes:\n  a:\n    kind: job\n    job_type: check\n    cwd: x\n    next: { done: b }\n'
+  const text =
+    'key: flow\nstart: a\nnodes:\n  a:\n    kind: job\n    job_type: check\n    cwd: x\n    next: { done: b }\n'
   assert.throws(
     () => parseFlowFile(text),
-    (err) => err instanceof DevRoundsError && err.code === 'DR101' && err.data.path === '/nodes/a/next/done' && err.data.line === 8,
+    (err) =>
+      err instanceof DevRoundsError &&
+      err.code === 'DR101' &&
+      err.data.path === '/nodes/a/next/done' &&
+      err.data.line === 8,
   )
 })

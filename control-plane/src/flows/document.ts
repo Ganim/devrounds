@@ -76,7 +76,12 @@ const BranchNode = Type.Object(
 // fields), checked by askType without a JSON Schema library. The answer becomes the data the next node reads.
 const AskField = Type.Object(
   {
-    type: Type.Union([Type.Literal('string'), Type.Literal('number'), Type.Literal('integer'), Type.Literal('boolean')]),
+    type: Type.Union([
+      Type.Literal('string'),
+      Type.Literal('number'),
+      Type.Literal('integer'),
+      Type.Literal('boolean'),
+    ]),
     description: Type.Optional(Type.String({ maxLength: 1000 })),
     enum: Type.Optional(Type.Array(Literal, { minItems: 1, maxItems: 50 })),
     minLength: Type.Optional(Type.Integer({ minimum: 0 })),

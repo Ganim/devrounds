@@ -32,13 +32,13 @@ export const flowRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessi
 ) => {
   authenticateMembers(app, db)
 
-  app.post('/flows', { schema: { params: Type.Object({ key: Key }), headers: Headers, body: Type.Unknown() } }, (r, reply) =>
-    mutateIdempotent(db, r, reply, (ctx) => putFlow(ctx, r.params.key, r.body)),
+  app.post(
+    '/flows',
+    { schema: { params: Type.Object({ key: Key }), headers: Headers, body: Type.Unknown() } },
+    (r, reply) => mutateIdempotent(db, r, reply, (ctx) => putFlow(ctx, r.params.key, r.body)),
   )
 
-  app.get('/flows', { schema: { params: Type.Object({ key: Key }) } }, (r) =>
-    listFlows(memberCtx(db, r), r.params.key),
-  )
+  app.get('/flows', { schema: { params: Type.Object({ key: Key }) } }, (r) => listFlows(memberCtx(db, r), r.params.key))
 
   app.get(
     '/flows/:flow',
@@ -84,28 +84,32 @@ export const flowRoutes: FastifyPluginAsyncTypebox<{ db: Kysely<Database>; sessi
   // The live run of the cancelled node's job is stopped before the answer, so the answer shows it stopped, and only when
   // the cancel ran (a replayed Idempotency-Key stops nothing again). A stop that cannot reach its machine (DR350) leaves
   // the run as it is: its end later moves nothing, since the flow run is cancelled.
-  app.post('/flow-runs/:id/cancel', { schema: { params: Type.Object({ key: Key, id: Key }), headers: Headers } }, async (r, reply) => {
-    let stop: PreparedStop | undefined
-    const answer = await mutateIdempotent(db, r, reply, async (ctx) => {
-      const cancelled = await cancelFlowRun(ctx, r.params.key, r.params.id)
-      if (cancelled.liveRun === null) return cancelled.view
-      try {
-        stop = await prepareStop(ctx, sessions, cancelled.liveRun, r.params.key)
-      } catch (err) {
-        if (!(err instanceof DevRoundsError)) throw err
-        r.log.warn({ err, run: cancelled.liveRun }, 'flow run cancelled; its live run was not stopped')
-        return cancelled.view
+  app.post(
+    '/flow-runs/:id/cancel',
+    { schema: { params: Type.Object({ key: Key, id: Key }), headers: Headers } },
+    async (r, reply) => {
+      let stop: PreparedStop | undefined
+      const answer = await mutateIdempotent(db, r, reply, async (ctx) => {
+        const cancelled = await cancelFlowRun(ctx, r.params.key, r.params.id)
+        if (cancelled.liveRun === null) return cancelled.view
+        try {
+          stop = await prepareStop(ctx, sessions, cancelled.liveRun, r.params.key)
+        } catch (err) {
+          if (!(err instanceof DevRoundsError)) throw err
+          r.log.warn({ err, run: cancelled.liveRun }, 'flow run cancelled; its live run was not stopped')
+          return cancelled.view
+        }
+        return flowRunView(ctx, r.params.key, r.params.id)
+      })
+      if (stop?.ended) {
+        if (stop.sendTo !== undefined) sessions.send(stop.sendTo, { type: 'Stop', run: stop.view.id, reason: 'cancel' })
+        for (const changed of stop.changed) runEvents.emit('changed', changed)
+      } else if (stop && !sessions.send(stop.machineId, { type: 'Stop', run: stop.view.id, reason: 'cancel' })) {
+        r.log.warn({ run: stop.view.id, machine: stop.machine }, 'flow run cancelled; its live run was not stopped')
       }
-      return flowRunView(ctx, r.params.key, r.params.id)
-    })
-    if (stop?.ended) {
-      if (stop.sendTo !== undefined) sessions.send(stop.sendTo, { type: 'Stop', run: stop.view.id, reason: 'cancel' })
-      for (const changed of stop.changed) runEvents.emit('changed', changed)
-    } else if (stop && !sessions.send(stop.machineId, { type: 'Stop', run: stop.view.id, reason: 'cancel' })) {
-      r.log.warn({ run: stop.view.id, machine: stop.machine }, 'flow run cancelled; its live run was not stopped')
-    }
-    return answer
-  })
+      return answer
+    },
+  )
 
   app.post(
     '/flow-runs/:id/resume',

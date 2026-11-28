@@ -107,7 +107,10 @@ async function countsOf(trx: Trx, flowRunId: string, node: string): Promise<{ vi
 
 // Queues the node's job (and its first run) as a job of the run's task, as `run start` would.
 async function createJob(trx: Trx, fr: FlowRunRow, node: JobNode): Promise<string> {
-  const values = await resolver(trx, fr.project_id)({
+  const values = await resolver(
+    trx,
+    fr.project_id,
+  )({
     jobTypeKey: node.job_type,
     cwd: render(node.cwd, fr.input),
     args: node.args?.map((arg) => render(arg, fr.input)),
