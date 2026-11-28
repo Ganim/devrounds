@@ -12,7 +12,7 @@ Branch `lane-p4-t12` (from main efc601f), worktree `C:/Users/Guilherme/Code/devr
 
 ## Design
 
-Job type field `environment: {provider: devlanes, mode: with|status}` (migration 0052: `job_types.environment`, `runs.environment`, both jsonb). The control plane provider (`control-plane/src/environments/`) wraps the command (`with` → `devlanes with -- <cmd>`) and adds `environment_probe` (`devlanes status --json`) to the offer. The executor runs the probe in the job cwd inside the admission slot (15 s timeout, 1 MiB cap; `executor/crates/executor/src/environment.rs`) and sends `RunStarted.environment {output, exit_code, error}`. The control plane reduces it to the cwd's lane and stores it in `runs.environment`; `GET /api/runs/:id` and `devrounds run show` show it. Protocol change is additive: optional fields, new feature `environment`; old peers ignore them. Hub tools are left for T02.
+Job type field `environment: {provider: devlanes, mode: with|status}` (migration 0030: `job_types.environment`, `runs.environment`, both jsonb). The control plane provider (`control-plane/src/environments/`) wraps the command (`with` → `devlanes with -- <cmd>`) and adds `environment_probe` (`devlanes status --json`) to the offer. The executor runs the probe in the job cwd inside the admission slot (15 s timeout, 1 MiB cap; `executor/crates/executor/src/environment.rs`) and sends `RunStarted.environment {output, exit_code, error}`. The control plane reduces it to the cwd's lane and stores it in `runs.environment`; `GET /api/runs/:id` and `devrounds run show` show it. Protocol change is additive: optional fields, new feature `environment`; old peers ignore them. Hub tools are left for T02.
 
 ## Validation (private DB devrounds_test_p4_t12)
 
