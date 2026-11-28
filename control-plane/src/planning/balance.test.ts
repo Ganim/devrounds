@@ -150,3 +150,63 @@ phases:
   // Only the done of P0-T02 counts; its start came from the import, so it has no measured cycle or hours.
   assert.deepEqual([row?.done, row?.avgCycleHours, row?.hoursInProgress], [1, null, 0])
 })
+
+test('getBalance splits DST days in the tenant time zone', async () => {
+  const { db, admin, newTenant } = await testDb()
+  const tenant = await newTenant()
+  // Not the default zone, and one with DST: 2026-03-08 is 23 h long in New York, 2026-11-01 is 25 h.
+  await admin.updateTable('tenants').set({ timezone: 'America/New_York' }).where('id', '=', tenant.tenantId).execute()
+  const ctx = { db, tenantId: tenant.tenantId, actor: { id: tenant.agent.id, kind: 'agent' as const } }
+  await createProject(ctx, { key: 'devrounds', name: 'DevRounds' })
+  await addTask(ctx, { projectKey: 'devrounds', key: 'T1', title: 'Spring' })
+  await transition(ctx, { projectKey: 'devrounds', taskKey: 'T1', to: 'in_progress' })
+  await transition(ctx, { projectKey: 'devrounds', taskKey: 'T1', to: 'todo' })
+  await addTask(ctx, { projectKey: 'devrounds', key: 'T2', title: 'Fall' })
+  await transition(ctx, { projectKey: 'devrounds', taskKey: 'T2', to: 'in_progress' })
+  await transition(ctx, { projectKey: 'devrounds', taskKey: 'T2', to: 'done' })
+  // Events carry the time they were written; place them on the DST days. Each stretch runs local midnight to midnight.
+  const times = [
+    '2026-03-08T04:30:00Z', // 23:30 EST on 03-07; 01:30 on 03-08 in Sao Paulo
+    '2026-03-08T05:00:00Z', // 00:00 EST 03-08
+    '2026-03-09T04:00:00Z', // 00:00 EDT 03-09
+    '2026-10-31T12:00:00Z',
+    '2026-11-01T04:00:00Z', // 00:00 EDT 11-01
+    '2026-11-02T05:00:00Z', // 00:00 EST 11-02
+  ]
+  const events = await admin
+    .selectFrom('plan_events')
+    .select('id')
+    .where('tenant_id', '=', tenant.tenantId)
+    .where('kind', 'in', ['add_task', 'transition'])
+    .orderBy('id')
+    .execute()
+  assert.equal(events.length, times.length)
+  for (const [i, { id }] of events.entries()) {
+    await admin
+      .updateTable('plan_events')
+      .set({ at: at(times[i] as string) })
+      .where('id', '=', id)
+      .execute()
+  }
+
+  const day = (from: string, to: string) =>
+    getBalance(ctx, 'devrounds', { period: 'day', from: at(from), to: at(to), now: at('2026-12-01T00:00:00Z') })
+  const spring = await day('2026-03-07T12:00:00Z', '2026-03-09T12:00:00Z')
+  assert.deepEqual(
+    spring.map((r) => [r.periodStart, r.opened, r.hoursInProgress]),
+    [
+      ['2026-03-07', 1, 0],
+      ['2026-03-08', 0, 23],
+      ['2026-03-09', 0, 0],
+    ],
+  )
+  const fall = await day('2026-10-31T12:00:00Z', '2026-11-02T12:00:00Z')
+  assert.deepEqual(
+    fall.map((r) => [r.periodStart, r.opened, r.hoursInProgress, r.done, r.avgCycleHours]),
+    [
+      ['2026-10-31', 1, 0, 0, null],
+      ['2026-11-01', 0, 25, 0, null],
+      ['2026-11-02', 0, 0, 1, 25],
+    ],
+  )
+})
