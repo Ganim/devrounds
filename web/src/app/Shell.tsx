@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from 'react'
 import { shortId } from '../lib/format.ts'
-import { ASIDE_DEFAULT, ASIDE_KEY, clampAside, savedAside } from './aside.ts'
+import { ASIDE_DEFAULT, clampAside, saveAside, savedAside } from './aside.ts'
 import { CLOSE_ICON, MORE_ICON, NAV_ICONS, SIGN_OUT_ICON } from './icons.tsx'
 import { useEscapeLayer } from './layers.ts'
 import { hrefOf, NAV, type NavEntry, navOf, ROUTES, type Route, type RouteName } from './routes.ts'
@@ -174,14 +174,14 @@ function Resizer({ onWidth }: { onWidth: (width: number) => void }) {
         const stop = () => {
           target.removeEventListener('pointermove', move)
           target.classList.remove('on')
-          if (width > 0) localStorage.setItem(ASIDE_KEY, String(width))
+          if (width > 0) saveAside(width)
         }
         target.addEventListener('pointermove', move)
         target.addEventListener('pointerup', stop, { once: true })
         target.addEventListener('pointercancel', stop, { once: true })
       }}
       onDoubleClick={() => {
-        localStorage.removeItem(ASIDE_KEY)
+        saveAside(null)
         onWidth(ASIDE_DEFAULT)
       }}
     />

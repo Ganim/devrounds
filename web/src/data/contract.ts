@@ -14,6 +14,7 @@ import type {
   PlanView,
   TaskView,
 } from '../../../control-plane/src/planning/view.ts'
+import type { Pref } from '../../../control-plane/src/prefs/service.ts'
 import type { QueueView } from '../../../control-plane/src/queues/service.ts'
 import type { IndicatorRow, IndicatorsNow } from '../../../control-plane/src/runs/indicators.ts'
 import type { LogLine } from '../../../control-plane/src/runs/log-store.ts'
@@ -53,6 +54,8 @@ export type LogPageJson = { lines: LogLine[]; nextCursor: number | null }
 export type ConventionsSummaryJson = Wire<ConventionsSummary>
 export type ConventionsVersionJson = Wire<VersionView>
 export type ConventionsDiffJson = VersionDiff & { version: number; against: number | null }
+// GET/PUT /prefs/:name (prefs/service.ts): an unset pref reads as value null.
+export type PrefJson = Wire<Pref>
 export type SignedIn = { user: { email: string; name: string } }
 
 /**
@@ -68,6 +71,7 @@ export type Endpoint<T> = {
 
 const get = <T>(path: `/${string}`, project = true): Endpoint<T> => ({ method: 'GET', path, project })
 const post = <T>(path: `/${string}`): Endpoint<T> => ({ method: 'POST', path, project: false })
+const put = <T>(path: `/${string}`): Endpoint<T> => ({ method: 'PUT', path, project: true })
 
 export const PROJECT_PREFIX = '/api/projects/:key'
 
@@ -85,6 +89,8 @@ export const endpoints = {
   runs: get<RunListJson>('/runs'),
   run: get<RunJson>('/runs/:id'),
   runLogs: get<LogPageJson>('/runs/:id/logs'),
+  pref: get<PrefJson>('/prefs/:name'),
+  setPref: put<PrefJson>('/prefs/:name'),
   machines: get<MachineJson[]>('/api/machines', false),
   // Better Auth's routes (auth/session.ts), mounted under /api/auth/*.
   session: get<SignedIn | null>('/api/auth/get-session', false),

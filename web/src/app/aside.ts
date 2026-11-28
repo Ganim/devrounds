@@ -1,6 +1,7 @@
-// The aside's width is the reader's choice, kept per device (P5 design §3 call 9; cx-env `asideWidth`). Stored here
-// until P5-T08's data/prefs.ts owns device prefs; the key stays the same when it moves.
-export const ASIDE_KEY = 'devrounds.aside'
+import { getDevicePref, setDevicePref } from '../data/prefs.ts'
+
+// The aside's width is the reader's choice, kept per device (P5 design §3 call 9; cx-env `asideWidth`) as the
+// `asideWidth` device pref.
 export const ASIDE_DEFAULT = 420
 const ASIDE_MIN = 320
 const ASIDE_MAX = 720
@@ -13,6 +14,9 @@ export function clampAside(width: number, viewport: number): number {
 }
 
 export function savedAside(): number {
-  const saved = Number(localStorage.getItem(ASIDE_KEY))
-  return Number.isFinite(saved) && saved >= ASIDE_MIN ? saved : ASIDE_DEFAULT
+  const saved = getDevicePref('asideWidth')
+  return saved >= ASIDE_MIN ? saved : ASIDE_DEFAULT
 }
+
+/** Saves the dragged width, or forgets it (null) so the aside goes back to the default. */
+export const saveAside = (width: number | null): void => setDevicePref('asideWidth', width)

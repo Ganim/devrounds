@@ -55,8 +55,8 @@ export async function request<T>(
 
 /**
  * A mutating call to our API (not /api/auth). `action` goes in `x-devrounds-action`: a cookie write needs that custom
- * header, which a cross-site form cannot send (P5 design §3 call 6, P5-T10); until that guard ships, a cookie write
- * answers DR402. Every call gets its own `Idempotency-Key` (AGENTS invariant), so one repeated by the network applies
+ * header, which a cross-site form cannot send (P5 design §3 call 6, P5-T10); a cookie write without it answers
+ * DR402. Every call gets its own `Idempotency-Key` (AGENTS invariant), so one repeated by the network applies
  * once; writes are never retried by the cache (TanStack Query mutations default to no retry), since a retry with a new
  * key could apply twice.
  */

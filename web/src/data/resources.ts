@@ -1,8 +1,7 @@
 import { type QueryKey, useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { type Endpoint, endpoints, type LogPageJson, type SignedIn } from './contract.ts'
-import { type ApiError, request, urlOf } from './http.ts'
-import { getProject } from './prefs.ts'
+import { type Endpoint, endpoints, type LogPageJson, type PrefJson, type SignedIn } from './contract.ts'
+import { type ApiError, request, urlOf, write } from './http.ts'
 import { queryClient, queryKeyOf } from './query.tsx'
 
 // Features read and write the API only through the hooks below; they never import the query library (checked by
@@ -151,18 +150,13 @@ export function useWrite<V, R, D>({
   return { write: mutation.mutateAsync, pending: mutation.isPending, error: mutation.error as ApiError | null }
 }
 
-// STUB until P5-T11 ships the member prefs routes (`GET/PUT /prefs/:key` under the project, design §3 call 8): the
-// value lives in this browser's localStorage, so it does not follow the member to another device yet. When the route
-// lands only `readPref` and `sendPref` change, to `request(urlOf(endpoints.pref, { key }))` and
-// `write(urlOf(endpoints.pref, { key }), { method: 'PUT', action: 'pref.set', body: value })` with the endpoint added to
-// contract.ts; the hook, its cache key and the optimistic update stay.
-const stubKeyOf = (key: string) => `devrounds.memberPref.${getProject()}.${key}`
-const readPref = async <T>(key: string): Promise<T | null> => {
-  const raw = localStorage.getItem(stubKeyOf(key))
-  return raw === null ? null : (JSON.parse(raw) as T)
+// Member prefs live on the server per member and project (P5-T11, design §3 call 8), so they follow the member to
+// every device. The pref name is `key` here.
+const readPref = async <T>(key: string): Promise<T | null> =>
+  (await request<PrefJson>(urlOf(endpoints.pref, { name: key }))).value as T | null
+const sendPref = async <T>(key: string, value: T): Promise<void> => {
+  await write(urlOf(endpoints.setPref, { name: key }), { method: 'PUT', action: 'pref.set', body: { value } })
 }
-const sendPref = async <T>(key: string, value: T): Promise<void> =>
-  localStorage.setItem(stubKeyOf(key), JSON.stringify(value))
 
 /**
  * A member-shared preference (card order, custom names, sections, board columns): opaque JSON per key, `fallback` until

@@ -23,7 +23,8 @@ const DEVICE: { [K in keyof DevicePrefs]: Spec<DevicePrefs[K]> } = {
     parse: (raw) => (raw === 'dark' || raw === 'light' ? raw : undefined),
   },
   asideWidth: {
-    storageKey: 'devrounds.asideWidth',
+    // The key P5-T09's shell already wrote, so a saved width survives the move here.
+    storageKey: 'devrounds.aside',
     fallback: 420,
     parse: (raw) => {
       const width = Number(raw)
@@ -37,7 +38,8 @@ const notify = () => {
   for (const listener of listeners) listener()
 }
 // Another tab changed a pref: this tab's components re-read it.
-addEventListener('storage', notify)
+// Optional call: node tests import modules that import this file, and node has no window.
+globalThis.addEventListener?.('storage', notify)
 
 export function getDevicePref<K extends keyof DevicePrefs>(name: K): DevicePrefs[K] {
   const { storageKey, fallback, parse } = DEVICE[name]
@@ -46,7 +48,7 @@ export function getDevicePref<K extends keyof DevicePrefs>(name: K): DevicePrefs
 }
 
 /** Stores `value` (null removes the key, back to the fallback) and re-renders every component reading it. */
-export function setDevicePref<K extends keyof DevicePrefs>(name: K, value: DevicePrefs[K]): void {
+export function setDevicePref<K extends keyof DevicePrefs>(name: K, value: DevicePrefs[K] | null): void {
   const { storageKey } = DEVICE[name]
   if (value === null) localStorage.removeItem(storageKey)
   else localStorage.setItem(storageKey, String(value))
