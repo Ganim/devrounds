@@ -5,12 +5,13 @@ import { useMemo } from 'react'
 import type { TaskView } from '../../data/contract.ts'
 
 const NODE = { width: 170, height: 46 }
+// Token names, not colors (ui/tokens.css owns every color), so the graph follows the theme.
 const COLOR: Record<string, string> = {
-  done: '#2f9e5b',
-  in_progress: '#2b6fd6',
-  blocked: '#d6452b',
-  todo: '#c9ced6',
-  cancelled: '#e3e5e8',
+  done: 'var(--state-ok)',
+  in_progress: 'var(--state-info)',
+  blocked: 'var(--state-danger)',
+  todo: 'var(--surface-3)',
+  cancelled: 'var(--surface-2)',
 }
 
 // Tasks of one phase, edge blocker -> blocked task, laid out left to right. A blocker from another phase appears as a
@@ -48,9 +49,9 @@ export function layoutTasks(tasks: TaskView[]): { nodes: Node[]; edges: Edge[] }
         fontSize: 11,
         padding: 4,
         overflow: 'hidden',
-        background: task ? COLOR[task.state] : '#fff',
-        color: dark ? '#fff' : '#1c2128',
-        border: task ? 'none' : '1px dashed #5d6673',
+        background: task ? COLOR[task.state] : 'var(--surface-1)',
+        color: dark ? 'var(--on-state)' : 'var(--text)',
+        border: task ? 'none' : '1px dashed var(--text-dim)',
       },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,

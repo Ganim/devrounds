@@ -1,0 +1,191 @@
+/*
+ * Design tokens: the only file in web/src that names a color (ui/tokens.test.ts fails any other). Values start from the
+ * cx-env panel (page-v2.html: the "Harmony" dark tokens and the v2 light theme, 28/11) so DevRounds reads like it; the
+ * final design changes this file, not the components.
+ *
+ * Two layers. The raw scale (--gray-*, --violet-*, --blue-*, --cyan-*, --green-*, --amber-*, --red-*) is never read by a
+ * component. Semantic tokens (--bg, --surface-*, --text*, --accent*, --state-*) are, and each theme re-points them.
+ * A domain state (task blocked, run orphaned) maps to a --state-* tone in its feature or lib/tones.ts, never to a color.
+ *
+ * Dark is the default; `[data-theme='light']` overrides on any element, so a subtree can preview the other theme (the
+ * gallery shows both side by side). ui/theme.ts sets the attribute on <html> before paint.
+ */
+:root {
+  /* Raw scale: an ink ramp from white (0) to the panel's near-black (12). */
+  --gray-0: #ffffff;
+  --gray-1: #f4f5ff;
+  --gray-2: #ecebf8;
+  --gray-3: #dcdfec;
+  --gray-4: #c4c9e8;
+  --gray-5: #a9b0d6;
+  --gray-6: #8c94bd;
+  --gray-7: #5e6478;
+  --gray-8: #2e3342;
+  --gray-9: #1a1c30;
+  --gray-10: #121320;
+  --gray-11: #11121e;
+  --gray-12: #0b0c14;
+  --violet-4: #7c5cff;
+  --violet-5: #5b5bf0;
+  --blue-3: #8fb4ff;
+  --blue-5: #2f8fea;
+  --blue-7: #2449c4;
+  --cyan-4: #22d3ee;
+  --green-3: #34e3a4;
+  --green-7: #15803d;
+  --amber-3: #ffb547;
+  --amber-7: #b45309;
+  --red-2: #ff9aab;
+  --red-3: #ff6b81;
+  --red-7: #c81e3a;
+  --red-8: #b4233c;
+  --white-a4: rgba(255, 255, 255, 0.04);
+  --white-a7: rgba(255, 255, 255, 0.07);
+  --white-a8: rgba(255, 255, 255, 0.08);
+  --white-a10: rgba(255, 255, 255, 0.1);
+  --white-a14: rgba(255, 255, 255, 0.14);
+  --white-a50: rgba(255, 255, 255, 0.5);
+  --white-a70: rgba(255, 255, 255, 0.7);
+  --white-a85: rgba(255, 255, 255, 0.85);
+  --white-a90: rgba(255, 255, 255, 0.9);
+  --white-a96: rgba(255, 255, 255, 0.96);
+  --ink-a7: rgba(22, 26, 44, 0.07);
+  --ink-a12: rgba(22, 26, 44, 0.12);
+  --ink-a26: rgba(22, 26, 44, 0.26);
+  --night-a72: rgba(11, 12, 20, 0.72);
+  --night-a96: rgba(24, 26, 43, 0.96);
+  --shadow-dark: rgba(0, 0, 0, 0.45);
+  --shadow-light: rgba(64, 72, 128, 0.14);
+
+  /* Type, spacing, shape, layers, motion: theme-independent. */
+  --font-sans: Geist, Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 13.5px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 19px;
+  --text-2xl: 26px;
+  --leading: 1.45;
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 14px;
+  --space-7: 18px;
+  --space-8: 24px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 22px;
+  --radius-full: 999px;
+  /* cx-env draws every hairline at 0.8px. */
+  --hair: 0.8px;
+  /* 44px is the touch-target floor on phones (cx-env, WCAG 2.5.5). */
+  --touch: 44px;
+  --z-sticky: 10;
+  --z-nav: 20;
+  --z-sheet: 30;
+  --z-popover: 40;
+  --z-toast: 50;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 0.15s;
+  --dur-slow: 0.5s;
+}
+
+/* Semantic tokens, dark theme. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--gray-12);
+  --bg-image: linear-gradient(180deg, var(--gray-10), var(--gray-12) 60%);
+  --surface-1: var(--white-a4);
+  --surface-2: var(--white-a7);
+  --surface-3: var(--white-a10);
+  /* Dialogs, sheets, popovers and the aside: opaque, so text under them never shows through. */
+  --panel: var(--gray-11);
+  --popover: var(--night-a96);
+  --overlay: var(--night-a72);
+  --border: var(--white-a8);
+  --border-strong: var(--white-a14);
+  --text: var(--gray-3);
+  --text-2: var(--gray-4);
+  --text-muted: var(--gray-5);
+  --text-dim: var(--gray-6);
+  --accent: var(--violet-4);
+  --accent-2: var(--cyan-4);
+  --on-accent: var(--gray-0);
+  --state-ok: var(--green-3);
+  --state-info: var(--blue-3);
+  --state-warn: var(--amber-3);
+  --state-danger: var(--red-3);
+  --state-idle: var(--gray-6);
+  /* Text on a solid state fill: the fills are bright in dark, deep in light, so the text flips. */
+  --on-state: var(--gray-12);
+  /* Error prose: softer than the danger fill, still >= 4.5:1 on the surfaces. */
+  --danger-text: var(--red-2);
+  --link: var(--blue-3);
+  --focus-ring: var(--violet-4);
+  --track: var(--white-a8);
+  --scrollbar: var(--white-a14);
+  --knob: var(--gray-0);
+  --shadow-1: 0 6px 20px var(--shadow-dark);
+  --shadow-2: 0 30px 80px var(--shadow-dark);
+  /* Reading surfaces (thread bubbles, logs): off-white on a near-neutral, never pure white on navy (cx-env 04/11). */
+  --read-bg: #1a1b20;
+  --read-sent: #1d2b33;
+  --read: #dcdde3;
+  --read-meta: #9a9daa;
+  --log-bg: var(--gray-12);
+  --log-text: var(--gray-3);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: var(--gray-2);
+  --bg-image: linear-gradient(135deg, #e2ecfa 0%, #ece7fa 55%, #f4eaf3 100%);
+  --surface-1: var(--white-a50);
+  --surface-2: var(--white-a70);
+  --surface-3: var(--white-a90);
+  --panel: var(--gray-1);
+  --popover: var(--white-a96);
+  --overlay: var(--ink-a26);
+  --border: var(--ink-a7);
+  --border-strong: var(--ink-a12);
+  --text: #12141c;
+  --text-2: var(--gray-8);
+  --text-muted: var(--gray-7);
+  --text-dim: #868ca0;
+  --accent: var(--violet-5);
+  --accent-2: var(--blue-5);
+  /* Status text darker than the fills: >= 4.5:1 on the light surfaces. */
+  --state-ok: var(--green-7);
+  --state-info: var(--blue-7);
+  --state-warn: var(--amber-7);
+  --state-danger: var(--red-7);
+  --state-idle: #868ca0;
+  --on-state: var(--gray-0);
+  --danger-text: var(--red-8);
+  --link: var(--blue-7);
+  --focus-ring: var(--violet-5);
+  --track: var(--ink-a7);
+  --scrollbar: var(--ink-a12);
+  --shadow-1: 0 6px 20px var(--shadow-light);
+  --shadow-2: 0 30px 80px var(--shadow-light);
+  --read-bg: var(--white-a85);
+  --read-sent: rgba(222, 232, 255, 0.85);
+  --read: #2a2f3c;
+  --read-meta: #6a7083;
+  --log-bg: var(--gray-10);
+  --log-text: var(--gray-3);
+}
+
+/* Tokens derived from other semantic tokens. A custom property inherits already resolved, so these are declared again
+   on every themed element; otherwise a light subtree inside a dark page would keep the dark accent. */
+:root,
+[data-theme] {
+  --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --accent-glow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+}
