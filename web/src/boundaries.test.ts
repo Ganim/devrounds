@@ -23,6 +23,8 @@ const MAY_IMPORT: Record<Layer, Layer[]> = {
 const SERVER_TYPES_FILE = 'data/contract.ts'
 // A package only one layer may import: the query cache belongs to data/resources.ts (P5 design §3 call 4).
 const PACKAGE_OWNER: [prefix: string, layer: Layer][] = [['@tanstack/', 'data']]
+// The query client itself: app mounts its provider, features reach the cache only through the resources.ts hooks.
+const FILE_IMPORTERS: [file: string, layers: Layer[]][] = [['data/query.tsx', ['app', 'data']]]
 // The meta-tests at the root read the whole tree and build the server; they are not part of the bundle.
 const ROOT_TESTS = ['boundaries.test.ts', 'contract.test.ts']
 
@@ -57,7 +59,9 @@ function violations(sources: Source[]): string[] {
         continue
       }
       const [targetLayer, targetFeature] = target.split('/') as [Layer, string]
-      if (!LAYERS.includes(targetLayer)) found.push(`${at}: outside ${LAYERS.join(', ')}`)
+      const importers = FILE_IMPORTERS.find(([file]) => file === target)?.[1]
+      if (importers && !importers.includes(layer)) found.push(`${at}: only ${importers.join(', ')} import ${target}`)
+      else if (!LAYERS.includes(targetLayer)) found.push(`${at}: outside ${LAYERS.join(', ')}`)
       else if (!MAY_IMPORT[layer].includes(targetLayer)) found.push(`${at}: ${layer} may not import ${targetLayer}`)
       else if (layer === 'features' && targetLayer === 'features' && targetFeature !== path.split('/')[1]) {
         found.push(`${at}: a feature never imports another feature`)
@@ -92,6 +96,7 @@ test('a broken layer rule is reported', () => {
     { path: 'data/contract.ts', text: "import { buildServer } from '../../../control-plane/src/api/server.ts'" },
     { path: 'features/runs/Bad.tsx', text: "const page = import('../../app/main.tsx')" },
     { path: 'features/runs/Query.tsx', text: "import { useQuery } from '@tanstack/react-query'" },
+    { path: 'features/runs/Cache.tsx', text: "import { queryClient } from '../../data/query.tsx'" },
     { path: 'Stray.tsx', text: '' },
   ])
   assert.deepEqual(found, [
@@ -101,6 +106,7 @@ test('a broken layer rule is reported', () => {
     "data/contract.ts: '../../../control-plane/src/api/server.ts': use import type",
     "features/runs/Bad.tsx: '../../app/main.tsx': features may not import app",
     "features/runs/Query.tsx: '@tanstack/react-query': only data imports @tanstack/",
+    "features/runs/Cache.tsx: '../../data/query.tsx': only app, data import data/query.tsx",
     'Stray.tsx: outside app, features, ui, data, lib',
   ])
 })
