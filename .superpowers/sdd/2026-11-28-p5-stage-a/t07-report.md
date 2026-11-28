@@ -12,8 +12,9 @@ phase edit). Not done, not pushed.
   light subtree inside a dark page resolves them in light. Type, spacing, radius, z-layers and motion are tokens too.
 - `ui/base.css` (element defaults, focus ring, scrollbars), `ui/legacy.css` (the old page selectors rewritten on
   tokens, to be deleted as P5-T12 and T09 port pages), `ui/style.css` now only imports the three.
-- `ui/theme.ts`: key `devrounds.theme`, `setTheme`, `currentTheme`, and the boot script that `build.ts` inlines into
-  index.html so the first paint has the right theme (saved choice, else prefers-color-scheme, else dark).
+- Theme: the `data/prefs.ts` device pref `theme` (key `devrounds.theme`, null = OS). The pre-paint script lives
+  there and `build.ts` inlines it; `app/theme.ts` (`useTheme`) keeps `data-theme` in step; ThemeToggle is controlled
+  and sits in the shell header.
 - Primitives: Button (variants, `confirm` two-step), IconButton, Badge, Dot, Card, Ring, ProgressBar, Segmented,
   Toggle, Input/Textarea/Field, Select, Table, Dialog (native, bottom sheet under 900 px), Popover, Menu, Combobox,
   Toast (top layer above dialogs), Tooltip, Spinner, EmptyState, Banner, ErrorBox, Loading, Mono, Time,
@@ -41,11 +42,19 @@ phase edit). Not done, not pushed.
 ## Risks
 
 - AppPage, MasterDetail and Graph are not built: the shell belongs to T09, and Graph to T12/C1 with lazy splitting.
-- `build.ts` changed (gallery entry, inline theme script), which may conflict with T09's code splitting.
-- The theme key lives in `ui/theme.ts`; T08's prefs may also want to own it.
+- `build.ts` builds a second entry (gallery) and inlines the theme script; any later code splitting keeps both.
 - legacy.css stays until T12. DependencyGraph (features/) was edited to use state tokens.
 - `ui/index.ts` now imports style.css, so any consumer of ui/ pulls in the global styles.
 - The color test is regex-based; it catches the usual forms, not colors built at runtime.
-- Dialog reads `--vvh`/`--kb` for the phone keyboard; T09's shell is expected to set them.
 - The run detail route was only screenshotted with an empty id.
 - The primitives and patterns commits only typecheck together with the next commit, which moves features off Pill.
+
+## After rebasing onto main (T08 data layer and T09 shell merged)
+
+No textual conflicts. Integration in one commit: the theme moved onto the T08 device pref (ui/theme.ts removed, ui/
+stays free of data/); the shell's nav icons moved into ui/icons.tsx (app/icons.tsx removed); shell.css lost its hex
+fallbacks (the tokens test would fail on them), `--backdrop`/`--shadow-3` became `--overlay`/`--shadow-2`, and the
+phone tabs bar and sheets use the opaque `--panel` (translucent `--surface-1` showed the list through); Dialog stops
+Esc so T09's window-level layer stack does not close the detail under an open dialog. Rechecked: `biome check
+--error-on-warnings .` clean (402 files), typecheck ok, 36/36 tests, build ok, phase/runs/balance at 1280 and 390
+in both themes with no page errors.
