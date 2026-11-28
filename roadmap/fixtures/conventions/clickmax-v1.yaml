@@ -35,13 +35,15 @@ rules:
         role: source
   - key: docs.shared-code-decisions-in-comments
     section: Always
-    title: Always record non-obvious decisions in shared code (`libs/`, `base`, technical code) as comments or JSDoc next
+    title:
+      Always record non-obvious decisions in shared code (`libs/`, `base`, technical code) as comments or JSDoc next
       to the code
     why: Shared code has no domain docs page; the comment is the only place the next reader finds the reason.
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: "Non-domain/shared change (`libs/`, `base`, technical/shared code) → encode non-obvious product/technical
+        excerpt:
+          "Non-domain/shared change (`libs/`, `base`, technical/shared code) → encode non-obvious product/technical
           decisions as comments/JSDoc near the code"
         role: source
       - path: libs/authz/src/catalog.ts
@@ -56,7 +58,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: Any AI-doc file change (`AGENTS.md`, `.agents/skills/*`, agent/command docs) → use `ai-docs-guide` + apply
+        excerpt:
+          Any AI-doc file change (`AGENTS.md`, `.agents/skills/*`, agent/command docs) → use `ai-docs-guide` + apply
           lossless compression.
         role: source
       - path: .agents/skills/ai-docs-guide/SKILL.md
@@ -70,12 +73,14 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: "Keep single source of truth: code comments/JSDoc own implementation rationale; skills/docs reference source
+        excerpt:
+          "Keep single source of truth: code comments/JSDoc own implementation rationale; skills/docs reference source
           files or package READMEs instead of duplicating details."
         role: source
   - key: tests.writing-tests-bar
     section: Always
-    title: Always read `writing-tests` before writing, changing or reviewing a test; add one only when it meets at least 3
+    title:
+      Always read `writing-tests` before writing, changing or reviewing a test; add one only when it meets at least 3
       of costly, silent, likely to break, cheap
     why: The default is no new test; existing tests are not a style reference, and low-value tests slow CI without
       protecting anything.
@@ -98,7 +103,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: DB migrations → structural DDL only via `prisma migrate` from the schema (NEVER hand-write SQL/constraint;
+        excerpt:
+          DB migrations → structural DDL only via `prisma migrate` from the schema (NEVER hand-write SQL/constraint;
           manual SQL only for what Prisma can't model).
         role: source
       - path: models/AGENTS.md
@@ -111,7 +117,10 @@ rules:
     why: Prisma only applies SQL from its timestamped migration folders, so SQL anywhere else under `models/` is either
       dead or applied by hand, outside the migration history.
     paths: [models/**]
-    exclude: ["models/prisma/migrations/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*/migration.sql"]
+    exclude:
+      [
+        "models/prisma/migrations/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*/migration.sql",
+      ]
     check: { kind: path, forbid_new: "**/*.sql" }
     evidence:
       - path: models/AGENTS.md
@@ -140,7 +149,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: "New PR branch → get `gh api user --jq '.login'` → `<github-username-lowercase>/<title-kebab-case>`; never
+        excerpt:
+          "New PR branch → get `gh api user --jq '.login'` → `<github-username-lowercase>/<title-kebab-case>`; never
           generic owner prefixes (`fix/`, `feat/`, `chore/`)."
         role: source
       - path: .claude/commands/open-pr.md
@@ -155,7 +165,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: "New PR worktree → `git fetch origin trunk` → fresh branch + `git worktree add` from latest `origin/trunk`
+        excerpt:
+          "New PR worktree → `git fetch origin trunk` → fresh branch + `git worktree add` from latest `origin/trunk`
           under gitignored `.worktrees/`"
         role: source
       - path: AGENTS.md
@@ -203,7 +214,8 @@ rules:
   - key: ui.no-cxds-old-components
     section: Never
     title: Never render a CXDS `Old` component (`InputOld`, `SelectOld`, `ModalOld`...) in new code
-    why: The `Old` replicas are migration steps; biome's CXDS plugin only warns on some field imports, and this points at
+    why:
+      The `Old` replicas are migration steps; biome's CXDS plugin only warns on some field imports, and this points at
       every new usage line.
     paths: [web/**/*.tsx, pages/**/*.tsx, packages/**/*.tsx]
     exclude: ["**/*.stories.tsx", "**/*.test.tsx"]
@@ -292,7 +304,8 @@ rules:
     check: { kind: judgment }
     evidence:
       - path: AGENTS.md
-        excerpt: Complex feature with multiple reviewable concerns → the implementation plan MUST define PR decomposition
+        excerpt:
+          Complex feature with multiple reviewable concerns → the implementation plan MUST define PR decomposition
           before implementation
         role: source
       - path: .agents/skills/gh-stack/SKILL.md
@@ -317,7 +330,8 @@ rules:
       `packages/` or `libs/`
     why: Biome's `noConsole` allows only `console.error`; this points at the added line. Tests and scripts may print.
     paths: ["{web,servers,packages,libs}/**/*.{ts,tsx,js,jsx,mjs}"]
-    exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/test/**", "**/tests/**", "**/scripts/**", "**/e2e/**"]
+    exclude:
+      ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/test/**", "**/tests/**", "**/scripts/**", "**/e2e/**"]
     check: { kind: pattern, forbid: '\bconsole\.(?:log|debug|info)\s*\(', unless: '^\s*(?:\*|//|/\*)' }
     examples:
       bad:
@@ -333,7 +347,7 @@ rules:
         role: source
   - key: types.no-explicit-any
     section: Never
-    title: 'Never type a value as `any` (`: any`, `as any`, `<any>`, `any[]`) without a justification comment on the line'
+    title: "Never type a value as `any` (`: any`, `as any`, `<any>`, `any[]`) without a justification comment on the line"
     why: The type usually exists (`Static<typeof Schema>`, an SDK type), and `any` hides the mismatch from the compiler.
     paths: ["{servers,packages,libs,web,pages,workers}/**/*.{ts,tsx}", models/src/**/*.ts]
     exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts", "**/generated/**", "**/*.gen.ts"]
