@@ -216,6 +216,17 @@ A job type can state a starting need with `need_mb` (MiB, 1 to 1048576, like the
 scheduler reserves for a run while the key (job type on a machine) has fewer than 3 samples; from the third on, the
 median peak of its last 10 runs wins.
 
+A job type can run inside the environment of its run's cwd with `environment: { provider: devlanes, mode: with }`.
+Mode `with` starts `devlanes with -- <command> <args>` in the cwd, so the command runs in that worktree's lane (its
+ports, URLs and env) and the lane units it started stop when it ends; mode `status` runs the command as is. In both
+modes the executor first runs `devlanes status --json` in the cwd with the run's environment (at most 15 s), and the
+lane it names is stored on the run: `GET /api/projects/<p>/runs/<id>` has `environment` (provider, mode, `lane` with
+its reference, branch, path, state and unit URLs, or `error` saying why there is none), and `devrounds run show`
+prints it as `environment: devlanes with · lane <ref> <state> · <unit> <url>`. The command and the probe see only the
+job type's `env` allowlist, so it lists what devlanes needs (`roadmap/fixtures/job-types/lane.yaml`). DevRounds never
+starts or stops a lane outside such a run; an executor older than the `environment` protocol feature still runs mode
+`with`, with no lane on the run. Providers live in `control-plane/src/environments`; devlanes is the only one.
+
 A job is offered only once every job it depends on finished. When one fails or is stopped, every open job waiting on
 it, directly or through others, becomes `skipped` and is never offered. A job type's `retry` decides when a failed run
 is tried again: `on` lists the failure classes (default `[infra]`), `max_attempts` counts the attempts (default 1, no
