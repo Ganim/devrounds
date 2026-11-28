@@ -5,6 +5,8 @@
 // into a fresh tenant, then runs, every run placed by the scheduler:
 //   synthetic  tree-fixture with 3 lingering children: finished, stamped, swept, hidden, steps and 1000 log lines
 //   lint       `pnpm lint` of this repo through pnpm.cmd: finished and hidden
+//   lane       job type `lane` (environment devlanes, mode with) in roadmap/fixtures/environments: prints the
+//              LANE_MARK of this worktree's devrounds-e2e lane, and the run shows that lane; the lane is cleaned after
 //   schedule   `schedule set --every 60`, set first and checked after dag and retry: fires within 75 s, finishes
 //   dag        roadmap/fixtures/batches/dag.yaml twice in one directory: red build → test skipped, never offered;
 //              green build → test finished
@@ -59,6 +61,7 @@ const DAG_BATCH = join(ROOT, 'roadmap', 'fixtures', 'batches', 'dag.yaml')
 const GATE_FILE = join(ROOT, 'roadmap', 'fixtures', 'gates', 'e2e.yaml')
 const CONVENTIONS = join(ROOT, 'roadmap', 'fixtures', 'conventions')
 const CONVENTIONS_GATE = join(ROOT, 'roadmap', 'fixtures', 'gates', 'conventions-e2e.yaml')
+const LANE_DIR = join(ROOT, 'roadmap', 'fixtures', 'environments')
 const PORT = 4993
 const BASE = `http://127.0.0.1:${PORT}`
 const PROJECT = 'devrounds'
@@ -79,6 +82,7 @@ type RunJson = {
   outcome: { exitCode: number | null; failureClass: string | null; failureSummary: string | null }
   resources: { peak: number | null; swept: number | null; visibleWindows: number | null }
   steps: { name: string; outcome: string | null }[]
+  environment: { lane: { reference: string; path: string | null } | null; error: string | null } | null
 }
 type Proc = { ProcessId: number; CommandLine: string | null }
 type GateJson = {
@@ -282,7 +286,15 @@ async function main(): Promise<void> {
     const firstRun = await until('supervise to start run', 10_000, runProcess)
     log(`executor connected: supervise ${supervisePid}, run ${firstRun.ProcessId}`)
 
-    for (const file of ['synthetic.yaml', 'lint.yaml', 'orphan.yaml', 'dag-build.yaml', 'dag-test.yaml', 'flaky.yaml'])
+    for (const file of [
+      'synthetic.yaml',
+      'lint.yaml',
+      'orphan.yaml',
+      'dag-build.yaml',
+      'dag-test.yaml',
+      'flaky.yaml',
+      'lane.yaml',
+    ])
       await cli('jobtype', 'set', join(JOB_TYPES, file))
 
     // No --machine: the scheduler places each run on the one connected machine once it has reported.
@@ -346,6 +358,32 @@ async function main(): Promise<void> {
     assert.equal(lint.state, 'finished', JSON.stringify(lint))
     assert.equal(lint.resources.visibleWindows, 0, JSON.stringify(lint))
     log(`lint finished in ${lint.durations.runTimeMs} ms, visible windows 0, swept ${lint.resources.swept}`)
+
+    // lane
+    log('lane: node inside the devrounds-e2e lane of this worktree')
+    let laneReference: string | undefined
+    try {
+      const lane = await ended(await start('lane', LANE_DIR), 120_000)
+      assert.equal(lane.state, 'finished', JSON.stringify(lane))
+      const seen = lane.environment?.lane ?? assert.fail(JSON.stringify(lane.environment))
+      laneReference = seen.reference
+      // devlanes names lane 0 `main` and lane N `laneN` (lane.name in the project file).
+      const index = /^devrounds-e2e@(\d+)$/.exec(seen.reference)?.[1] ?? assert.fail(seen.reference)
+      const mark = `mark lane-${index === '0' ? 'main' : `lane${index}`}`
+      const out = await until('the lane mark in the log', 30_000, async () => {
+        const text = await cli('run', 'logs', lane.id)
+        return text.includes(mark) ? text : undefined
+      })
+      assert.ok(out.includes(mark), out)
+      log(`lane finished in lane ${seen.reference} (${seen.path}): "${mark}"`)
+    } finally {
+      // Lanes are ephemeral: `devlanes with` stopped what it started; this drops the lane it registered.
+      if (laneReference !== undefined) {
+        await run('devlanes', ['lane', 'clean', '--yes', laneReference], { cwd: LANE_DIR, windowsHide: true }).catch(
+          (err) => log(`lane clean failed: ${(err as Error).message}`),
+        )
+      }
+    }
 
     // schedule: set now, checked after dag and retry, so its 60 s run in parallel with them.
     type ScheduleJson = { key: string; lastJob: { id: string; state: string } | null }

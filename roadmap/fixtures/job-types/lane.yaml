@@ -1,0 +1,10 @@
+# The lane job of pnpm e2e (scripts/e2e/executor.e2e.ts), run with --cwd roadmap/fixtures/environments: mode `with`
+# runs it as `devlanes with -- node ...` in that directory's lane, so it prints the LANE_MARK only the lane sets, and
+# the run shows the lane its probe read. The env list is what devlanes and node need to find their daemon and files.
+key: lane
+command:
+  program: node
+  args: [-e, "console.log('mark', process.env.LANE_MARK)"]
+environment: { provider: devlanes, mode: with }
+env: [PATH, PATHEXT, SystemRoot, ComSpec, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP]
+timeout_s: 300

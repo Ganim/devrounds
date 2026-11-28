@@ -1,0 +1,6 @@
+# The devlanes project of pnpm e2e's lane stage (scripts/e2e/executor.e2e.ts, job type `lane`). No services: the lane
+# only gives its commands LANE_MARK, so a run that prints it ran inside this worktree's lane. One fixed file, as
+# devlanes refuses two project files of one name in a worktree.
+project: devrounds-e2e
+global_env:
+  LANE_MARK: "lane-${{ lane.name }}"
