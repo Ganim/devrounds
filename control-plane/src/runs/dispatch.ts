@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { sql } from 'kysely'
 import { environmentOffer, type JobTypeEnvironment } from '../environments/index.ts'
+import { agentCommand } from '../engines/agent-runtime/engine.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import type { ControlPlaneMessage } from '../executor/protocol.ts'
@@ -32,9 +33,13 @@ function offerRows(trx: Trx) {
       'runs.memory_need',
       'runs.trace_id',
       'runs.trace_span_id',
+      'runs.agent_session_id',
+      'runs.resumed_from_run_id',
       'jobs.cwd',
       'jobs.args as job_args',
       'jobs.env as job_env',
+      'jobs.input',
+      'jobs.created_by',
       'job_types.id as job_type_id',
       'job_types.key',
       'job_types.program',
@@ -43,6 +48,8 @@ function offerRows(trx: Trx) {
       'job_types.timeout_s',
       'job_types.env_set',
       'job_types.environment',
+      'job_types.agent',
+      'job_types.stall_s',
     ])
 }
 
@@ -59,11 +66,14 @@ function envSet(jobType: Record<string, string>, job: Record<string, string>): R
   return merged
 }
 
-function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null): Offer {
-  // Wrapped after the job's args are appended, so they reach the run's own command.
+// An agent run's args are the job type's then the provider's: the job's args feed the prompt (agentCommand), not argv.
+async function offerOf(trx: Trx, row: OfferRow, memoryNeed: bigint, traceParent: string | null): Promise<Offer> {
+  const agent = await agentCommand(trx, row)
+  const env = envSet(row.env_set as Record<string, string>, row.job_env as Record<string, string>)
+  // Wrapped after the job's (or the provider's) args are appended, so they reach the run's own command.
   const { command, probe } = environmentOffer(row.environment as JobTypeEnvironment | null, {
     program: row.program,
-    args: [...(row.args as string[]), ...(row.job_args as string[])],
+    args: [...(row.args as string[]), ...(agent ? agent.args : (row.job_args as string[]))],
   })
   return {
     type: 'Offer',
@@ -75,8 +85,9 @@ function offerOf(row: OfferRow, memoryNeed: bigint, traceParent: string | null):
       cwd: row.cwd,
       env_allow: row.env_allow,
       timeout_s: row.timeout_s,
-      env_set: envSet(row.env_set as Record<string, string>, row.job_env as Record<string, string>),
+      env_set: agent ? envSet(env, agent.env) : env,
       ...(probe ? { environment_probe: probe } : {}),
+      ...(row.stall_s === null ? {} : { stall_s: row.stall_s }),
     },
     // A need is a byte count well under 2^53, so the wire carries it as a JSON number.
     memory_need: Number(memoryNeed),
@@ -106,7 +117,7 @@ export async function claimedOffer(
       .where('id', '=', runId)
       .execute()
   }
-  return offerOf(row, memoryNeed, traceParent)
+  return offerOf(trx, row, memoryNeed, traceParent)
 }
 
 /**
@@ -133,7 +144,7 @@ export function pendingOffers(ctx: TenantCtx, machineId: string): Promise<Offer[
         row.memory_need === null
           ? await learnedNeed(trx, row.project_id, row.job_type_id, machineId)
           : BigInt(row.memory_need)
-      offers.push(offerOf(row, need, runTraceParent(row)))
+      offers.push(await offerOf(trx, row, need, runTraceParent(row)))
     }
     return offers
   })

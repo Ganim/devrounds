@@ -6,6 +6,7 @@ import type { WebSocket } from 'ws'
 import { bearer } from '../auth/tokens.ts'
 import { toDevRoundsError } from '../convert-error.ts'
 import type { Database } from '../db/schema.ts'
+import { ingestAgentSegment } from '../engines/agent-runtime/engine.ts'
 import { DevRoundsError } from '../errors/error.ts'
 import { type PairingLimiter, redeemPairingCode, resolveMachineToken } from '../machines/pairing.ts'
 import { CLOSE_REVOKED, recordHello, recordReport } from '../machines/service.ts'
@@ -166,6 +167,7 @@ async function applyEvent(
       // A segment changes no run state, so nobody waiting on the run is woken for it.
       if (event.kind === 'LogSegment') {
         await storeSegment({ ...ctx, trx }, event.run, event, { machineId })
+        await ingestAgentSegment(trx, ctx.tenantId, event.run, event)
         return none
       }
       const at = new Date(message.at)

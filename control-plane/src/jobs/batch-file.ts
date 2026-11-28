@@ -1,5 +1,6 @@
 import { type Static, Type } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
+import { JobInput } from '../engines/agent-runtime/contract.ts'
 import { EnvValues, JobArgs } from '../job-types/file.ts'
 import { type Issue, parseYamlFile } from '../yaml-file.ts'
 
@@ -20,6 +21,8 @@ export const BatchJob = Type.Object(
     depends_on: Type.Optional(Type.Array(Key, { maxItems: 200 })),
     args: Type.Optional(JobArgs),
     env: Type.Optional(EnvValues),
+    // Values an agent job type's prompt reads as {{input.<key>}} (engines/agent-runtime/prompt.ts).
+    input: Type.Optional(JobInput),
     cache_key: Type.Optional(Key),
   },
   { additionalProperties: false },

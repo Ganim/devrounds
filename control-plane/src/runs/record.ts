@@ -1,6 +1,7 @@
 import { sql, type Updateable } from 'kysely'
 import type { JobState, RunState, RunsTable } from '../db/schema.ts'
 import { type JobTypeEnvironment, runEnvironment } from '../environments/index.ts'
+import { settleAgentRun } from '../engines/agent-runtime/engine.ts'
 import { DevRoundsError, fail } from '../errors/error.ts'
 import type { ControlPlaneMessage, RunEvent } from '../executor/protocol.ts'
 import { findJobType } from '../job-types/service.ts'
@@ -406,7 +407,7 @@ export async function applyRunEvent(
           .select(['key', 'classify'])
           .where('id', '=', row.job_type_id)
           .executeTakeFirstOrThrow()
-        const result = await classifyRun(
+        const classified = await classifyRun(
           { reason: event.reason, exitCode: event.exit_code, tail: event.tail, summary: event.summary },
           jobType.classify as ClassifyRule[],
           {
@@ -414,6 +415,8 @@ export async function applyRunEvent(
               log.warn({ jobType: jobType.key, rule }, 'classify rule pattern ran out of time and counts as no match'),
           },
         )
+        // An agent run ends by its result, usage and session, read from its agent_events (engines/agent-runtime).
+        const result = (await settleAgentRun(trx, ctx.tenantId, runId, event.reason, classified)) ?? classified
         await update({
           ...move(END[result.state]),
           exit_code: event.exit_code,
@@ -458,6 +461,13 @@ export async function failRevokedRuns(
   runId?: string,
 ): Promise<string[]> {
   const revoked = `machine ${machine.name} was revoked`
+  // A queued resume of an agent session that lived on this machine starts a new session on any machine instead.
+  await trx
+    .updateTable('runs')
+    .set({ pinned_machine_id: null, resumed_from_run_id: null })
+    .where('state', '=', 'queued')
+    .where('pinned_machine_id', '=', machine.id)
+    .execute()
   // One statement locks every run row before any job row is touched below (lock order run → job).
   const { rows } = await sql<{ id: string; tenant_id: string; job_id: string; was: RunState; pinned: boolean }>`
     with target as (

@@ -2,6 +2,7 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
 import { Type } from '@sinclair/typebox'
 import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.ts'
+import { JobInput } from '../engines/agent-runtime/contract.ts'
 import { fail } from '../errors/error.ts'
 import type { Sessions } from '../executor/gateway.ts'
 import { EnvValues, JobArgs, parseJobTypeFile } from '../job-types/file.ts'
@@ -61,13 +62,14 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
             task: Type.Optional(Key),
             args: Type.Optional(JobArgs),
             env: Type.Optional(EnvValues),
+            input: Type.Optional(JobInput),
           },
           { additionalProperties: false },
         ),
       },
     },
     (request, reply) => {
-      const { jobType, cwd, machine, queue, task, args, env } = request.body
+      const { jobType, cwd, machine, queue, task, args, env, input } = request.body
       // The Offer comes from the scheduler, woken at the commit, so a replayed key offers nothing again.
       return mutateIdempotent(db, request, reply, (ctx) =>
         enqueueRun(ctx, {
@@ -79,6 +81,7 @@ export const runRoutes: FastifyPluginAsyncTypebox<{
           taskKey: task,
           args,
           env,
+          input,
         }),
       )
     },

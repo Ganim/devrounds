@@ -177,6 +177,20 @@ export async function readRunLog(
   return { lines, nextCursor: null }
 }
 
+/** The lines of one shipped segment (a LogSegment event's zstd_base64), decompressed within SEGMENT_READ_BOUND. */
+export async function segmentLines(zstdBase64: string): Promise<LogLine[]> {
+  const text = (
+    await zstdDecompress(Buffer.from(zstdBase64, 'base64'), { maxOutputLength: SEGMENT_READ_BOUND })
+  ).toString('utf8')
+  return text
+    .split('\n')
+    .filter((json) => json !== '')
+    .map((json) => {
+      const line = JSON.parse(json) as StoredLine
+      return { seq: line.seq, timestampMs: line.timestamp_ms, text: line.text, level: line.level }
+    })
+}
+
 /**
  * Deletes every segment created more than `retentionDays` before `now`, row and file; returns how many. The expired
  * rows of all tenants come from expired_log_segments (0006); each tenant's are deleted inside that tenant, and the

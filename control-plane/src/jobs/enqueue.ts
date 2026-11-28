@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { Static } from '@sinclair/typebox'
 import { sql } from 'kysely'
 import type { FailureClass, JobState, RunState } from '../db/schema.ts'
+import type { AgentDef } from '../engines/agent-runtime/contract.ts'
+import { renderPrompt } from '../engines/agent-runtime/prompt.ts'
 import { fail } from '../errors/error.ts'
 import { sameEnvName } from '../job-types/file.ts'
 import { findJobType } from '../job-types/service.ts'
@@ -25,6 +27,8 @@ export type EnqueueInput = {
   args?: string[]
   // Values of names the job type lists in job_env, over its env_set.
   env?: Record<string, string>
+  // Values an agent job type's prompt reads as {{input.<key>}}; only an agent job type takes them.
+  input?: Record<string, string>
   // The caller's key of the job's inputs; a recent finished run with it answers for the job (cache.ts).
   cacheKey?: string
 }
@@ -59,6 +63,7 @@ type JobValues = {
   // JSON, for the jsonb columns.
   args: string
   env: string
+  input: string
   cache_key: string | null
 }
 
@@ -113,6 +118,17 @@ export function resolver(trx: Trx, projectId: string) {
         })
       }
     }
+    const input = i.input ?? {}
+    const agent = type.agent as AgentDef | null
+    if (agent === null && Object.keys(input).length > 0) {
+      fail('DR101', { path: `${path}/input`, reason: `job type ${type.key} is not an agent job type` })
+    }
+    // Rendered here only to refuse a job whose prompt cannot be filled; dispatch renders it for the Offer.
+    if (agent !== null) {
+      for (const template of [agent.prompt, agent.system_prompt_append]) {
+        if (template !== undefined) renderPrompt(template, { args, input }, path)
+      }
+    }
     const q = await queue(i.queueKey ?? DEFAULT_QUEUE)
     // A queue that lists no job types takes every one.
     if (q.allowed.size > 0 && !q.allowed.has(type.id)) fail('DR153', { jobType: type.key, queue: q.key })
@@ -124,6 +140,7 @@ export function resolver(trx: Trx, projectId: string) {
       cwd: i.cwd,
       args: JSON.stringify(args),
       env: JSON.stringify(i.env ?? {}),
+      input: JSON.stringify(input),
       cache_key: i.cacheKey ?? null,
     }
   }
@@ -214,6 +231,7 @@ export async function insertBatch(
         taskKey: job.task,
         args: job.args,
         env: job.env,
+        input: job.input,
         cacheKey: job.cache_key,
       },
       `${listPath}/${index}`,

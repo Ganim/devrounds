@@ -74,6 +74,8 @@ export async function placeable(trx: Trx, sessions: Sessions, tenantId: string, 
 // Byte counts are numbers in the API: a machine's memory is far below 2^53.
 export type Unplaced =
   | { reason: 'no_machine' }
+  // A daily agent budget of the project is spent (engines/agent-runtime/budgets.ts); the run waits for the next day.
+  | { reason: 'budget' }
   | { reason: 'machine_offline'; machine: string }
   | { reason: 'memory'; machine: string; needBytes: number; freeBytes: number }
 
@@ -95,8 +97,17 @@ export async function unplacedReasons(
     const rows = await trx
       .selectFrom('runs as r')
       .innerJoin('jobs as j', 'j.id', 'r.job_id')
-      .leftJoin('machines as m', 'm.id', 'j.machine_id')
-      .select(['r.id', 'r.project_id', 'r.job_type_id', 'j.machine_id as pin', 'm.name as pin_name'])
+      .innerJoin('job_types as jt', 'jt.id', 'r.job_type_id')
+      // A resume of an agent session is pinned to the machine that holds it, like a job pin (engines/agent-runtime).
+      .leftJoin('machines as m', (join) => join.on(sql<boolean>`m.id = coalesce(j.machine_id, r.pinned_machine_id)`))
+      .select([
+        'r.id',
+        'r.project_id',
+        'r.job_type_id',
+        sql<string | null>`coalesce(j.machine_id, r.pinned_machine_id)`.as('pin'),
+        'm.name as pin_name',
+        sql<boolean>`jt.agent is not null and public.run_over_budget(r.id)`.as('over_budget'),
+      ])
       .where('r.id', 'in', runIds)
       .where('r.state', '=', 'queued')
       .execute()
@@ -118,6 +129,11 @@ export async function unplacedReasons(
           ).map((m) => [m.id, m.name]),
     )
     for (const row of rows) {
+      // A daily agent budget holds the run before any machine is looked at (run_over_budget, migrations/0033).
+      if (row.over_budget) {
+        reasons.set(row.id, { reason: 'budget' })
+        continue
+      }
       const candidates = row.pin === null ? machines : machines.filter((m) => m.machineId === row.pin)
       if (candidates.length === 0) {
         reasons.set(

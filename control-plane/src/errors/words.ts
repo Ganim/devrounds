@@ -172,6 +172,12 @@ export const WORDS: Record<ErrorCode, Words> = {
     httpStatus: 409,
     keys: ['home', 'pid'],
   },
+  DR353: {
+    text: 'Run {run} already reported a result.',
+    hint: 'A run reports one result; read it with `devrounds run show {run}`. Retry the run to report another.',
+    httpStatus: 409,
+    keys: ['run'],
+  },
   DR401: {
     text: 'Missing or invalid API token.',
     hint: 'Send `Authorization: Bearer <token>` with a token from `devrounds-admin token create`; a revoked token no longer works.',

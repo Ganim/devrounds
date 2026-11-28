@@ -1,6 +1,7 @@
 import { type RawBuilder, sql } from 'kysely'
 import type { JobState } from '../db/schema.ts'
 import { settleFlowJob } from '../flows/engine.ts'
+import { resumeOf } from '../engines/agent-runtime/engine.ts'
 import { settleGate } from '../gates/settle.ts'
 import type { Trx } from '../planning/resolve.ts'
 import { notifyScheduler } from '../scheduler/notify.ts'
@@ -13,6 +14,7 @@ const MAX_BACKOFF_S = 3600
  * `notBefore` (now by default), and opens the job again; returns the run id. Used by settleJob, by a person's retryRun
  * and, with cause requeue, by the offer expiry (scheduler/expiry.ts), by a revoke for a run that never started and by
  * retryRun for the skipped dependents it reopens (runs/record.ts).
+ * A retry of an agent job resumes the session its last run left, on that run's machine (resumeOf).
  */
 export async function queueRetry(
   trx: Trx,
@@ -42,6 +44,7 @@ export async function queueRetry(
       cause,
       not_before: notBefore,
       ...job,
+      ...(await resumeOf(trx, jobId, cause)),
     })
     .returning('id')
     .executeTakeFirstOrThrow()

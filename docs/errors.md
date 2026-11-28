@@ -226,6 +226,14 @@ Another executor is running for {home} (pid {pid}).
 
 Stop the executor with pid {pid}, or give this one another home with DEVROUNDS_EXECUTOR_HOME.
 
+## DR353
+
+Run {run} already reported a result.
+
+### Fix
+
+A run reports one result; read it with `devrounds run show {run}`. Retry the run to report another.
+
 ## DR401
 
 Missing or invalid API token.

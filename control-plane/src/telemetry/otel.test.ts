@@ -100,5 +100,6 @@ function finishedView(id: string, at: Date, later: Date): RunView {
     resources: { peak: 1, p95: 1, p50: 1, cpuSeconds: 1, swept: 0, visibleWindows: 0 },
     steps: [],
     delays: [],
+    agent: null,
   }
 }

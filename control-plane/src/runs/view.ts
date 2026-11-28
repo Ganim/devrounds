@@ -1,4 +1,4 @@
-import type { DelayReason, FailureClass, RunCause, RunState, StepOutcome } from '../db/schema.ts'
+import type { DelayReason, FailureClass, RunCause, RunState, StepOutcome, UsageSource } from '../db/schema.ts'
 import type { RunEnvironment } from '../environments/index.ts'
 import { fail } from '../errors/error.ts'
 import { findProject, run, type TenantCtx, type Trx } from '../planning/resolve.ts'
@@ -53,6 +53,24 @@ export type RunView = {
   }
   steps: { step: number; name: string; startedAt: Date; finishedAt: Date | null; outcome: StepOutcome | null }[]
   delays: { at: Date; reason: DelayReason; needBytes: number; availableBytes: number | null; position: number }[]
+  // Null for a run of a plain command job type (engines/agent-runtime).
+  agent: AgentRunView | null
+}
+
+export type AgentRunView = {
+  sessionId: string | null
+  // The run whose session this one resumed.
+  resumedFrom: string | null
+  // Null until the run ended; source missing when the runtime reported none.
+  usage: {
+    source: UsageSource
+    tokensIn: number | null
+    tokensOut: number | null
+    cacheRead: number | null
+    cacheWrite: number | null
+    costUsd: number | null
+  } | null
+  result: { label: string; data: unknown } | null
 }
 
 // One row of GET /runs (api/view-routes.ts listRuns).
@@ -104,12 +122,18 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
     .leftJoin('machines as m', 'm.id', 'r.machine_id')
     .leftJoin('tasks as t', 't.id', 'j.task_id')
     .selectAll('r')
-    .select(['jt.key as job_type_key', 'm.name as machine_name', 'q.key as queue_key', 't.key as task_key'])
+    .select([
+      'jt.key as job_type_key',
+      'm.name as machine_name',
+      'q.key as queue_key',
+      't.key as task_key',
+      'jt.agent as job_type_agent',
+    ])
     .where('r.id', '=', runId)
     .$if(projectId !== undefined, (query) => query.where('r.project_id', '=', projectId as string))
     .executeTakeFirst()
   if (!row) fail('DR201', { kind: 'run', key: runId })
-  const [steps, delays] = await Promise.all([
+  const [steps, delays, result] = await Promise.all([
     trx
       .selectFrom('run_steps')
       .select(['step', 'name', 'started_at', 'finished_at', 'outcome'])
@@ -122,6 +146,7 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
       .where('run_id', '=', runId)
       .orderBy('id')
       .execute(),
+    trx.selectFrom('run_results').select(['label', 'data']).where('run_id', '=', runId).executeTakeFirst(),
   ])
   return {
     id: row.id,
@@ -176,5 +201,24 @@ export async function loadRunView(trx: Trx, runId: string, projectKey?: string):
       availableBytes: num(d.available_bytes),
       position: d.position,
     })),
+    agent:
+      row.job_type_agent === null
+        ? null
+        : {
+            sessionId: row.agent_session_id,
+            resumedFrom: row.resumed_from_run_id,
+            usage:
+              row.usage_source === null
+                ? null
+                : {
+                    source: row.usage_source,
+                    tokensIn: num(row.tokens_in),
+                    tokensOut: num(row.tokens_out),
+                    cacheRead: num(row.tokens_cache_read),
+                    cacheWrite: num(row.tokens_cache_write),
+                    costUsd: num(row.cost_usd),
+                  },
+            result: result ? { label: result.label, data: result.data } : null,
+          },
   }
 }
