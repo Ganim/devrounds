@@ -19,7 +19,7 @@ an Authorization header still decides alone. Admitted cookie writes run the same
 
 ## P5-T11
 
-Migration `0053_member_prefs`: PK `(tenant_id, member_id, project_id, name)`, composite FKs to members and projects,
+Migration `0031_member_prefs (renumbered at merge)`: PK `(tenant_id, member_id, project_id, name)`, composite FKs to members and projects,
 `isolate()` (forced RLS + tenant policy), FK index on project, name check. `prefs/service.ts` + `api/pref-routes.ts`:
 `GET /api/projects/:key/prefs`, `GET|PUT /api/projects/:key/prefs/:name` (body `{ value }`, ≤ 64 KiB JSON, name
 `^[a-z][a-z0-9.-]{0,99}$`, Idempotency-Key accepted, last write wins, unset reads `{ value: null, updatedAt: null }`).
