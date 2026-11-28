@@ -10,7 +10,12 @@ import { endpoints, PROJECT_PREFIX } from './data/contract.ts'
 
 // A route pattern as a regex over concrete paths: `:name` is one segment, `*` the rest.
 const patternOf = (url: string): RegExp =>
-  new RegExp(`^${url.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/:\w+/g, '[^/]+').replace(/\*/g, '.*')}$`)
+  new RegExp(
+    `^${url
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/:\w+/g, '[^/]+')
+      .replace(/\*/g, '.*')}$`,
+  )
 
 test('every endpoint of data/contract.ts has a route on the server', async () => {
   // Only the route registration of /api/auth/* is wanted; no request reaches these.

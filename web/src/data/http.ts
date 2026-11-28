@@ -25,7 +25,9 @@ export function urlOf(
   query?: URLSearchParams,
 ): string {
   const filled = endpoint.path.replace(/:(\w+)/g, (_, name: string) => encodeURIComponent(String(params[name])))
-  const path = endpoint.project ? `${PROJECT_PREFIX.replace(':key', encodeURIComponent(getProject()))}${filled}` : filled
+  const path = endpoint.project
+    ? `${PROJECT_PREFIX.replace(':key', encodeURIComponent(getProject()))}${filled}`
+    : filled
   return query === undefined ? path : `${path}?${query}`
 }
 

@@ -11,7 +11,14 @@ export function Pill({
   return (
     <>
       <span className={`pill ${state}`}>{label}</span>
-      {notes.map((note) => (note ? <span key={note} className="muted"> {note}</span> : null))}
+      {notes.map((note) =>
+        note ? (
+          <span key={note} className="muted">
+            {' '}
+            {note}
+          </span>
+        ) : null,
+      )}
     </>
   )
 }

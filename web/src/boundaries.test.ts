@@ -26,7 +26,8 @@ const PACKAGE_OWNER: [prefix: string, layer: Layer][] = [['@tanstack/', 'data']]
 // The meta-tests at the root read the whole tree and build the server; they are not part of the bundle.
 const ROOT_TESTS = ['boundaries.test.ts', 'contract.test.ts']
 
-const IMPORT = /(?:^|[\n;])\s*(import|export)\s+(type\s+)?(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]/g
+const IMPORT =
+  /(?:^|[\n;])\s*(import|export)\s+(type\s+)?(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]/g
 
 type Source = { path: string; text: string }
 
