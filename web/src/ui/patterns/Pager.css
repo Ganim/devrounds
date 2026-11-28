@@ -1,0 +1,10 @@
+.dr-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+.dr-pager__page {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}

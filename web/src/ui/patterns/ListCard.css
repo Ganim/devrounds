@@ -1,0 +1,113 @@
+.dr-listcard {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6) var(--space-5) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: var(--hair) solid var(--border);
+  background: var(--surface-1);
+  overflow: hidden;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.dr-listcard:hover {
+  background: var(--surface-2);
+}
+.dr-listcard.is-selected {
+  border-color: var(--state-warn);
+  background: color-mix(in srgb, var(--state-warn) 6%, transparent);
+}
+.dr-listcard.has-progress {
+  padding-bottom: calc(var(--space-5) + 4px);
+}
+.dr-listcard__body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+div.dr-listcard__body {
+  cursor: default;
+}
+/* The whole card is the target of the body link or button; grip and trailing controls sit above it. */
+.dr-listcard__body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+div.dr-listcard__body::after {
+  display: none;
+}
+.dr-listcard .dr-grip,
+.dr-listcard__trailing {
+  position: relative;
+  z-index: 1;
+}
+.dr-listcard__status {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.dr-listcard__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.dr-listcard__title {
+  overflow: hidden;
+  font-weight: 600;
+  font-size: var(--text-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dr-listcard__meta {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dr-listcard__trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 14px;
+}
+.dr-listcard__edge {
+  position: absolute;
+  left: var(--space-6);
+  right: var(--space-6);
+  bottom: var(--space-4);
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--track);
+  overflow: hidden;
+}
+.dr-listcard__edge b {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent-gradient);
+  transition: width var(--dur-slow) var(--ease);
+}
+.dr-listcard__edge.is-toned b {
+  background: var(--tone);
+}

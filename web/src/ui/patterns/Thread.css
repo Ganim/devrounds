@@ -1,0 +1,57 @@
+.dr-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3) 2px;
+}
+.dr-thread__empty {
+  margin: auto;
+  color: var(--text-dim);
+  font-size: var(--text-md);
+}
+.dr-bubble {
+  max-width: min(78ch, 88%);
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-lg);
+  border: var(--hair) solid var(--border);
+  background: var(--read-bg);
+  color: var(--read);
+  font-size: var(--text-base);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.dr-bubble--them {
+  align-self: flex-start;
+  border-bottom-left-radius: 6px;
+}
+.dr-bubble--me {
+  align-self: flex-end;
+  background: var(--read-sent);
+  border-bottom-right-radius: 6px;
+}
+.dr-bubble--system {
+  align-self: center;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-5);
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.dr-bubble__meta {
+  margin-bottom: 2px;
+  color: var(--read-meta);
+  font-size: 12px;
+}
+.dr-bubble.is-pending {
+  opacity: 0.65;
+}
+.dr-bubble.is-failed {
+  border-color: color-mix(in srgb, var(--state-danger) 45%, transparent);
+}
+.dr-bubble.is-failed .dr-bubble__meta {
+  color: var(--danger-text);
+}

@@ -1,0 +1,53 @@
+.dr-composer {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+}
+.dr-composer__suggestions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: var(--z-popover);
+  max-height: min(50dvh, 420px);
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-lg);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--popover);
+  box-shadow: var(--shadow-1);
+}
+.dr-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.dr-composer__input {
+  flex: 1;
+  min-width: 0;
+  max-height: 40dvh;
+  padding: 11px var(--space-6);
+  border-radius: var(--radius-md);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-base);
+  line-height: 1.45;
+  resize: none;
+  outline: none;
+}
+.dr-composer__input:focus {
+  border-color: var(--focus-ring);
+}
+.dr-composer__input::placeholder {
+  color: var(--text-dim);
+}
+.dr-composer .dr-iconbtn--primary {
+  width: var(--touch);
+  height: var(--touch);
+}
+@media (max-width: 899px) {
+  .dr-composer__input {
+    font-size: 16px;
+  }
+}
