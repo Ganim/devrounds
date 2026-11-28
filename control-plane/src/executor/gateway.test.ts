@@ -53,7 +53,13 @@ async function paired(name = 'build-01') {
   const tenant = await t.newTenant()
   const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
   const { code } = await createPairingCode(ctx, name)
-  const machine = await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  const machine = await redeemPairingCode(
+    t.db,
+    new PairingLimiter(),
+    code,
+    { os: 'windows', version: '0.1.0' },
+    '127.0.0.1',
+  )
   const human = await createToken(t.admin, tenant.tenantId, 'human', 'human')
   return { tenant, machine, human }
 }
@@ -314,7 +320,7 @@ test('an event for a run of another machine (DR201) is logged and acked, and the
   const { tenant, machine } = await paired()
   const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
   const { code } = await createPairingCode(ctx, 'build-02')
-  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1')
   const [own, other] = await offeredRuns(tenant, 'build-01', 'build-02')
   const lines: string[] = []
   const logged = buildServer({ db: t.db, logger: { level: 'warn', stream: { write: (line) => lines.push(line) } } })
@@ -444,7 +450,7 @@ test('after HelloAck, the Offer of every run of this machine still offered is se
   const { tenant, machine } = await paired()
   const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
   await createPairingCode(ctx, 'build-02').then(({ code }) =>
-    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }),
+    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1'),
   )
   const [offered, admitted] = await offeredRuns(tenant, 'build-01', 'build-01', 'build-02')
   const session = await helloAcked(machine.token)
@@ -545,7 +551,7 @@ test('HelloAck lists withdrawn runs of the last 7 days only to an executor with 
   const { tenant, machine } = await paired()
   const ctx = { db: t.db, tenantId: tenant.tenantId, actor: tenant.human }
   await createPairingCode(ctx, 'build-02').then(({ code }) =>
-    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }),
+    redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1'),
   )
   const [recent, old, offered, other] = await offeredRuns(tenant, 'build-01', 'build-01', 'build-01', 'build-02')
   await withdraw(recent, '6 days')

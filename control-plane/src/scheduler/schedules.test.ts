@@ -301,7 +301,7 @@ test('saving the same schedule again keeps next_due_at; changing its timing rest
 test('a schedule pinned to a revoked machine makes no job and moves its clock', async () => {
   const s = await setup()
   const { code } = await createPairingCode(s.ctx, 'build-01')
-  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1')
   await s.put('pinned', { machine: 'build-01' })
   await revokeMachine(s.ctx, 'build-01')
   const now = new Date()

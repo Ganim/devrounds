@@ -400,7 +400,9 @@ export const executorRoutes: FastifyPluginAsyncTypebox<GatewayOptions> = async (
     },
     (request) => {
       const { code, os, version } = request.body
-      return redeemPairingCode(opts.db, opts.limiter, code, { os, version })
+      // Without trustProxy (buildServer sets none) request.ip is the socket's remote address, never X-Forwarded-For:
+      // a guesser cannot pick a fresh failure bucket per request by sending a header.
+      return redeemPairingCode(opts.db, opts.limiter, code, { os, version }, request.ip)
     },
   )
 

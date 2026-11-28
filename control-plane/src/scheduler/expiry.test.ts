@@ -45,7 +45,13 @@ async function setup(retry?: JobTypeFile['retry']) {
     ...(retry === undefined ? {} : { retry }),
   })
   const { code } = await createPairingCode(ctx, 'build-01')
-  const machine = await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  const machine = await redeemPairingCode(
+    t.db,
+    new PairingLimiter(),
+    code,
+    { os: 'windows', version: '0.1.0' },
+    '127.0.0.1',
+  )
   const enqueue = async () => (await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:\\work' })).id
   // Claims the next run for build-01 with an offer of `timeoutS` seconds.
   const claim = async (timeoutS = 120) =>

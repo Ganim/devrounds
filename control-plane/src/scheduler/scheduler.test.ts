@@ -93,7 +93,9 @@ async function setup(names = ['build-01']) {
   const machines = []
   for (const name of names) {
     const { code } = await createPairingCode(ctx, name)
-    machines.push(await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }))
+    machines.push(
+      await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1'),
+    )
   }
   const enqueue = async (machineName?: string) =>
     (await enqueueRun(ctx, { projectKey, jobTypeKey: 'check', cwd: 'C:\\work', machineName })).id

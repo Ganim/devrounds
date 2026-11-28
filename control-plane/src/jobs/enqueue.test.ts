@@ -38,7 +38,7 @@ async function setup() {
     await putJobType(ctx, projectKey, { key, command: { program: 'pnpm', args: [key] } })
   }
   const { code } = await createPairingCode(ctx, 'build-01')
-  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1')
   return { t, tenant, ctx }
 }
 

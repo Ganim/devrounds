@@ -39,7 +39,13 @@ async function setup() {
   }
   await putQueue(ctx, projectKey, { key: 'nightly' })
   const { code } = await createPairingCode(ctx, 'build-01')
-  const { machineId } = await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  const { machineId } = await redeemPairingCode(
+    t.db,
+    new PairingLimiter(),
+    code,
+    { os: 'windows', version: '0.1.0' },
+    '127.0.0.1',
+  )
   const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
   const get = async (url: string) => {
     const res = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } })

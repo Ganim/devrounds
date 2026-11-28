@@ -20,6 +20,9 @@ export const MACHINE_NAME = '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$'
 const MAX_FAILURES = 5
 const FAILURE_WINDOW_MS = 10 * 60_000
 const LOCK_MS = 10 * 60_000
+// Across all sources: ten sources' worth of lockouts per window. Bounds guessing from many addresses, and with it the
+// per-source map (see PairingLimiter).
+const GLOBAL_MAX_FAILURES = 50
 
 function sha256(text: string): Buffer {
   return createHash('sha256').update(text).digest()
@@ -29,50 +32,89 @@ export function requireHuman(ctx: Ctx, action: string): void {
   if (ctx.actor.kind !== 'human') fail('DR453', { action })
 }
 
+type SourceState = { failures: number[]; lockedUntil: number; inFlight: number }
+
 /**
- * Failed redemptions in this process: 5 within 10 min lock pairing for everyone for 10 min. Redemption happens before
- * any tenant is known, so the lock cannot be per tenant; it bounds guessing at 5 tries per 10 min against codes that
- * live 10 min, out of 32^8 values. In memory on purpose: one control plane process, and a restart that clears it
- * costs an attacker far more time than it saves.
+ * Failed redemptions in this process, keyed by source address: 5 within 10 min from one source lock pairing for that
+ * source for 10 min, so one source's guesses never lock pairing for another. Redemption happens before any tenant is
+ * known, so the key cannot be the tenant. A global ceiling of 50 failures per sliding 10 min refuses every source while
+ * reached; it bounds guessing from many addresses at 50 tries per 10 min against codes that live 10 min, out of 32^8
+ * values. In memory on purpose: one control plane process, and a restart that clears it costs an attacker far more
+ * time than it saves.
+ *
+ * The map holds only sources with a failure in the window, a lock or an attempt in flight; every reserve evicts the
+ * rest. A source enters only by taking a slot under the global ceiling, so at most about 2x GLOBAL_MAX_FAILURES
+ * entries live at once (one window of failures plus the locks set in the window before), whatever the number of
+ * addresses.
  */
 export class PairingLimiter {
   #clock: () => number
+  #sources = new Map<string, SourceState>()
   #failures: number[] = []
-  #lockedUntil = 0
   #inFlight = 0
 
   constructor(clock: () => number = Date.now) {
     this.#clock = clock
   }
 
+  /** How many sources the limiter holds state for; tests check the memory bound with it. */
+  get trackedSources(): number {
+    return this.#sources.size
+  }
+
   /**
-   * Takes a slot before the redemption awaits, so a burst of concurrent guesses cannot all pass before the first
-   * failure lands: DR451 while locked, or while recent failures plus attempts in flight already reach the limit.
-   * Call the returned function once, with whether the attempt counts as a failure.
+   * Takes a slot for `source` before the redemption awaits, so a burst of concurrent guesses cannot all pass before
+   * the first failure lands: DR451 while the source is locked, or while its recent failures plus attempts in flight
+   * already reach the limit, and the same against the global ceiling. Call the returned function once, with whether
+   * the attempt counts as a failure.
    */
-  reserve(): (failure: boolean) => void {
+  reserve(source: string): (failure: boolean) => void {
     const now = this.#clock()
-    const left = this.#lockedUntil - now
+    this.#evict(now)
+    const state = this.#sources.get(source) ?? { failures: [], lockedUntil: 0, inFlight: 0 }
+    const left = state.lockedUntil - now
     if (left > 0) fail('DR451', { minutes: Math.ceil(left / 60_000) })
-    this.#failures = this.#failures.filter((at) => now - at < FAILURE_WINDOW_MS)
     // Not locked yet, but the attempts in flight would lock it if they fail: answer as the lock would.
-    if (this.#failures.length + this.#inFlight >= MAX_FAILURES) fail('DR451', { minutes: LOCK_MS / 60_000 })
+    if (state.failures.length + state.inFlight >= MAX_FAILURES) fail('DR451', { minutes: LOCK_MS / 60_000 })
+    if (this.#failures.length + this.#inFlight >= GLOBAL_MAX_FAILURES) {
+      // Sliding: it opens again as the oldest failure leaves the window.
+      const [oldest] = this.#failures
+      const reopensIn = oldest === undefined ? FAILURE_WINDOW_MS : oldest + FAILURE_WINDOW_MS - now
+      fail('DR451', { minutes: Math.ceil(reopensIn / 60_000) })
+    }
+    this.#sources.set(source, state)
+    state.inFlight++
     this.#inFlight++
     let settled = false
     return (failure) => {
       if (settled) return
       settled = true
+      state.inFlight--
       this.#inFlight--
-      if (failure) this.#failed()
+      if (failure) this.#failed(state)
+      else if (state.failures.length === 0 && state.lockedUntil === 0 && state.inFlight === 0) {
+        this.#sources.delete(source)
+      }
     }
   }
 
-  #failed(): void {
+  // The entry is still in the map: #evict never drops a source with an attempt in flight.
+  #failed(state: SourceState): void {
     const now = this.#clock()
-    this.#failures = [...this.#failures.filter((at) => now - at < FAILURE_WINDOW_MS), now]
-    if (this.#failures.length >= MAX_FAILURES) {
-      this.#lockedUntil = now + LOCK_MS
-      this.#failures = []
+    this.#failures.push(now)
+    state.failures = [...state.failures.filter((at) => now - at < FAILURE_WINDOW_MS), now]
+    if (state.failures.length >= MAX_FAILURES) {
+      state.lockedUntil = now + LOCK_MS
+      state.failures = []
+    }
+  }
+
+  #evict(now: number): void {
+    this.#failures = this.#failures.filter((at) => now - at < FAILURE_WINDOW_MS)
+    for (const [source, state] of this.#sources) {
+      state.failures = state.failures.filter((at) => now - at < FAILURE_WINDOW_MS)
+      if (state.lockedUntil <= now) state.lockedUntil = 0
+      if (state.failures.length === 0 && state.lockedUntil === 0 && state.inFlight === 0) this.#sources.delete(source)
     }
   }
 }
@@ -109,15 +151,17 @@ export async function createPairingCode(ctx: Ctx, machineName: string): Promise<
 
 /**
  * Trades a pairing code for a machine and its token. The token's plaintext is returned once, for the executor to keep;
- * only its SHA-256 is stored. An unknown, expired or used code, and a malformed one, count as a failure (DR450).
+ * only its SHA-256 is stored. An unknown, expired or used code, and a malformed one, count as a failure (DR450) of
+ * `source`, the caller's address.
  */
 export async function redeemPairingCode(
   db: Kysely<Database>,
   limiter: PairingLimiter,
   code: string,
   executor: { os: string; version: string },
+  source: string,
 ): Promise<{ machineId: string; machineName: string; token: string }> {
-  const settle = limiter.reserve()
+  const settle = limiter.reserve(source)
   let failure = true
   try {
     const normalized = code.trim().toUpperCase()

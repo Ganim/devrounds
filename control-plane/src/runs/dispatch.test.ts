@@ -83,7 +83,13 @@ async function setup() {
     timeout_s: 600,
   })
   const { code: pairing } = await createPairingCode(ctx, 'build-01')
-  const machine = await redeemPairingCode(t.db, new PairingLimiter(), pairing, { os: 'windows', version: '0.1.0' })
+  const machine = await redeemPairingCode(
+    t.db,
+    new PairingLimiter(),
+    pairing,
+    { os: 'windows', version: '0.1.0' },
+    '127.0.0.1',
+  )
   const token = await createToken(t.admin, tenant.tenantId, 'human', 'human')
   // Pinned to build-01; the scheduler offers it once the executor is connected and has reported.
   const dispatch = () => enqueueRun(ctx, { projectKey, jobTypeKey: 'check', machineName: 'build-01', cwd: 'C:\\work' })

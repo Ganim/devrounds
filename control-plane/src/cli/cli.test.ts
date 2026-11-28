@@ -863,7 +863,7 @@ test('GET /runs/:id and /gates/:id carry why each queued run is not placed', asy
   await createProject(ctx, { key: 'alpha', name: 'Alpha' })
   await putJobType(ctx, 'alpha', { key: 'check', command: { program: 'node' } })
   const { code } = await createPairingCode(ctx, 'build-01')
-  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' })
+  await redeemPairingCode(t.db, new PairingLimiter(), code, { os: 'windows', version: '0.1.0' }, '127.0.0.1')
   const queued = await enqueueRun(ctx, { projectKey: 'alpha', jobTypeKey: 'check', cwd: 'C:\\work' })
   const gate = await submitGate(ctx, 'alpha', {
     file: { key: 'pre-pr', checks: [{ ref: 'lint', job_type: 'check' }] },
