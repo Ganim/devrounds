@@ -1,0 +1,41 @@
+.dr-popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.dr-popover {
+  position: absolute;
+  z-index: var(--z-popover);
+  min-width: 200px;
+  width: max-content;
+  max-width: min(420px, 86vw);
+  max-height: min(60dvh, 520px);
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-lg);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--popover);
+  box-shadow: var(--shadow-1);
+  animation: dr-popover-in var(--dur-fast) var(--ease);
+}
+.dr-popover--bottom-start {
+  top: calc(100% + 8px);
+  left: 0;
+}
+.dr-popover--bottom-end {
+  top: calc(100% + 8px);
+  right: 0;
+}
+.dr-popover--top-start {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+.dr-popover--top-end {
+  bottom: calc(100% + 8px);
+  right: 0;
+}
+@keyframes dr-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}

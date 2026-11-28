@@ -1,0 +1,89 @@
+.dr-dialog {
+  width: min(520px, calc(100% - 32px));
+  max-height: min(80dvh, 680px);
+  padding: 0;
+  border: var(--hair) solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+.dr-dialog--wide {
+  width: min(1040px, calc(100% - 32px));
+}
+.dr-dialog::backdrop {
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+}
+.dr-dialog__frame {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+}
+.dr-dialog__handle {
+  display: none;
+}
+.dr-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-7) var(--space-7) var(--space-4);
+}
+.dr-dialog__titles {
+  flex: 1;
+  min-width: 0;
+}
+/* Set in full: a dialog opened inside a styled section must not inherit its heading rules. */
+.dr-dialog__head h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.dr-dialog__subtitle {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.dr-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--space-7) var(--space-6);
+}
+.dr-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-7) var(--space-7);
+}
+/* Phones: a bottom sheet, full width, with a handle; the keyboard offset (--kb, set by the shell) lifts it. */
+@media (max-width: 899px) {
+  .dr-dialog,
+  .dr-dialog--wide {
+    width: 100%;
+    max-width: 100%;
+    max-height: min(93dvh, var(--vvh, 100dvh));
+    margin: auto 0 var(--kb, 0);
+    border-radius: 26px 26px 0 0;
+    border-width: var(--hair) 0 0;
+  }
+  .dr-dialog__handle {
+    display: block;
+    width: 40px;
+    height: 5px;
+    margin: var(--space-4) auto 0;
+    border-radius: var(--radius-full);
+    background: var(--border-strong);
+  }
+  .dr-dialog__actions {
+    padding-bottom: calc(var(--space-7) + env(safe-area-inset-bottom));
+  }
+  .dr-dialog__actions .dr-btn {
+    flex: 1;
+  }
+}

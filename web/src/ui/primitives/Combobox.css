@@ -1,0 +1,80 @@
+.dr-combo {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-3);
+}
+.dr-combo__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.dr-combo__search .dr-icon {
+  position: absolute;
+  left: var(--space-5);
+  font-size: 16px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.dr-combo__input {
+  width: 100%;
+  padding: 12px var(--space-6) 12px 38px;
+  border-radius: var(--radius-md);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-base);
+  outline: none;
+}
+.dr-combo__input:focus {
+  border-color: var(--focus-ring);
+}
+.dr-combo__input::placeholder {
+  color: var(--text-dim);
+}
+.dr-combo__list {
+  position: relative;
+  overflow: auto;
+  min-height: 0;
+  max-height: 360px;
+}
+.dr-combo__option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 11px var(--space-5);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  cursor: pointer;
+}
+.dr-combo__option.is-active {
+  background: var(--surface-2);
+}
+.dr-combo__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dr-combo__hint {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dr-combo__tick {
+  font-size: 18px;
+  color: var(--state-ok);
+}
+.dr-combo__hint + .dr-combo__tick {
+  margin-left: 0;
+}
+.dr-combo__label + .dr-combo__tick {
+  margin-left: auto;
+}
+.dr-combo__empty {
+  padding: var(--space-6);
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}

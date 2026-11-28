@@ -1,0 +1,65 @@
+.dr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 10px var(--space-6);
+  border-radius: var(--radius-md);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.dr-btn .dr-icon {
+  font-size: 16px;
+}
+.dr-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.dr-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.dr-btn--sm {
+  padding: 7px var(--space-5);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+}
+.dr-btn--primary {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  color: var(--on-accent);
+  box-shadow: var(--accent-glow);
+}
+.dr-btn--primary:hover:not(:disabled) {
+  background: var(--accent-gradient);
+  filter: brightness(1.08);
+}
+.dr-btn--danger {
+  color: var(--state-danger);
+  border-color: color-mix(in srgb, var(--state-danger) 35%, transparent);
+}
+.dr-btn--danger.is-armed,
+.dr-btn--danger.is-armed:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--state-danger) 16%, transparent);
+}
+.dr-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+.dr-btn--ghost:hover:not(:disabled) {
+  background: var(--surface-1);
+  color: var(--text);
+}
+@media (max-width: 899px) {
+  .dr-btn {
+    min-height: var(--touch);
+  }
+}

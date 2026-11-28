@@ -1,0 +1,19 @@
+/* `--tone` for every primitive that takes a Tone (lib/tones.ts): set once here, read by Badge, Dot, Banner, Ring... */
+.dr-tone-ok {
+  --tone: var(--state-ok);
+}
+.dr-tone-info {
+  --tone: var(--state-info);
+}
+.dr-tone-warn {
+  --tone: var(--state-warn);
+}
+.dr-tone-danger {
+  --tone: var(--state-danger);
+}
+.dr-tone-idle {
+  --tone: var(--state-idle);
+}
+.dr-tone-neutral {
+  --tone: var(--text-2);
+}

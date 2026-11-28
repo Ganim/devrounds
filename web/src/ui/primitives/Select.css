@@ -1,0 +1,43 @@
+.dr-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+.dr-select select {
+  appearance: none;
+  width: 100%;
+  padding: 9px 34px 9px var(--space-5);
+  border-radius: var(--radius-md);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+.dr-select select:focus-visible {
+  border-color: var(--focus-ring);
+}
+/* The open list is drawn by the OS; keep its rows readable in both themes. */
+.dr-select option {
+  background: var(--panel);
+  color: var(--text);
+}
+.dr-select .dr-icon {
+  position: absolute;
+  right: var(--space-4);
+  font-size: 16px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.dr-select--sm select {
+  padding: 5px 28px 5px var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+.dr-select--sm .dr-icon {
+  right: var(--space-3);
+  font-size: 14px;
+}

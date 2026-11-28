@@ -1,0 +1,8 @@
+.dr-mono {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  font-variant-numeric: tabular-nums;
+}
+.dr-mono--muted {
+  color: var(--text-muted);
+}

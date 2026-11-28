@@ -1,0 +1,24 @@
+.dr-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin: var(--space-5) 0;
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-md);
+  border: var(--hair) solid color-mix(in srgb, var(--tone) 35%, transparent);
+  background: color-mix(in srgb, var(--tone) 10%, transparent);
+  color: var(--tone);
+  font-size: var(--text-md);
+}
+.dr-banner.dr-tone-danger {
+  color: var(--danger-text);
+}
+.dr-banner > .dr-icon {
+  margin-top: 2px;
+  font-size: 16px;
+}
+.dr-banner__body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

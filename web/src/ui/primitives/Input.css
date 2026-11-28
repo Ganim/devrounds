@@ -1,0 +1,55 @@
+.dr-input {
+  width: 100%;
+  padding: 10px var(--space-5);
+  border-radius: var(--radius-md);
+  border: var(--hair) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.dr-input::placeholder {
+  color: var(--text-dim);
+}
+.dr-input:focus {
+  border-color: var(--focus-ring);
+}
+.dr-input:disabled {
+  opacity: 0.55;
+}
+.dr-input[aria-invalid="true"] {
+  border-color: var(--state-danger);
+}
+.dr-textarea {
+  min-height: 76px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.dr-input--mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.dr-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dr-field__label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.dr-field__message {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dr-field__message.is-error {
+  color: var(--danger-text);
+}
+/* 16px on phones: iOS zooms into any focused input under 16px. */
+@media (max-width: 899px) {
+  .dr-input {
+    font-size: 16px;
+  }
+}

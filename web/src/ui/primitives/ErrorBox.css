@@ -1,0 +1,7 @@
+.dr-error__code {
+  font-family: var(--font-mono);
+}
+.dr-error__hint {
+  margin-top: 2px;
+  color: var(--text-muted);
+}

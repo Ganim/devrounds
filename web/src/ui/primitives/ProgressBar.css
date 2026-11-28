@@ -1,0 +1,24 @@
+.dr-bar {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--track);
+  overflow: hidden;
+}
+.dr-bar--sm {
+  height: 4px;
+}
+.dr-bar__fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--state-info), var(--accent-2));
+  transition: width var(--dur-slow) var(--ease);
+}
+.dr-bar__fill--toned {
+  background: var(--tone);
+}
+/* A gap between stacked segments, so two neighbours of close hues stay apart. */
+.dr-bar__fill + .dr-bar__fill {
+  margin-left: 1px;
+}

@@ -1,0 +1,25 @@
+.dr-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-7);
+  border: var(--hair) dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text-dim);
+  text-align: center;
+}
+.dr-empty > .dr-icon {
+  font-size: 26px;
+}
+.dr-empty__title {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.dr-empty__text {
+  max-width: 46ch;
+  font-size: var(--text-md);
+  color: var(--text-muted);
+}
+.dr-empty__action {
+  margin-top: var(--space-3);
+}

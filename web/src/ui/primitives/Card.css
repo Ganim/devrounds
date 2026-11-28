@@ -1,0 +1,17 @@
+.dr-card {
+  position: relative;
+  background: var(--surface-1);
+  border: var(--hair) solid var(--border);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.dr-card--pad-sm {
+  padding: var(--space-4) var(--space-5);
+}
+.dr-card--pad-md {
+  padding: var(--space-6);
+}
+.dr-card.is-selected {
+  border-color: var(--state-warn);
+  background: color-mix(in srgb, var(--state-warn) 6%, transparent);
+}

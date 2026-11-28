@@ -1,0 +1,44 @@
+.dr-table-frame {
+  overflow-x: auto;
+  border: var(--hair) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+.dr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+  /* The frame draws the border; this resets the legacy table rule. */
+  border: 0;
+  background: none;
+}
+.dr-table th,
+.dr-table td {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--hair) solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.dr-table--dense th,
+.dr-table--dense td {
+  padding: var(--space-2) var(--space-4);
+}
+.dr-table th {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  background: none;
+  white-space: nowrap;
+}
+.dr-table tr:last-child td {
+  border-bottom: 0;
+}
+.dr-table tbody tr:hover {
+  background: var(--surface-1);
+}
+.dr-table .dr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

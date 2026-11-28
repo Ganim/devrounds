@@ -1,0 +1,37 @@
+.dr-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-4);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+  border: var(--hair) solid color-mix(in srgb, var(--tone) 28%, transparent);
+}
+.dr-badge.dr-tone-neutral {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.dr-badge--mono {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.dr-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.dr-badge-notes {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.dr-badge-notes__note {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}

@@ -1,0 +1,54 @@
+.dr-ring {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+}
+.dr-ring--sm {
+  width: 28px;
+  height: 28px;
+}
+.dr-ring--lg {
+  width: 120px;
+  height: 120px;
+}
+.dr-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.dr-ring circle {
+  fill: none;
+  stroke-width: 4.5;
+}
+.dr-ring__track {
+  stroke: var(--track);
+}
+.dr-ring__arc {
+  stroke-linecap: round;
+  transition: stroke-dasharray var(--dur-slow) var(--ease);
+}
+.dr-ring--toned .dr-ring__arc {
+  stroke: var(--tone);
+}
+.dr-ring__stop-a {
+  stop-color: var(--accent);
+}
+.dr-ring__stop-b {
+  stop-color: var(--accent-2);
+}
+.dr-ring__center {
+  position: relative;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dr-ring--lg .dr-ring__center {
+  font-size: var(--text-2xl);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}

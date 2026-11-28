@@ -1,0 +1,30 @@
+.dr-spinner-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+.dr-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, var(--state-info) 20%, transparent);
+  border-top-color: var(--state-info);
+  animation: dr-spin 0.9s linear infinite;
+}
+.dr-spinner--sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+@keyframes dr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dr-spinner {
+    animation-duration: 3s;
+  }
+}
