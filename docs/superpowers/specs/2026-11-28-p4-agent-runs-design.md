@@ -482,7 +482,7 @@ Each with why and its cost if wrong.
 
 Migration numbers are reserved per track so parallel branches do not collide in `migrations/index.ts`: T01 0029-0031,
 T03 0032-0034, T16 0035-0037, T13 none (executor store schema v2), T02 0038-0040, T11 0041-0043, T07 0044-0045, T05/T06
-0046-0047, T08 0048-0050, T14 0051. Every table: `tenant_id`, forced RLS through `isolate()`, composite FKs, DR201 for
+0046-0047, T08 0048-0050, T14 0051, T12 0052 (added 28/11: environment columns on job_types and runs). Every table: `tenant_id`, forced RLS through `isolate()`, composite FKs, DR201 for
 cross-tenant. Error codes reserved: T01 DR105, DR403, DR505 (`Key encryption key unavailable.`); T02 DR454; T03 DR154
 (executor: stall stop), DR353 (`Run {run} already reported a result.`); T16 DR314, DR203 (not-found kinds `flow`,
 `secret`, `artifact`, `session` reuse DR201); T13 DR554 (`Hand-over refused: {reason}.`). A task adds a code only when
