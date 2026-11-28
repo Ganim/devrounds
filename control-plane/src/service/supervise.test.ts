@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { close } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { TEST_DATABASE_URL, testDb } from '../test-support/db.ts'
-import { nextDelay } from './supervise.ts'
+import { lockSupervisor, nextDelay } from './supervise.ts'
 
 const SUPERVISE = fileURLToPath(new URL('./supervise.ts', import.meta.url))
 // Startup of serve loads ~1100 modules; on a busy Windows disk under antivirus that has taken over a minute.
@@ -123,4 +124,61 @@ test('supervise and its serve exit when the process that started supervise is ki
   while ((alive(pids.supervisor) || alive(pids.serve)) && Date.now() < gone) await sleep(200)
   assert.equal(alive(pids.supervisor), false, 'supervise outlived the process that started it')
   assert.equal(alive(pids.serve), false, 'serve outlived its supervisor')
+})
+
+// The incident of 18/11: stopping the task left supervise running, and the task's next trigger started a second one
+// beside it. The lock is held by a stand-in process, so the test can also kill it hard and see the OS release it.
+test('a supervisor started beside a running one exits without starting serve, and a dead holder frees the lock', {
+  skip: process.platform !== 'win32',
+  timeout: 60_000,
+}, async (t) => {
+  const scratch = join(fileURLToPath(new URL('../../../', import.meta.url)), '.superpowers', 'tmp')
+  await mkdir(scratch, { recursive: true })
+  const home = await mkdtemp(join(scratch, 'devrounds-supervise-lock-'))
+  const lock = join(home, '.devrounds', 'supervise.lock')
+  const holder = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `const { lockSupervisor } = await import(${JSON.stringify(new URL('./supervise.ts', import.meta.url).href)})
+       if ((await lockSupervisor(${JSON.stringify(lock)})) === undefined) process.exit(1)
+       console.log('held')
+       setInterval(() => {}, 60_000)`,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true },
+  )
+  let second: ReturnType<typeof spawn> | undefined
+  t.after(async () => {
+    for (const child of [holder, second]) if (child?.exitCode === null) child.kill()
+    await sleep(500)
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+  const [held] = await once(holder.stdout as NodeJS.ReadableStream, 'data')
+  assert.equal(String(held).trim(), 'held')
+
+  // Should the lock not hold, this one starts serve: on a free port and the test database, never the live ones.
+  second = spawn(process.execPath, [SUPERVISE], {
+    env: {
+      ...process.env,
+      USERPROFILE: home,
+      DEVROUNDS_DATABASE_URL: TEST_DATABASE_URL,
+      DEVROUNDS_PORT: String(await freePort()),
+      DEVROUNDS_LOGS_ROOT: join(home, 'run-logs'),
+      DEVROUNDS_OTLP_ENDPOINT: '',
+    },
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  const [code] = await Promise.race([once(second, 'exit'), sleep(30_000).then(() => ['still running'])])
+  assert.equal(code, 0)
+  const logged = await loggedPids(join(home, '.devrounds', 'logs'))
+  assert.equal(logged.serve, undefined, 'the second supervisor started serve')
+
+  // TerminateProcess, as a crash: the OS closes the holder's handle, so nothing is left behind to clean up.
+  holder.kill()
+  await once(holder, 'exit')
+  const fd = await lockSupervisor(lock)
+  assert.notEqual(fd, undefined, 'the lock outlived the process that held it')
+  if (fd !== undefined) await promisify(close)(fd)
 })

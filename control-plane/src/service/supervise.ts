@@ -1,7 +1,9 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { constants, open } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -32,7 +34,35 @@ const START_TIME_TIMEOUT_MS = 15_000
 const SERVE_STOP_MS = 10_000
 
 const LOG_DIR = join(homedir(), '.devrounds', 'logs')
+const LOCK = join(homedir(), '.devrounds', 'supervise.lock')
 const SERVE = fileURLToPath(new URL('../main.ts', import.meta.url))
+
+// libuv's UV_FS_O_EXLOCK, which Node passes through but does not export: on Windows it opens with share mode 0.
+const EXCLUSIVE_SHARING = 0x1000_0000
+const openFd = promisify(open)
+
+/**
+ * Takes the lock file at `path` for this process: its descriptor while held, undefined when another process holds it.
+ * Stopping the scheduled task ends only its conhost, so its 5-minute trigger can start a supervisor beside a running
+ * one; that one finds the lock taken and exits instead of starting a second serve on the taken port. Like the
+ * executor's supervise.lock: an open handle, which the OS closes when the process dies however it dies, so a crash
+ * never leaves the lock taken (a file made with 'wx' would stay behind and block every supervisor after it). The
+ * descriptor is never closed here, and a plain fd, unlike a FileHandle, is never closed by garbage collection.
+ *
+ * Windows only: the scheduled task is the one way supervise starts by itself, and libuv has no exclusive share mode
+ * elsewhere, so on other platforms the file is opened without a lock and every supervisor proceeds.
+ */
+export async function lockSupervisor(path: string): Promise<number | undefined> {
+  await mkdir(dirname(path), { recursive: true })
+  const exclusive = process.platform === 'win32' ? EXCLUSIVE_SHARING : 0
+  try {
+    return await openFd(path, constants.O_RDWR | constants.O_CREAT | exclusive)
+  } catch (err) {
+    // A sharing violation: another process has the file open, so holds the lock.
+    if ((err as NodeJS.ErrnoException).code === 'EBUSY') return undefined
+    throw err
+  }
+}
 
 const prune = () => safely(() => pruneLogs(LOG_DIR, new Date(), KEEP_DAYS))
 // Serve output goes through the supervisor (not straight to a file) so one file cannot grow without bound while a
@@ -133,6 +163,11 @@ async function stopForGoneParent(): Promise<void> {
 }
 
 async function supervise(): Promise<never> {
+  // Held until this process ends.
+  if ((await lockSupervisor(LOCK)) === undefined) {
+    await log(`supervisor not started (pid ${process.pid}): another supervisor holds ${LOCK}`)
+    process.exit(0)
+  }
   await prune()
   await log(`supervisor started (pid ${process.pid}, parent ${process.ppid})`)
   void watchParent(stopForGoneParent)
