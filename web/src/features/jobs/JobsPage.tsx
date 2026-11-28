@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useJobs, usePages } from '../../data/resources.ts'
 import { shortId } from '../../lib/format.ts'
-import { Loading, Pager, Pill } from '../../ui/index.ts'
+import { runTone } from '../../lib/tones.ts'
+import { Badge, Loading, Pager } from '../../ui/index.ts'
 
 const STATES = ['open', 'finished', 'failed', 'stopped', 'skipped']
 
@@ -49,7 +50,9 @@ export function JobsPage() {
                   <a href={`#/run/${j.lastRun.id}`} className="mono">
                     {shortId(j.lastRun.id)}
                   </a>{' '}
-                  <Pill state={j.lastRun.state} notes={[j.lastRun.failureClass]} />
+                  <Badge tone={runTone(j.lastRun.state)} notes={[j.lastRun.failureClass]}>
+                    {j.lastRun.state}
+                  </Badge>
                 </td>
               </tr>
             ))}

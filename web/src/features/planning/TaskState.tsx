@@ -1,5 +1,6 @@
 import { type Progress, segments } from '../../lib/segments.ts'
-import { Pill } from '../../ui/index.ts'
+import { taskTone } from '../../lib/tones.ts'
+import { Badge } from '../../ui/index.ts'
 
 export const STATE_LABEL: Record<string, string> = {
   todo: 'todo',
@@ -12,7 +13,9 @@ export const STATE_LABEL: Record<string, string> = {
 }
 
 /** The state of a phase, task or criterion. */
-export const StatePill = ({ state }: { state: string }) => <Pill state={state} label={STATE_LABEL[state] ?? state} />
+export const StatePill = ({ state }: { state: string }) => (
+  <Badge tone={taskTone(state)}>{STATE_LABEL[state] ?? state}</Badge>
+)
 
 export function StackedBar({ progress }: { progress: Progress }) {
   return (
