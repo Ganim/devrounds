@@ -297,7 +297,17 @@ async fn a_large_backlog_never_has_more_than_the_window_unacked() {
             // Everything the executor sends before it hears an Ack.
             let mut unacked = 0usize;
             let mut burst = 0usize;
-            while let Ok(Some(message)) = tokio::time::timeout(QUIET, socket.next()).await {
+            // The first frame after an Ack may be slow on a loaded machine (1 MiB frames read from SQLite), so only the
+            // silence after it ends the burst; a wait of QUIET for the first one flaked under the parallel gate.
+            loop {
+                let wait = if burst == 0 {
+                    Duration::from_secs(5)
+                } else {
+                    QUIET
+                };
+                let Ok(Some(message)) = tokio::time::timeout(wait, socket.next()).await else {
+                    break;
+                };
                 let Ok(Message::Text(text)) = message else {
                     continue;
                 };
