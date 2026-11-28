@@ -1,0 +1,311 @@
+/* App shell (P5 design §3 call 9; cx-env page-v2.html `.app`, `.rail`, `.tabs`, `.sheet`). Colors read the semantic
+   tokens P5-T07 defines in ui/tokens.css; the fallbacks are today's light values until it lands. Selectors start at
+   .app-shell so the old global `main`, `nav a` and `h1` rules in ui/style.css do not reach in, whatever the CSS order. */
+.app-shell {
+  --rail: 84px;
+  --tabs: 68px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100dvh;
+  color: var(--text, #1c2128);
+  background: var(--bg, #f6f7f9);
+}
+
+.app-shell .app-rail,
+.app-shell .app-resizer {
+  display: none;
+}
+
+/* minmax(0, 1fr): a plain 1fr track floors at min-content, so one wide table would widen the whole page. */
+.app-shell .app-main {
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  overflow: auto;
+  padding: 14px 14px calc(var(--tabs) + 28px + env(safe-area-inset-bottom));
+}
+
+.app-shell .app-title {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.app-shell .app-heading {
+  min-width: 0;
+}
+.app-shell .app-title h1 {
+  font-size: 22px;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.app-shell .app-project {
+  font-size: 12px;
+  color: var(--text-muted, #5d6673);
+}
+.app-shell .app-summary {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-muted, #5d6673);
+}
+
+/* Nav entries: an icon tile over a label, in the rail and in the bottom bar. */
+.app-shell .app-navbtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-muted, #5d6673);
+  text-decoration: none;
+  cursor: pointer;
+}
+.app-shell .app-ico {
+  width: 42px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+}
+.app-shell .app-ico svg {
+  width: 20px;
+  height: 20px;
+}
+.app-shell .app-navbtn.on {
+  color: var(--text, #1c2128);
+  font-weight: 600;
+  border: 0;
+}
+.app-shell .app-navbtn.on .app-ico {
+  background: var(--accent, #2b6fd6);
+  color: var(--on-accent, #fff);
+}
+.app-shell .app-navbtn:focus-visible,
+.app-shell .app-iconbtn:focus-visible,
+.app-shell .app-moreitem:focus-visible {
+  outline: 2px solid var(--accent, #2b6fd6);
+  outline-offset: 2px;
+}
+.app-shell .app-navsep {
+  width: 36px;
+  border: 0;
+  border-top: 1px solid var(--border, #d9dde3);
+  margin: 4px auto;
+}
+
+/* Phone: a floating bottom bar; the detail and "More" are bottom sheets over a backdrop. */
+.app-shell .app-tabs {
+  position: fixed;
+  left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right));
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  height: var(--tabs);
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  background: var(--surface-1, #fff);
+  border: 1px solid var(--border, #d9dde3);
+  border-radius: 20px;
+  box-shadow: var(--shadow-2, 0 6px 24px rgba(0, 0, 0, 0.12));
+  z-index: var(--z-nav, 20);
+}
+.app-shell .app-tabs .app-navbtn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.app-shell .app-backdrop {
+  position: fixed;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: var(--backdrop, rgba(0, 0, 0, 0.45));
+  z-index: var(--z-sheet, 30);
+}
+.app-shell .app-aside,
+.app-shell .app-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--kb, 0px);
+  max-height: min(92dvh, var(--vvh, 100dvh));
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1, #fff);
+  border-top: 1px solid var(--border, #d9dde3);
+  border-radius: 20px 20px 0 0;
+  box-shadow: var(--shadow-3, 0 -12px 40px rgba(0, 0, 0, 0.2));
+  z-index: calc(var(--z-sheet, 30) + 1);
+}
+.app-shell .app-aside {
+  height: min(92dvh, var(--vvh, 100dvh));
+}
+.app-shell .app-more-backdrop,
+.app-shell .app-more {
+  z-index: calc(var(--z-sheet, 30) + 2);
+}
+.app-shell .app-more {
+  padding: 0 12px calc(16px + env(safe-area-inset-bottom));
+}
+.app-shell .app-handle {
+  flex: none;
+  width: 40px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border, #d9dde3);
+  margin: 8px auto 4px;
+}
+.app-shell .app-moreitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  font: inherit;
+  color: var(--text, #1c2128);
+  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell .app-moreitem.on {
+  font-weight: 600;
+}
+.app-shell .app-moreitem.on .app-ico {
+  background: var(--accent, #2b6fd6);
+  color: var(--on-accent, #fff);
+}
+
+.app-shell .app-aside-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 8px;
+  border-bottom: 1px solid var(--border, #d9dde3);
+}
+.app-shell .app-aside-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-shell .app-iconbtn {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--text-muted, #5d6673);
+}
+.app-shell .app-iconbtn:hover {
+  background: var(--surface-2, #eef0f3);
+}
+.app-shell .app-iconbtn svg {
+  width: 18px;
+  height: 18px;
+}
+.app-shell .app-aside-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 20px;
+  overscroll-behavior: contain;
+}
+
+/* Wide: rail | main | aside. The aside is a grid column, not an overlay, so the list stays usable beside it. */
+@media (min-width: 900px) {
+  .app-shell {
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+  }
+  .app-shell.has-detail {
+    grid-template-columns: var(--rail) minmax(0, 1fr) var(--aside);
+  }
+  .app-shell .app-tabs,
+  .app-shell .app-backdrop,
+  .app-shell .app-more,
+  .app-shell .app-handle {
+    display: none;
+  }
+  .app-shell .app-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 14px 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border, #d9dde3);
+    background: var(--surface-1, #fff);
+  }
+  .app-shell .app-logo {
+    width: 44px;
+    height: 44px;
+    margin-bottom: 8px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    font-weight: 700;
+    text-decoration: none;
+    color: var(--on-accent, #fff);
+    background: var(--accent, #2b6fd6);
+  }
+  .app-shell .app-spacer {
+    flex: 1;
+  }
+  .app-shell .app-main {
+    padding: 22px 26px 40px;
+  }
+  .app-shell .app-aside {
+    position: relative;
+    inset: auto;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    border-top: 0;
+    border-left: 1px solid var(--border, #d9dde3);
+    border-radius: 0;
+    box-shadow: none;
+    z-index: auto;
+  }
+  .app-shell .app-aside-head {
+    padding: 12px 14px 10px;
+  }
+  .app-shell .app-resizer {
+    display: block;
+    position: absolute;
+    left: -5px;
+    top: 0;
+    bottom: 0;
+    width: 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: col-resize;
+    z-index: 5;
+  }
+  .app-shell .app-resizer::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+  }
+  .app-shell .app-resizer:hover::after,
+  .app-shell .app-resizer.on::after {
+    background: var(--accent, #2b6fd6);
+  }
+}

@@ -13,7 +13,9 @@ import { QueuesPage } from '../features/queues/QueuesPage.tsx'
 import { RunPage } from '../features/runs/RunPage.tsx'
 import { RunsPage } from '../features/runs/RunsPage.tsx'
 import { Login } from './Login.tsx'
-import { matchRoute, NAV, type Route, type RouteName } from './routes.ts'
+import { matchRoute, type Route, type RouteName } from './routes.ts'
+import { Shell } from './Shell.tsx'
+import { publishViewport } from './viewport.ts'
 import '../ui/style.css'
 
 const useHash = (): string => {
@@ -52,29 +54,13 @@ function App({ onSignedOut }: { onSignedOut: () => void }) {
     { done: 0, total: 0 },
   )
   return (
-    <>
-      <header className="top">
-        <h1>{plan.data?.project.name ?? 'DevRounds'}</h1>
-        <nav>
-          {NAV.map(({ href, label, active }) => (
-            <a
-              key={href}
-              href={`#${href}`}
-              className={route.name !== null && active.includes(route.name) ? 'active' : ''}
-            >
-              {label}
-            </a>
-          ))}
-        </nav>
-        <span className="totals">
-          {plan.data ? `${totals.done}/${totals.total} tasks done in ${plan.data.phases.length} phases ` : ''}
-          <button type="button" className="link" onClick={() => signOut().finally(onSignedOut)}>
-            sign out
-          </button>
-        </span>
-      </header>
-      <main>{PAGES[route.name ?? 'roadmap'](route, plan)}</main>
-    </>
+    <Shell
+      route={route}
+      render={(shown) => PAGES[shown.name ?? 'roadmap'](shown, plan)}
+      project={plan.data?.project.name ?? 'DevRounds'}
+      summary={plan.data ? `${totals.done}/${totals.total} tasks done in ${plan.data.phases.length} phases` : ''}
+      onSignOut={() => signOut().finally(onSignedOut)}
+    />
   )
 }
 
@@ -95,5 +81,6 @@ function Root() {
 
 // The P0 view kept a pasted API token here; session login replaced it, so no browser keeps one around.
 localStorage.removeItem('devrounds.token')
+publishViewport()
 
 createRoot(document.getElementById('root') as HTMLElement).render(<Root />)
