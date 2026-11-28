@@ -96,6 +96,11 @@ struct Inner {
     /// a terminated process leaves the job's list and count a moment before
     /// it has fully exited, and only its handle tells when it has.
     held: Mutex<Vec<(ProcessInfo, Held)>>,
+    /// Console hosts by PID and start time, once seen by name. A host in its
+    /// teardown, right after its last client left, can refuse the image name
+    /// query; without this its nameless entry would count as a member, and
+    /// a sweep reading it then would report it swept (F-0015).
+    console_hosts: Mutex<Vec<(u32, u64)>>,
     leader_exited: AtomicBool,
     /// Set when the supervisor ended without publishing a real report.
     crashed: AtomicBool,
@@ -187,6 +192,7 @@ pub(crate) async fn spawn(
         leader,
         members: Mutex::new(Vec::new()),
         held: Mutex::new(Vec::new()),
+        console_hosts: Mutex::new(Vec::new()),
         leader_exited: AtomicBool::new(false),
         crashed: AtomicBool::new(false),
         stops,
@@ -355,10 +361,15 @@ impl Inner {
         let entries = self.job.processes()?;
         let mut held = lock(&self.held);
         held.retain(|(_, handle)| !handle.exited());
+        let mut console_hosts = lock(&self.console_hosts);
         let mut unheld = Vec::new();
         for entry in entries {
+            let key = (entry.pid, entry.start_time);
+            if is_console_host(&entry.name) && !console_hosts.contains(&key) {
+                console_hosts.push(key);
+            }
             if entry.exited
-                || is_console_host(&entry.name)
+                || console_hosts.contains(&key)
                 || held
                     .iter()
                     .any(|(p, _)| p.pid == entry.pid && p.start_time == entry.start_time)
@@ -374,6 +385,7 @@ impl Inner {
         }
         let live: Vec<ProcessInfo> = held.iter().map(|(p, _)| p.clone()).chain(unheld).collect();
         drop(held);
+        drop(console_hosts);
         lock(&self.members).clone_from(&live);
         Ok(live)
     }
