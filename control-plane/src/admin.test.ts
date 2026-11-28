@@ -79,6 +79,20 @@ test('bootstrap gives each tenant its own project, even with the same key', asyn
   assert.equal(first.member.kind, 'human')
 })
 
+// Both pass the name check before either inserts; the unique name leaves one tenant and the other answers DR101.
+test('two bootstraps of one tenant name at once create one tenant', async () => {
+  const { admin } = await testDb()
+  const tenant = `t-${randomUUID()}`
+  const run = () => bootstrap(admin, TEST_APP_ROLE, { tenant, project: 'demo', name: 'Demo', human: 'gui' })
+  const results = await Promise.allSettled([run(), run()])
+  const rejected = results.filter((r) => r.status === 'rejected')
+  assert.equal(rejected.length, 1)
+  const [{ reason }] = rejected as [PromiseRejectedResult]
+  assert.ok(reason instanceof DevRoundsError && reason.code === 'DR101' && reason.data.path === '--tenant', reason)
+  const rows = await admin.selectFrom('tenants').select('id').where('name', '=', tenant).execute()
+  assert.equal(rows.length, 1)
+})
+
 test('project add creates a second project in the tenant with a create_project event by import', async () => {
   const { admin, db } = await testDb()
   const tenant = `t-${randomUUID()}`

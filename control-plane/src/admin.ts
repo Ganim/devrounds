@@ -86,8 +86,9 @@ export async function bootstrap(
   appRole: string,
   i: { tenant: string; project: string; name: string; human: string },
 ): Promise<{ id: string; token: string }> {
+  const taken = { path: '--tenant', reason: `tenant ${i.tenant} already exists` }
   const existing = await admin.selectFrom('tenants').select('id').where('name', '=', i.tenant).executeTakeFirst()
-  if (existing) fail('DR101', { path: '--tenant', reason: `tenant ${i.tenant} already exists` })
+  if (existing) fail('DR101', taken)
   // The id is chosen here so the tenant row, its members, the project and the token share one tenant-scoped
   // transaction: a failed bootstrap leaves nothing behind and can simply run again.
   const tenantId = randomUUID()
@@ -97,7 +98,14 @@ export async function bootstrap(
     // the app role for this transaction puts the policies back. The role stays on for the token too: the app role
     // has DML on api_tokens, and the insert passes the same tenant policy.
     await sql`set local role ${sql.id(appRole)}`.execute(trx)
-    await trx.insertInto('tenants').values({ id: tenantId, name: i.tenant }).execute()
+    // A bootstrap of the same name running at once passes the check above too; the unique name (0028) makes this
+    // insert wait for it and fail if it commits.
+    try {
+      await trx.insertInto('tenants').values({ id: tenantId, name: i.tenant }).execute()
+    } catch (err) {
+      if ((err as { constraint?: unknown } | null)?.constraint === 'tenants_name_key') fail('DR101', taken)
+      throw err
+    }
     const [human] = await trx
       .insertInto('members')
       .values([
