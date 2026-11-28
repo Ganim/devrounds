@@ -275,7 +275,7 @@ export async function wakeDueFlowWaits(db: Kysely<Database>, now: Date, log: Sch
     try {
       const moved = await withTenant(db, row.tenant_id, async (trx) => {
         const fr = await lockFlowRun(trx, row.flow_run_id, { skipLocked: true })
-        if (!fr || fr.state !== 'running') return false
+        if (fr?.state !== 'running') return false
         const nodeRun = await trx
           .selectFrom('flow_node_runs')
           .select(['id', 'node'])
