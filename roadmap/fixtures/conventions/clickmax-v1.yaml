@@ -1,0 +1,419 @@
+# Clickmax conventions, version 1 draft (P3-T04, design call 16): the root AGENTS.md "Mandatory Rules" plus the
+# mechanical subset of the self-copilot pass. `.claude/commands/self-copilot.md` is not tracked in the monorepo (local
+# .git/info/exclude), so each of its checks kept here cites the tracked skill or config that states the same rule; the
+# checks only self-copilot states are left out until it is checked in. Every new pattern rule starts at warn except the
+# one the build already fails on. Propose with --cwd at an origin/trunk checkout of the monorepo.
+targets:
+  - path: AGENTS.md
+rules:
+  # Mandatory Rules (root AGENTS.md)
+  - key: docs.product-change-ships-docs
+    section: Always
+    title: Always ship `pages/docs` guidance in the same PR as a meaningful product-facing change
+    why: 'Public docs drift when they are deferred; a follow-up ticket or "if applicable" is not accepted, and a PR with
+      no product change says `internal only: <reason>` in its body instead.'
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Meaningful product-facing change → MUST ship useful `pages/docs` guidance in the SAME PR.
+        role: source
+      - path: pages/docs/AGENTS.md
+        excerpt: "## Coverage — HARD RULE"
+        role: source
+      - path: pages/docs/AGENTS.md
+        excerpt: "No meaningful product/contract change → literal `internal only: <reason>` in PR body"
+        role: source
+  - key: docs.no-plan-pricing
+    section: Never
+    title: Never put Clickmax plans, prices, plan quotas or credits in `pages/docs`
+    why: Commercial terms change outside the docs release cycle, so a public page that states them goes stale.
+    paths: [pages/docs/**]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Clickmax plans/prices/plan quotas/credits NEVER go in `pages/docs`.
+        role: source
+  - key: docs.shared-code-decisions-in-comments
+    section: Always
+    title: Always record non-obvious decisions in shared code (`libs/`, `base`, technical code) as comments or JSDoc next
+      to the code
+    why: Shared code has no domain docs page; the comment is the only place the next reader finds the reason.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: "Non-domain/shared change (`libs/`, `base`, technical/shared code) → encode non-obvious product/technical
+          decisions as comments/JSDoc near the code"
+        role: source
+      - path: libs/authz/src/catalog.ts
+        excerpt: O verbo é um enum FECHADO.
+        role: example
+  - key: docs.ai-docs-guide
+    section: Always
+    title: Always use `ai-docs-guide` and lossless compression when changing an AI-doc file (`AGENTS.md`,
+      `.agents/skills/*`, agent or command docs)
+    why: These files load into agent context on every run, so each line costs tokens across every session.
+    paths: ["**/AGENTS.md", "**/CLAUDE.md", .agents/**, .claude/commands/**, .claude/agents/**]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Any AI-doc file change (`AGENTS.md`, `.agents/skills/*`, agent/command docs) → use `ai-docs-guide` + apply
+          lossless compression.
+        role: source
+      - path: .agents/skills/ai-docs-guide/SKILL.md
+        excerpt: enforce inline-code rationale preference, lossless compression
+        role: source
+  - key: docs.single-source-of-truth
+    section: Always
+    title: Always keep implementation rationale in code comments or JSDoc; skills and docs point at the source file or
+      package README instead of restating it
+    why: A restated detail drifts from the code it describes, and agents then follow the stale copy.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: "Keep single source of truth: code comments/JSDoc own implementation rationale; skills/docs reference source
+          files or package READMEs instead of duplicating details."
+        role: source
+  - key: tests.writing-tests-bar
+    section: Always
+    title: Always read `writing-tests` before writing, changing or reviewing a test; add one only when it meets at least 3
+      of costly, silent, likely to break, cheap
+    why: The default is no new test; existing tests are not a style reference, and low-value tests slow CI without
+      protecting anything.
+    paths: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/test/**", "e2e/**"]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Before writing, changing or reviewing ANY test → read `writing-tests` first.
+        role: source
+      - path: .agents/skills/writing-tests/SKILL.md
+        excerpt: "|1|Costly if broken?|"
+        role: source
+  - key: db.ddl-via-prisma-migrate
+    section: Always
+    title: Always generate structural DDL with `prisma migrate` from the schema; hand-written SQL only for what Prisma
+      cannot model
+    why: A hand-written structural migration desyncs migration history from the schema, and `db-migrate` then reports
+      permanent drift.
+    paths: [models/**]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: DB migrations → structural DDL only via `prisma migrate` from the schema (NEVER hand-write SQL/constraint;
+          manual SQL only for what Prisma can't model).
+        role: source
+      - path: models/AGENTS.md
+        excerpt: "**INVIOLABLE RULE — structural DDL only via Prisma.**"
+        role: source
+  - key: db.sql-only-in-prisma-migrations
+    section: Never
+    title: Never add a `.sql` file under `models/` outside a `prisma migrate` folder
+      (`models/prisma/migrations/<timestamp>_<name>/migration.sql`)
+    why: Prisma only applies SQL from its timestamped migration folders, so SQL anywhere else under `models/` is either
+      dead or applied by hand, outside the migration history.
+    paths: [models/**]
+    exclude: ["models/prisma/migrations/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*/migration.sql"]
+    check: { kind: path, forbid_new: "**/*.sql" }
+    evidence:
+      - path: models/AGENTS.md
+        excerpt: All structural DDL (CREATE/ALTER TABLE, FK/PK/UNIQUE, columns, indexes, enums) MUST be generated by
+          `prisma migrate` from the schema.
+        role: source
+      - path: models/prisma/migrations/migration_lock.toml
+        excerpt: provider = "postgresql"
+        role: example
+  - key: db.one-migration-per-pr
+    section: Never
+    title: Never open a PR with more than one new `migration.sql` under `models/prisma/migrations/`
+    why: Intermediate local migrations are regenerated into one final migration before review, so reviewers read the
+      SQL that will run.
+    paths: [models/prisma/migrations/**]
+    check: { kind: judgment }
+    evidence:
+      - path: models/AGENTS.md
+        excerpt: a review-ready PR MUST NOT include more than one new `migration.sql` under `models/prisma/migrations/`.
+        role: source
+  - key: git.branch-naming
+    section: Always
+    title: Always name a PR branch `<github-username-lowercase>/<title-kebab-case>`, with the login from `gh api user
+      --jq '.login'`; never `fix/`, `feat/` or `chore/`
+    why: The prefix says who owns the branch; generic type prefixes hide that.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: "New PR branch → get `gh api user --jq '.login'` → `<github-username-lowercase>/<title-kebab-case>`; never
+          generic owner prefixes (`fix/`, `feat/`, `chore/`)."
+        role: source
+      - path: .claude/commands/open-pr.md
+        excerpt: gh api user --jq '.login'
+        role: example
+  - key: git.worktree-per-pr
+    section: Always
+    title: Always work on a PR in its own worktree under `.worktrees/`, branched from a freshly fetched `origin/trunk`;
+      remove it after merge only when it is clean
+    why: A fresh base avoids rebasing stale work, and a dirty or unmerged worktree may hold the only copy of someone's
+      changes.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: "New PR worktree → `git fetch origin trunk` → fresh branch + `git worktree add` from latest `origin/trunk`
+          under gitignored `.worktrees/`"
+        role: source
+      - path: AGENTS.md
+        excerpt: NEVER remove a dirty/unmerged worktree without confirming its work is preserved.
+        role: source
+  - key: ui.new-component-in-cxds
+    section: Always
+    title: Always build a new UI component in `design/cxds` through `new-component`; `Old`-suffixed CXDS components are
+      migration steps, not for new code
+    why: CXDS is the single design system; the `Old` replicas only carry legacy screens until they migrate.
+    paths: [web/**, pages/**, packages/**, design/**]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Componente de UI novo → `design/cxds` via `new-component`.
+        role: source
+      - path: design/cxds/lint/no-cxds-old-imports.grit
+        excerpt: Trava de novos usos dos campos Old do CXDS (DESIGN-160).
+        role: source
+  - key: ui.no-legacy-ui-package
+    section: Never
+    title: Never import `@clickmax/ui`; the package was removed and its replicas live in CXDS with the `Old` suffix
+    why: The package no longer exists in the workspace, so the import fails the build.
+    paths: ["**/*.{ts,tsx,js,jsx,mjs,cjs}", "**/*.css", "**/package.json"]
+    check:
+      kind: pattern
+      forbid: '(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)[''"]@clickmax/ui(?:[''"/])|"@clickmax/ui"\s*:'
+    severity: block
+    examples:
+      bad:
+        - import { Modal } from '@clickmax/ui'
+        - import { Composer } from '@clickmax/ui/whatsapp-composer'
+        - "@import '@clickmax/ui/tailwind-input.css';"
+        - '    "@clickmax/ui": "workspace:*",'
+      good:
+        - import { Modal } from '@bilhon-technologies/cxds'
+        - " * Replaces the `@clickmax/ui/Modal` overlay used before."
+    evidence:
+      - path: AGENTS.md
+        excerpt: "O `@clickmax/ui` foi REMOVIDO: as réplicas do legado vivem no CXDS com sufixo `Old`"
+        role: source
+      - path: .agents/skills/frontend-patterns/SKILL.md
+        excerpt: "- `@clickmax/ui` — REMOVIDO."
+        role: source
+  - key: ui.no-cxds-old-components
+    section: Never
+    title: Never render a CXDS `Old` component (`InputOld`, `SelectOld`, `ModalOld`...) in new code
+    why: The `Old` replicas are migration steps; biome's CXDS plugin only warns on some field imports, and this points at
+      every new usage line.
+    paths: [web/**/*.tsx, pages/**/*.tsx, packages/**/*.tsx]
+    exclude: ["**/*.stories.tsx", "**/*.test.tsx"]
+    check: { kind: pattern, forbid: '<[A-Z][A-Za-z]*Old[\s/>]' }
+    examples:
+      bad:
+        - <InputOld name="email" />
+        - "  <ModalOld open={open} onClose={close}>"
+      good:
+        - <Input name="email" error={error} />
+        - "  </ModalOld>"
+    evidence:
+      - path: AGENTS.md
+        excerpt: (degraus de migração, não usar em código novo)
+        role: source
+      - path: design/cxds/lint/no-cxds-old-imports.grit
+        excerpt: Campo Old do CXDS, não use em código novo.
+        role: source
+  - key: features.workspace-features-catalog
+    section: Always
+    title: Always hide or show a feature by account or environment through the `libs/workspace-features` catalog
+      (module, feature, `rollout` or `setting` toggle); never with "Flag" or beta badges
+    why: The catalog resolves on the server with a default per environment, so every app and the back-office agree on
+      what an account has.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Hide/show by account or environment → catalog `libs/workspace-features` only
+        role: source
+      - path: libs/workspace-features/src/catalog.ts
+        excerpt: Catálogo de **módulos e features do workspace** — o que está ligado para uma CONTA.
+        role: source
+      - path: web/editor3/src/entities/editor/ui/element-manager/index.tsx
+        excerpt: const canSeeWebchat = useWorkspaceToggle('pages_webchat')
+        role: example
+  - key: features.no-env-gate
+    section: Never
+    title: Never gate a feature on `import.meta.env.VITE_CLICKMAX_ENV` being production or staging in web code; use a
+      `libs/workspace-features` toggle
+    why: An environment check hides the feature from every account at once and cannot be rolled out gradually or turned
+      on for one account.
+    paths: [web/**/*.ts, web/**/*.tsx]
+    exclude: ["**/*.test.ts", "**/*.test.tsx", web/*/src/app/entry.tsx, web/*/vite.config.ts]
+    check:
+      kind: pattern
+      forbid: import\.meta\.env\.VITE_CLICKMAX_ENV\s*[!=]==?\s*['"](?:production|staging)['"]
+    examples:
+      bad:
+        - "  if (import.meta.env.VITE_CLICKMAX_ENV !== 'production') return null"
+        - "    import.meta.env.VITE_CLICKMAX_ENV === 'staging' &&"
+      good:
+        - const canSeeWebchat = useWorkspaceToggle('pages_webchat')
+        - "  if (import.meta.env.VITE_CLICKMAX_ENV === 'development') markCanvasFrame(editor)"
+    evidence:
+      - path: AGENTS.md
+        excerpt: NEVER `import.meta.env` gates or "Flag"/beta badges.
+        role: source
+      - path: .agents/skills/frontend-patterns/SKILL.md
+        excerpt: NUNCA `import.meta.env`/`VITE_CLICKMAX_ENV` para esconder feature
+        role: source
+  - key: authz.route-capability
+    section: Always
+    title: Always ship a new feature or route with its permission in the same PR, from `libs/authz/src/catalog.ts` to
+      `scope.authorizeCapability` on the route
+    why: The chain is capability in the catalog, `scope.authorizeCapability` on the route, UI via
+      `<FeaturePage>`/`<FeatureCan>`/`<FeatureNavItem>`, then `pnpm -F @clickmax/user generate-route-capabilities`. A
+      route without a capability falls back to role checks, and the permission matrix stops matching the backend.
+    paths: [servers/**, packages/**, libs/authz/**, web/**]
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: "New feature/route → permission in the same PR: capability in `libs/authz/src/catalog.ts`"
+        role: source
+      - path: libs/authz/src/route-coverage.test.ts
+        excerpt: Rota nova precisa nascer com capability.
+        role: source
+      - path: servers/affiliates/src/affiliateDashboard/routes.ts
+        excerpt: "onRequest: scope.authorizeCapability('affiliate-marketplace:read'),"
+        role: example
+  - key: pr.decomposition-in-plan
+    section: Always
+    title: Always define the PR decomposition in the implementation plan of a complex feature before implementing;
+      dependent units go in one `gh-stack` stack, independent ones in separate PRs
+    why: Splitting after the code is written costs a full re-review, and one PR with several concerns is hard to
+      review.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Complex feature with multiple reviewable concerns → the implementation plan MUST define PR decomposition
+          before implementation
+        role: source
+      - path: .agents/skills/gh-stack/SKILL.md
+        excerpt: gh stack
+        role: source
+  - key: pr.disclose-agent-model
+    section: Always
+    title: Always disclose the agent and model (e.g. `Claude Code / Claude Opus 4.1`) in the description of a PR an AI
+      agent opens
+    why: Reviewers weigh a change by who produced it; the disclosure is mandatory even for minor changes and must never
+      be guessed.
+    check: { kind: judgment }
+    evidence:
+      - path: AGENTS.md
+        excerpt: Every PR opened by an AI agent MUST explicitly disclose the agent and model used
+        role: source
+
+  # Mechanical subset of the self-copilot pass, cited from the tracked skills and config that state each rule.
+  - key: logging.no-console-log
+    section: Never
+    title: Never leave `console.log`, `console.debug` or `console.info` in production code under `web/`, `servers/`,
+      `packages/` or `libs/`
+    why: Biome's `noConsole` allows only `console.error`; this points at the added line. Tests and scripts may print.
+    paths: ["{web,servers,packages,libs}/**/*.{ts,tsx,js,jsx,mjs}"]
+    exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/test/**", "**/tests/**", "**/scripts/**", "**/e2e/**"]
+    check: { kind: pattern, forbid: '\bconsole\.(?:log|debug|info)\s*\(', unless: '^\s*(?:\*|//|/\*)' }
+    examples:
+      bad:
+        - console.log('payload', payload)
+        - "    console.debug({ leadId })"
+      good:
+        - logger.info({ leadId }, 'lead synced')
+        - console.error(err)
+        - " * if (result.ok) console.log(result.value)"
+    evidence:
+      - path: biome.json
+        excerpt: '"noConsole": {'
+        role: source
+  - key: types.no-explicit-any
+    section: Never
+    title: 'Never type a value as `any` (`: any`, `as any`, `<any>`, `any[]`) without a justification comment on the line'
+    why: The type usually exists (`Static<typeof Schema>`, an SDK type), and `any` hides the mismatch from the compiler.
+    paths: ["{servers,packages,libs,web,pages,workers}/**/*.{ts,tsx}", models/src/**/*.ts]
+    exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts", "**/generated/**", "**/*.gen.ts"]
+    check:
+      kind: pattern
+      forbid: ':\s*any\b(?!\s*[A-Za-z])|\bas\s+any\b|<any>|\bany\[\]'
+      unless: '//\s|/\*|^\s*\*'
+    examples:
+      bad:
+        - "const payload: any = req.body"
+        - return row as any
+        - "function map(items: any[]) {"
+      good:
+        - "const payload: LeadPayload = req.body"
+        - "label: 'Any lead',"
+        - "   * as any other place the login app sends the browser to."
+        - "  return row as any // the SDK types this route's body as void"
+    evidence:
+      - path: .agents/skills/code-style/SKILL.md
+        excerpt: "- No `any` or `as` casts without justification comment"
+        role: source
+      - path: .agents/skills/code-review/SKILL.md
+        excerpt: "- MUST never write, suggest, or accept `as any` or `as never`."
+        role: source
+  - key: types.no-double-cast
+    section: Never
+    title: Never cast through `as unknown as <T>` without a justification comment on the line
+    why: The double cast almost always hides a wrong schema type; fix the schema or derive the type instead.
+    paths: ["{servers,packages,libs,web,pages,workers}/**/*.{ts,tsx}", models/src/**/*.ts]
+    exclude: ["**/*.test.ts", "**/*.test.tsx", "**/generated/**"]
+    check: { kind: pattern, forbid: '\bas\s+unknown\s+as\b', unless: '//\s|/\*|^\s*\*' }
+    examples:
+      bad:
+        - const lead = row as unknown as Lead
+      good:
+        - "const lead: Lead = row"
+    evidence:
+      - path: .agents/skills/code-review/SKILL.md
+        excerpt: "- MUST treat `any`, `unknown as X`, double casts, non-null assertions, and broad `as` casts as review
+          hotspots."
+        role: source
+      - path: .agents/skills/code-style/SKILL.md
+        excerpt: "- No `any` or `as` casts without justification comment"
+        role: source
+  - key: security.sanitize-inner-html
+    section: Never
+    title: Never pass unsanitized HTML to `dangerouslySetInnerHTML`; run it through `DOMPurify` first
+    why: User or API HTML rendered raw is stored XSS.
+    paths: ["{web,pages,packages,design}/**/*.{tsx,jsx}"]
+    exclude: ["**/*.test.tsx", "**/*.stories.tsx"]
+    check: { kind: pattern, forbid: dangerouslySetInnerHTML, unless: 'DOMPurify|sanitize|^\s*(?:\*|//|/\*)' }
+    examples:
+      bad:
+        - "<div dangerouslySetInnerHTML={{ __html: html }} />"
+      good:
+        - "<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />"
+        - "  /** Minimal highlighting, without `dangerouslySetInnerHTML`. */"
+    evidence:
+      - path: .agents/skills/frontend-ui-patterns/SKILL.md
+        excerpt: "- User/API-controlled HTML must be sanitized before render; avoid `dangerouslySetInnerHTML`"
+        role: source
+      - path: .agents/skills/code-review/SKILL.md
+        excerpt: "- MUST flag browser-exploitable sinks: raw HTML/markdown/`dangerouslySetInnerHTML`"
+        role: source
+      - path: web/flows3/src/features/workflow/setup-email/ui/editor/email-builder-panel.tsx
+        excerpt: const body = DOMPurify.sanitize(html)
+        role: example
+  - key: i18n.no-translation-fallback
+    section: Never
+    title: Never write a `??` fallback after a translation key (`t.key ?? 'text'`); add the key to every locale
+    why: The fallback masks a missing key, so the locale silently shows the hardcoded text.
+    paths: [web/**/*.tsx, web/**/*.ts]
+    exclude: ["**/*.test.ts", "**/*.test.tsx"]
+    check: { kind: pattern, forbid: '\bt\.[\w.]+\s*\?\?\s*[''"`]' }
+    examples:
+      bad:
+        - "{t.leads.emptyTitle ?? 'Nenhum lead'}"
+      good:
+        - "{t.leads.emptyTitle}"
+    evidence:
+      - path: .agents/skills/frontend-i18n/SKILL.md
+        excerpt: "- Missing key = add/fix the dictionary or declaration, not `?? 'fallback'`."
+        role: source
