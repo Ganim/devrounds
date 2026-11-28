@@ -190,7 +190,7 @@ export function listFlows(ctx: TenantCtx, projectKey: string): Promise<FlowSumma
 }
 
 // DR314 while a run of `flowKey` with `sourceKey` is running. Every path that makes such a run running (a start, a
-// resume) takes this lock before reading the holder, so two at once see each other; flow_runs_live_source (0035) is
+// resume) takes this lock before reading the holder, so two at once see each other; flow_runs_live_source (0029) is
 // the guarantee behind it. A run without a source key is never refused.
 async function requireFreeSource(trx: Trx, projectId: string, flowKey: string, sourceKey: string | null) {
   if (sourceKey === null) return
@@ -213,7 +213,7 @@ async function requireFreeSource(trx: Trx, projectId: string, flowKey: string, s
  * the document's templates use must be set (DR101), and every job type it runs must exist (DR201), so a typo fails
  * here rather than parking the run later. One run per (flow, source key) is running at a time: a start while another
  * runs answers DR314 naming it. Starts of one key are serialized by an advisory lock taken before the holder is read;
- * flow_runs_live_source (0035) is the guarantee behind it. The start is a plan event of the task.
+ * flow_runs_live_source (0029) is the guarantee behind it. The start is a plan event of the task.
  */
 export async function startFlowRun(
   ctx: Ctx,

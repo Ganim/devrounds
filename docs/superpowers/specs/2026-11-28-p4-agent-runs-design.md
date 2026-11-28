@@ -480,7 +480,7 @@ Each with why and its cost if wrong.
 
 ## 3. Data model, protocol and API per task
 
-Migration numbers are reserved per track so parallel branches do not collide in `migrations/index.ts`: T01 0029-0031,
+Migration numbers: Kysely refuses a migration named below one already run, so a lane takes the next free number when it merges (decided 28/11; the per-track ranges below are only a size budget): T01 0029-0031,
 T03 0032-0034, T16 0035-0037, T13 none (executor store schema v2), T02 0038-0040, T11 0041-0043, T07 0044-0045, T05/T06
 0046-0047, T08 0048-0050, T14 0051, T12 0052 (added 28/11: environment columns on job_types and runs). Every table: `tenant_id`, forced RLS through `isolate()`, composite FKs, DR201 for
 cross-tenant. Error codes reserved: T01 DR105, DR403, DR505 (`Key encryption key unavailable.`); T02 DR454; T03 DR154

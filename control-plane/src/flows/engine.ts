@@ -261,7 +261,7 @@ export async function settleFlowJob(trx: Trx, jobId: string, state: JobState): P
 /**
  * Wakes every wait node due at `now`, each flow run in its own transaction, and returns how many moved. The
  * scheduler runs it in every tick, so a wait ends within a poll of its time. The rows come from due_flow_waits
- * (0035) across tenants; each run is locked with skip locked and checked again inside its tenant, so two ticks at
+ * (0029) across tenants; each run is locked with skip locked and checked again inside its tenant, so two ticks at
  * once (or a tick of another serve) wake a wait once.
  */
 export async function wakeDueFlowWaits(db: Kysely<Database>, now: Date, log: SchedulerLog): Promise<number> {
